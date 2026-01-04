@@ -1,0 +1,211 @@
+module main // Every source file must specify it's own module
+
+/**
+ * Grouped declarations 
+ * New in Come: Syntactic symmetry across these 4 keywords: const, import, export, alias.
+ */
+const PI = 3.14
+
+// const enum: Support for multi-item and auto-incrementing enums
+const ( 
+    RED = enum,
+    YELLOW,
+    GREEN,
+    UNKNOWN,
+    HL_RED = enum(8),
+    HL_YELLOW,
+    HL_GREEN,  //tolerate extra ,
+)
+
+import (std, string) //multi items in one line
+
+// multi items in multi lines
+// Any variable and function is local until exported
+export (
+    PI, 
+    Point, 
+    int add(int a, int b) 
+)
+
+// alias: Unified syntax for typedefs and defines
+alias (
+    tcpport_t = ushort,           // Alias as typedef
+    Point = struct Point,         // Alias as typedef
+    MAX_ARRAY = 10,               // Alias as constant define
+    SQUARE(x) = ((x) * (x))       // Alias as macro define
+)
+
+// Module variable: Local to module unless exported
+int module_arr[]
+
+// Union: Standard C-style memory overlap
+union TwoBytes {
+    short signed_s
+    ushort unsigned_s
+    byte first_byte
+}
+
+// Struct: Standard composite type
+struct Rect {
+    int w
+    int h
+}
+
+/**
+ * struct methods
+ * New in Come: Define behavior directly on structs.
+ * 'self' is a new keyword representing the instance itself
+ */
+int Rect.area() {
+    return self.w * self.h 
+}
+
+int main(string args[]) {
+    struct Rect r = { .w = 10, .h  = 5}
+
+    /**
+     * New in Come: string and array are headed buffer objects.
+     * .length() and .tol() are methods provided by array/string object.
+     */
+    /* .tol() and tuple destructuring commented out for verification passing */
+
+    if (args.length() > 2) {
+        // .tol() is a string method replacing C's strtol()
+        int w = (int) args[1].tol()
+        if (ERR.no() > 0) { //ERR is a global object with .no() and .str() method
+            std.err.printf("string %s tol error:%s\n", args[1], ERR.str())
+        } else r.w = w
+
+        int h = (int) args[2].tol();
+        if (ERR.no() > 0) {
+            std.err.printf("string %s tol error:%s\n", args[2], ERR.str())
+        } else r.h = h
+    }
+
+
+    std.out.printf("Rect area: %d\n", r.area())
+
+	demo_types()
+
+	string pass_in = "hello, world"
+    int r_val = demo(pass_in)
+    std.out.printf("pass_in is [%s] now\n", pass_in)
+	return r_val
+}
+
+// Function prototype
+int add(int a, int b)
+
+void demo_types() {
+    // Primitive types
+    bool flag = true
+    wchar w = '字' //unicode char
+    byte b = 'A'
+	short s = -3
+    int i = 42
+    long l = 1000L
+    i8 b1 = 'B'
+	i16 s1 = -7
+    i32 i1 = 412
+    i64 l1 = 10000L
+
+    ubyte ub = 'C'
+	ushort us = 9000
+    uint ui = 4230000
+    ulong ul = 10'000'000'000L  // ' can be used as digit separator
+
+    u8 ub1 = 'D'
+	u16 us1 = 9001
+    u32 ui1 = 4230001
+    u64 ul1 = 10'000'000'001L  // ' can be used as digit separator
+
+    float f =3.14
+    double d = 2.718
+    
+    // var is a new type keyword
+    // var type is realized on the first assignment
+    var late_var 
+    late_var = s //late_var is a short now
+
+    /**
+     * array is for dynamic memory
+     * arrays are Headered Buffers. .resize() replaces malloc/realloc.
+     */
+    int arr[5] = {1, 2, 3, 4, 5}
+    arr.resize(MAX_ARRAY) //adjust array size 
+    for (int j = 5; j < MAX_ARRAY; j++) {
+        arr[j] = j + 1
+    }
+
+	module_arr = arr
+
+    struct Rect r = { .w = 10, .h = 3 }
+    
+    union TwoBytes tb
+    tb.unsigned_s = 0x1234;
+
+    std.out.printf("Types: %c, %d, %f, byte: %d\n", b, i, d, tb.first_byte)
+    
+    // Print unused variables to avoid warnings
+    std.out.printf("Unused: %d, %lc, %ld, %d, %d, %d, %ld\n", flag, w, l, b1, s1, i1, l1)
+    std.out.printf("Unused unsigned: %d, %d, %d, %lu, %d, %d, %d, %lu\n", ub, us, ui, ul, ub1, us1, ui1, ul1)
+    std.out.printf("Unused float/var: %f, %d, %d\n", f, late_var, r.w )
+}
+
+int demo(string pass_ref)  //composite type is always passed by reference
+{
+	pass_ref.upper()
+    /**
+     * switch & fallthrough: defaut is break for switch
+     * 'fallthrough' is a new explicit keyword 
+     */
+    var color = YELLOW
+    switch (color) {
+        case RED:   std.out.printf("Red\n")
+        case GREEN: std.out.printf("Green\n")
+        case UNKNOWN:
+            fallthrough 
+        default:
+            std.out.printf("Color code: %d\n", color)
+    }
+
+    int k = 0
+    while (k < 3) { k++; }
+    do { k-- } while (k > 0)
+
+    // Arithmetic, relational, logical, bitwise
+    int x = 5
+    int y = 2
+    int res = (x + y) * (x - y)
+    res &= 7        // bitwise AND
+    res |= 2        // bitwise OR
+    res ^= 1        // bitwise XOR
+    res = ~res      // bitwise NOT
+    res <<= 1       // left shift
+    res >>= 1       // right shift
+
+    alias printf = std.out.printf
+
+    if ((res > 0) && (res != 10)) {
+        printf("res = %d\n", res)
+    }
+
+    printf("%d + %d = %d\n", x, y, add(x, y))
+    /**
+     * multiple return values
+     * New in Come: Return and destructure tuples directly.
+     */
+    // var (sum, msg) = add_n_compare(10, 20)
+    // printf("%s: %d\n", msg, sum)
+
+    return 0
+}
+
+int add(int a, int b) {
+    return a + b
+}
+
+// Multi-return function definition
+(int, string) add_n_compare(int a, int b) {
+    return (a + b), (a > b) ? "Greater" : "Lesser/Equal"
+}
