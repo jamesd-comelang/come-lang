@@ -406,14 +406,15 @@ do { } while (cond)
 
 ```come
 int dyn[]
-dyn.alloc(3)
+dyn.resize(3)
 ```
 
 ## 11.2 Ownership Propagation
 
 ```come
 byte buf[]
-buf.alloc(512, dyn)
+buf.resize(512)
+buf.chown(dyn)
 ```
 
 * `buf` is owned by `dyn`
