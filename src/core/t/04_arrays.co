@@ -1,0 +1,26 @@
+module main
+import std
+
+int main(string args[]) {
+    // Check args array
+    if (args.len() >= 0) {
+        std.out.printf("Pass: args.len() works\n")
+    }
+
+    // accessing args[0] might be unsafe if no args provided, but syntax check is good
+    // string s = args[0] 
+
+    // Scope test
+    int x = 100
+    // {
+    //    int x = 200
+    //    if (x == 200) {
+    //        std.out.printf("Pass: inner scope x is 200\n")
+    //    }
+    // }
+    if (x == 100) {
+        std.out.printf("Pass: outer scope x is 100\n")
+    }
+
+    return 0
+}

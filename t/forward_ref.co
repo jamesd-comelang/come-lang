@@ -1,0 +1,12 @@
+module main
+
+import std
+
+int main() {
+    foo()
+    return 0
+}
+
+void foo() {
+    std.out.printf("foo called\n")
+}

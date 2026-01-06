@@ -1,0 +1,469 @@
+// tcp.c
+#define _GNU_SOURCE
+#include "net/tcp.h"
+
+//#include <talloc.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdio.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/epoll.h>
+#include <sys/eventfd.h>
+#include <netinet/tcp.h>
+
+// ===== Module context =====
+static void* g_tctx = NULL;      // talloc ctx
+static int   g_epfd = -1;        // epoll instance
+static int   g_evtfd = -1;       // eventfd for wakeups (optional but useful)
+
+// ===== Lock-free connection table =====
+// Fixed-size open-addressing hash table with atomic slots.
+// CAS from NULL -> conn on insert; CAS from conn -> NULL on remove.
+// This is MPMC and lock-free for Get/Insert/Remove.
+// Enumeration is racy (snapshot style), which is typical for lock-free tables.
+
+#ifndef NET_TCP_CONN_TABLE_ORDER
+#define NET_TCP_CONN_TABLE_ORDER 12  // 2^12 = 4096 slots
+#endif
+#define NET_TCP_CONN_TABLE_SIZE (1u << NET_TCP_CONN_TABLE_ORDER)
+#define NET_TCP_CONN_TABLE_MASK (NET_TCP_CONN_TABLE_SIZE - 1u)
+
+struct net_tcp_Addr {
+    char ip[16];
+    uint16_t port;
+};
+
+struct net_tcp_Connection {
+    int                            fd;
+    atomic_uint                    events;     // subscribed NET_TCP_* bitmask
+    net_tcp_event_cb               on_event;
+    void*                          user_data;
+    bool                           is_listener;
+    // Optional: store SO_ERROR status after EPOLLOUT (connect completion)
+    atomic_int                     last_error;
+    // For future: per-event handlers array
+};
+
+static _Atomic(net_tcp_Connection*) g_conn_table[NET_TCP_CONN_TABLE_SIZE];
+
+// Hash helper
+static inline uint32_t conn_hash_fd(int fd) {
+    // Knuth multiplicative hash
+    return ((uint32_t)fd * 2654435761u);
+}
+
+static bool conn_table_insert(net_tcp_Connection* c) {
+    uint32_t h = conn_hash_fd(c->fd);
+    for (uint32_t i = 0; i < NET_TCP_CONN_TABLE_SIZE; ++i) {
+        uint32_t idx = (h + i) & NET_TCP_CONN_TABLE_MASK;
+        net_tcp_Connection* expected = NULL;
+        if (atomic_compare_exchange_strong_explicit(
+                &g_conn_table[idx], &expected, c,
+                memory_order_acq_rel, memory_order_acquire)) {
+            return true;
+        }
+    }
+    errno = ENOSPC; // table full
+    return false;
+}
+
+static bool conn_table_remove_by_ptr(net_tcp_Connection* c) {
+    uint32_t h = conn_hash_fd(c->fd);
+    for (uint32_t i = 0; i < NET_TCP_CONN_TABLE_SIZE; ++i) {
+        uint32_t idx = (h + i) & NET_TCP_CONN_TABLE_MASK;
+        net_tcp_Connection* cur = atomic_load_explicit(&g_conn_table[idx], memory_order_acquire);
+        if (cur == c) {
+            if (atomic_compare_exchange_strong_explicit(
+                    &g_conn_table[idx], &cur, NULL,
+                    memory_order_acq_rel, memory_order_acquire)) {
+                return true;
+            }
+            // race -> retry i (same slot)
+            --i;
+        } else if (cur == NULL) {
+            // keep probing; this NULL might not be our slot due to previous wraps
+        }
+    }
+    return false;
+}
+
+static net_tcp_Connection* conn_table_find_by_fd(int fd) {
+    uint32_t h = conn_hash_fd(fd);
+    for (uint32_t i = 0; i < NET_TCP_CONN_TABLE_SIZE; ++i) {
+        uint32_t idx = (h + i) & NET_TCP_CONN_TABLE_MASK;
+        net_tcp_Connection* cur = atomic_load_explicit(&g_conn_table[idx], memory_order_acquire);
+        if (cur == NULL) {
+            // Stop condition for open addressing if you ensure no tombstones;
+            // but because we delete to NULL, we *cannot* early stop reliably.
+            // So, do not early-stop; continue probing entire table bound.
+            continue;
+        }
+        if (cur->fd == fd)
+            return cur;
+    }
+    return NULL;
+}
+
+// ===== Utilities =====
+static int set_fd_nonblock_cloexec(int fd) {
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0) return -1;
+    if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0) return -1;
+
+    int fdflags = fcntl(fd, F_GETFD, 0);
+    if (fdflags >= 0) (void)fcntl(fd, F_SETFD, fdflags | FD_CLOEXEC);
+    return 0;
+}
+
+static int build_sockaddr(const net_tcp_Addr* addr, struct sockaddr_in* sa) {
+    if (!addr || !sa) { errno = EINVAL; return -1; }
+    memset(sa, 0, sizeof(*sa));
+    sa->sin_family = AF_INET;
+    sa->sin_port = htons(addr->port);
+    int rc = inet_pton(AF_INET, addr->ip, &sa->sin_addr);
+    if (rc == 1) return 0;
+    if (rc == 0) errno = EINVAL; // invalid address
+    return -1;
+}
+
+static uint32_t events_to_epoll(uint32_t ev) {
+    uint32_t e = 0;
+    if (ev & NET_TCP_READABLE) e |= EPOLLIN | EPOLLRDHUP;
+    if (ev & NET_TCP_WRITABLE) e |= EPOLLOUT;
+    if (ev & NET_TCP_ERROR)    e |= EPOLLERR | EPOLLHUP;
+    return e;
+}
+
+static uint32_t epoll_to_events(uint32_t epev) {
+    uint32_t ev = 0;
+    if (epev & (EPOLLIN | EPOLLRDHUP)) ev |= NET_TCP_READABLE;
+    if (epev & EPOLLOUT)               ev |= NET_TCP_WRITABLE;
+    if (epev & (EPOLLERR | EPOLLHUP))  ev |= NET_TCP_ERROR;
+    return ev;
+}
+
+static int epoll_apply_interest(net_tcp_Connection* c, bool is_add) {
+    struct epoll_event ee;
+    memset(&ee, 0, sizeof(ee));
+    unsigned int subs = atomic_load_explicit(&c->events, memory_order_acquire);
+
+    // Always include ERR/HUP for notification; deliver via callback as ERROR.
+    uint32_t epev = events_to_epoll(subs) | EPOLLERR | EPOLLHUP | EPOLLRDHUP;
+    ee.events = epev;
+    ee.data.ptr = c;
+
+    int op = is_add ? EPOLL_CTL_ADD : EPOLL_CTL_MOD;
+    if (epoll_ctl(g_epfd, op, c->fd, &ee) == 0) return 0;
+
+    // Fallback: if MOD fails with ENOENT, try ADD; if ADD fails with EEXIST, try MOD
+    if (!is_add && errno == ENOENT) {
+        if (epoll_ctl(g_epfd, EPOLL_CTL_ADD, c->fd, &ee) == 0) return 0;
+    } else if (is_add && errno == EEXIST) {
+        if (epoll_ctl(g_epfd, EPOLL_CTL_MOD, c->fd, &ee) == 0) return 0;
+    }
+    return -1;
+}
+
+static int epoll_del(net_tcp_Connection* c) {
+    // epoll_ctl DEL ignores the event pointer
+    if (epoll_ctl(g_epfd, EPOLL_CTL_DEL, c->fd, NULL) < 0) {
+        // Closing the fd will implicitly remove it from epoll in any case.
+        return -1;
+    }
+    return 0;
+}
+
+// ===== Public API =====
+
+void net_tcp_module_init(void) {
+    if (g_tctx) return;
+    g_tctx = talloc_new(NULL);
+
+    g_epfd = epoll_create1(EPOLL_CLOEXEC);
+    if (g_epfd < 0) {
+        talloc_free(g_tctx);
+        g_tctx = NULL;
+        return;
+    }
+
+    // eventfd to allow waking up the epoll thread (e.g., on shutdown)
+    g_evtfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (g_evtfd >= 0) {
+        struct epoll_event ee;
+        memset(&ee, 0, sizeof(ee));
+        ee.events = EPOLLIN;
+        ee.data.ptr = NULL; // NULL -> wakeup event
+        epoll_ctl(g_epfd, EPOLL_CTL_ADD, g_evtfd, &ee);
+    }
+
+    // zero the lock-free table
+    for (size_t i = 0; i < NET_TCP_CONN_TABLE_SIZE; ++i) {
+        atomic_store_explicit(&g_conn_table[i], NULL, memory_order_relaxed);
+    }
+}
+
+void net_tcp_module_deinit(void) {
+    if (g_epfd >= 0) { close(g_epfd); g_epfd = -1; }
+    if (g_evtfd >= 0) { close(g_evtfd); g_evtfd = -1; }
+    if (g_tctx) { talloc_free(g_tctx); g_tctx = NULL; }
+}
+
+net_tcp_Addr net_tcp_Addr_make(const char* ip, uint16_t port) {
+    net_tcp_Addr a;
+    memset(&a, 0, sizeof(a));
+    if (ip) {
+        strncpy(a.ip, ip, sizeof(a.ip) - 1);
+        a.ip[sizeof(a.ip) - 1] = '\0';
+    }
+    a.port = port;
+    return a;
+}
+
+static int create_socket(void) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    if (set_fd_nonblock_cloexec(fd) < 0) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return -1;
+    }
+    return fd;
+}
+
+net_tcp_Connection* net_tcp_connect(net_tcp_Addr addr) {
+    int fd = create_socket();
+    if (fd < 0) return NULL;
+
+    struct sockaddr_in sa;
+    if (build_sockaddr(&addr, &sa) < 0) {
+        close(fd);
+        return NULL;
+    }
+
+    int rc = connect(fd, (struct sockaddr*)&sa, sizeof(sa));
+    if (rc < 0 && errno != EINPROGRESS) {
+        int saved = errno;
+        close(fd);
+        errno = saved;
+        return NULL;
+    }
+
+    net_tcp_Connection* c = talloc(g_tctx, net_tcp_Connection);
+    if (!c) {
+        close(fd);
+        errno = ENOMEM;
+        return NULL;
+    }
+    memset(c, 0, sizeof(*c));
+    c->fd = fd;
+    atomic_store_explicit(&c->events, NET_TCP_READABLE | NET_TCP_WRITABLE | NET_TCP_ERROR, memory_order_relaxed);
+    c->on_event = NULL;
+    c->user_data = NULL;
+    c->is_listener = false;
+    atomic_store_explicit(&c->last_error, 0, memory_order_relaxed);
+
+    if (!conn_table_insert(c)) {
+        int saved = errno;
+        talloc_free(c);
+        close(fd);
+        errno = saved;
+        return NULL;
+    }
+
+    if (epoll_apply_interest(c, true) < 0) {
+        int saved = errno;
+        conn_table_remove_by_ptr(c);
+        talloc_free(c);
+        close(fd);
+        errno = saved;
+        return NULL;
+    }
+
+    // Optionally disable Nagle if desired:
+    // int one = 1; setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
+    return c;
+}
+
+net_tcp_Connection* net_tcp_listen(net_tcp_Addr addr) {
+    int fd = create_socket();
+    if (fd < 0) return NULL;
+
+    int one = 1;
+    (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+    // (void)setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)); // optional
+
+    struct sockaddr_in sa;
+    if (build_sockaddr(&addr, &sa) < 0) {
+        close(fd);
+        return NULL;
+    }
+    if (bind(fd, (struct sockaddr*)&sa, sizeof(sa)) < 0) {
+        int saved = errno; close(fd); errno = saved; return NULL;
+    }
+    if (listen(fd, 128) < 0) {
+        int saved = errno; close(fd); errno = saved; return NULL;
+    }
+
+    net_tcp_Connection* c = talloc(g_tctx, net_tcp_Connection);
+    if (!c) {
+        close(fd);
+        errno = ENOMEM;
+        return NULL;
+    }
+    memset(c, 0, sizeof(*c));
+    c->fd = fd;
+    atomic_store_explicit(&c->events, NET_TCP_READABLE | NET_TCP_ERROR, memory_order_relaxed);
+    c->on_event = NULL;
+    c->user_data = NULL;
+    c->is_listener = true;
+    atomic_store_explicit(&c->last_error, 0, memory_order_relaxed);
+
+    if (!conn_table_insert(c)) {
+        int saved = errno; talloc_free(c); close(fd); errno = saved; return NULL;
+    }
+    if (epoll_apply_interest(c, true) < 0) {
+        int saved = errno; conn_table_remove_by_ptr(c); talloc_free(c); close(fd); errno = saved; return NULL;
+    }
+    return c;
+}
+
+net_tcp_Connection* net_tcp_accept(net_tcp_Connection* listener) {
+    if (!listener || !listener->is_listener) { errno = EINVAL; return NULL; }
+
+    struct sockaddr_in sa;
+    socklen_t len = sizeof(sa);
+
+    while (1) {
+        int fd = accept(listener->fd, (struct sockaddr*)&sa, &len);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) return NULL;
+            return NULL;
+        }
+        if (set_fd_nonblock_cloexec(fd) < 0) { close(fd); return NULL; }
+
+        net_tcp_Connection* c = talloc(g_tctx, net_tcp_Connection);
+        if (!c) { close(fd); errno = ENOMEM; return NULL; }
+        memset(c, 0, sizeof(*c));
+        c->fd = fd;
+        atomic_store_explicit(&c->events, NET_TCP_READABLE | NET_TCP_WRITABLE | NET_TCP_ERROR, memory_order_relaxed);
+        c->on_event = NULL;
+        c->user_data = NULL;
+        c->is_listener = false;
+        atomic_store_explicit(&c->last_error, 0, memory_order_relaxed);
+
+        if (!conn_table_insert(c)) {
+            int saved = errno; talloc_free(c); close(fd); errno = saved; return NULL;
+        }
+        if (epoll_apply_interest(c, true) < 0) {
+            int saved = errno; conn_table_remove_by_ptr(c); talloc_free(c); close(fd); errno = saved; return NULL;
+        }
+        return c; // return one; caller can loop until NULL
+    }
+}
+
+void net_tcp_set_callback(net_tcp_Connection* c, net_tcp_event_cb cb, void* user_data) {
+    if (!c) return;
+    c->on_event  = cb;
+    c->user_data = user_data;
+}
+
+void net_tcp_subscribe(net_tcp_Connection* c, net_tcp_Event ev) {
+    if (!c) return;
+    unsigned int old = atomic_load_explicit(&c->events, memory_order_acquire);
+    unsigned int neu;
+    do {
+        neu = old | ev;
+    } while (!atomic_compare_exchange_weak_explicit(&c->events, &old, neu, memory_order_acq_rel, memory_order_acquire));
+    (void)epoll_apply_interest(c, false);
+}
+
+void net_tcp_unsubscribe(net_tcp_Connection* c, net_tcp_Event ev) {
+    if (!c) return;
+    unsigned int old = atomic_load_explicit(&c->events, memory_order_acquire);
+    unsigned int neu;
+    do {
+        neu = old & ~ev;
+    } while (!atomic_compare_exchange_weak_explicit(&c->events, &old, neu, memory_order_acq_rel, memory_order_acquire));
+    (void)epoll_apply_interest(c, false);
+}
+
+void net_tcp_close(net_tcp_Connection* c) {
+    if (!c) return;
+    // Remove from epoll before closing fd
+    (void)epoll_del(c);
+    close(c->fd);
+    (void)conn_table_remove_by_ptr(c);
+    talloc_free(c);
+}
+
+// Wake up the epoll thread (if blocked)
+void net_tcp_wakeup_loop(void) {
+    if (g_evtfd >= 0) {
+        uint64_t one = 1;
+        (void)write(g_evtfd, &one, sizeof(one));
+    }
+}
+
+// Run one iteration of the event loop; call this in your loop thread.
+// timeout_ms: -1 to block indefinitely, 0 to poll, >0 to block up to ms.
+int net_tcp_run_event_loop(int timeout_ms) {
+    if (g_epfd < 0) { errno = EINVAL; return -1; }
+
+    const int MAX_EVENTS = 1024;
+    struct epoll_event evlist[MAX_EVENTS];
+
+    int n = epoll_wait(g_epfd, evlist, MAX_EVENTS, timeout_ms);
+    if (n <= 0) {
+        return n; // 0 timeout, -1 error (errno set)
+    }
+
+    int handled = 0;
+    for (int i = 0; i < n; ++i) {
+        struct epoll_event* e = &evlist[i];
+
+        if (e->data.ptr == NULL) {
+            // wakeup from eventfd
+            if (g_evtfd >= 0 && (e->events & EPOLLIN)) {
+                uint64_t sink;
+                while (read(g_evtfd, &sink, sizeof(sink)) > 0) {}
+            }
+            continue;
+        }
+
+        net_tcp_Connection* c = (net_tcp_Connection*)e->data.ptr;
+        // Map epoll mask to our events and AND with subscriptions
+        unsigned int subs = atomic_load_explicit(&c->events, memory_order_acquire);
+        unsigned int ev = epoll_to_events(e->events) & (subs | NET_TCP_ERROR);
+
+        // Special handling for connect completion: EPOLLOUT => getsockopt(SO_ERROR)
+        if ((e->events & EPOLLOUT) && !c->is_listener) {
+            int err = 0; socklen_t elen = sizeof(err);
+            if (getsockopt(c->fd, SOL_SOCKET, SO_ERROR, &err, &elen) == 0) {
+                atomic_store_explicit(&c->last_error, err, memory_order_release);
+                if (err != 0) {
+                    ev |= NET_TCP_ERROR;
+                }
+            }
+        }
+
+        if (ev == 0) {
+            // Nothing the app subscribed to; skip
+            continue;
+        }
+
+        if (c->on_event) {
+            c->on_event(c, (net_tcp_Event)ev, c->user_data);
+        }
+        handled++;
+    }
+    return handled;
+}

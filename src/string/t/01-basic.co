@@ -1,0 +1,64 @@
+// Test basic string operations
+module main
+
+import std
+import string
+
+int main() {
+    int failures = 0
+    
+    // Test 1: String creation and length
+    string s = "Hello"
+    if (s.len() != 5) {
+        std.out.printf("FAIL: len() - expected 5, got %u\n", s.len())
+        failures = failures + 1
+    }
+    
+    // Test 2: String size (should equal len for ASCII)
+    if (s.size() != 5) {
+        std.out.printf("FAIL: size() - expected 5, got %u\n", s.size())
+        failures = failures + 1
+    }
+    
+    // Test 3: String comparison (equal)
+    string s2 = "Hello"
+    if (s.cmp(s2) != 0) {
+        std.out.printf("FAIL: cmp() equal - expected 0, got %d\n", s.cmp(s2))
+        failures = failures + 1
+    }
+    
+    // Test 4: String comparison (not equal)
+    string s3 = "World"
+    if (s.cmp(s3) == 0) {
+        std.out.printf("FAIL: cmp() not equal - expected non-zero\n")
+        failures = failures + 1
+    }
+    
+    // Test 5: Case-insensitive comparison
+    string s4 = "hello"
+    if (s.casecmp(s4) != 0) {
+        std.out.printf("FAIL: casecmp() - expected 0, got %d\n", s.casecmp(s4))
+        failures = failures + 1
+    }
+    
+    // Test 6: Partial comparison
+    string s5 = "Help"
+    if (s.cmp(s5, 3) != 0) {
+        std.out.printf("FAIL: cmp(n=3) - expected 0 for first 3 chars\n")
+        failures = failures + 1
+    }
+    
+    // Test 7: ASCII validation
+    if (!s.isascii()) {
+        std.out.printf("FAIL: isascii() - expected true for ASCII string\n")
+        failures = failures + 1
+    }
+    
+    if (failures == 0) {
+        std.out.printf("PASS: All basic tests passed (7/7)\n")
+        return 0
+    } else {
+        std.out.printf("FAIL: %d test(s) failed\n", failures)
+        return 1
+    }
+}

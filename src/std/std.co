@@ -1,0 +1,86 @@
+module std
+
+alias (
+    FILE = struct FILE 
+    Proc = struct Proc 
+)
+
+struct ERR_t {
+    int no
+    string str
+}
+
+void init()
+void exit()
+
+export (
+    // object types
+    FILE, Proc,
+
+    // Pre-instantiated objects
+    FILE in, out, err,
+
+    //hooks to start/end
+    void FILE.init(),
+    void FILE.exit(),
+    
+	//Open/Close Methods
+    bool FILE.open(string path, string mode),
+    void FILE.close(),
+    bool FILE.fdopen(int fd, string mode),
+    bool FILE.reopen(string path, string mode),
+    int FILE.fileno(),
+    
+    // I/O Methods
+    int FILE.printf(string fmt, ...),
+    int FILE.scanf(string fmt, ...),
+    int FILE.vprintf(string fmt, ...), // ... is va_list for vxxx function
+    int FILE.vscanf(string fmt, ...),
+    
+    uint FILE.read(byte[] buf, uint n),
+    uint FILE.write(byte[] buf, uint n),
+    wchar FILE.getc(),
+    void FILE.putc(wchar c),
+    string FILE.gets(),
+    uint FILE.puts(string s),
+    string FILE.fname(),
+    void FILE.ungetc(wchar c),
+    
+    void FILE.seek(long offset, int whence),
+    long FILE.tell(),
+    void FILE.rewind(),
+    
+    bool FILE.isopen(),
+    bool FILE.eof(),
+    bool FILE.error(),
+    void FILE.flush(),
+    void FILE.clearerr(),
+    void FILE.setbuf(byte[] buf, uint size),
+    void FILE.setvbuf(byte[] buf, int mode, uint size),
+    void FILE.setlinebuf(),
+
+
+    // File Operations
+    bool remove(string path),
+    FILE tmpfile(),
+    string tmpname(),
+    
+    // Proc Methods
+    void Proc.abort(),
+    void Proc.exit(int status),
+    void Proc.atexit(void* cb),
+    string Proc.getenv(string name),
+    int Proc.system(string cmd),
+
+    // ERR Methods
+    string ERR_t.str(),
+    int ERR_t.no(),
+    void ERR_t.clear(),
+
+    // Global objects
+    struct ERR_t ERR,
+
+    // Module lifecycle
+    void init(),
+    void exit(),
+)

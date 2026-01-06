@@ -1,0 +1,24 @@
+module main
+import std
+
+int main() {
+    string s = "hello"
+    
+    // Length
+    std.out.printf("Length of 'hello': %u\n", s.len())
+    
+    // Upper
+    std.out.printf("Upper: %s\n", s.upper())
+    
+    // Comparison
+    if (s == "hello") {
+        std.out.printf("Pass: s == 'hello'\n")
+    }
+    
+    // Not equals
+    if (s != "world") {
+        std.out.printf("Pass: s != 'world'\n")
+    }
+
+    return 0
+}

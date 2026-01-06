@@ -1,0 +1,90 @@
+// Test string transformation methods
+module main
+
+import std
+import string
+
+int main() {
+    int failures = 0
+    string s = "Hello World"
+    
+    // Test 1: upper()
+    string upper = s.upper()
+    if (upper.cmp("HELLO WORLD") != 0) {
+        std.out.printf("FAIL: upper() - expected 'HELLO WORLD', got '%s'\n", upper)
+        failures = failures + 1
+    }
+    
+    // Test 2: lower()
+    string lower = s.lower()
+    if (lower.cmp("hello world") != 0) {
+        std.out.printf("FAIL: lower() - expected 'hello world', got '%s'\n", lower)
+        failures = failures + 1
+    }
+    
+    // Test 3: repeat()
+    string repeated = "Go".repeat(3)
+    if (repeated.cmp("GoGoGo") != 0) {
+        std.out.printf("FAIL: repeat(3) - expected 'GoGoGo', got '%s'\n", repeated)
+        failures = failures + 1
+    }
+    
+    // Test 4: replace() - all occurrences
+    string replaced = s.replace("l", "L")
+    if (replaced.cmp("HeLLo WorLd") != 0) {
+        std.out.printf("FAIL: replace('l', 'L') - expected 'HeLLo WorLd', got '%s'\n", replaced)
+        failures = failures + 1
+    }
+    
+    // Test 5: replace() - limited count
+    string replaced1 = s.replace("l", "L", 1)
+    if (replaced1.cmp("HeLlo World") != 0) {
+        std.out.printf("FAIL: replace('l', 'L', 1) - expected 'HeLlo World', got '%s'\n", replaced1)
+        failures = failures + 1
+    }
+    
+    // Test 6: trim()
+    string padded = "  Hello  "
+    string trimmed = padded.trim()
+    if (trimmed.cmp("Hello") != 0) {
+        std.out.printf("FAIL: trim() - expected 'Hello', got '%s'\n", trimmed)
+        failures = failures + 1
+    }
+    
+    // Test 7: ltrim()
+    string ltrimmed = padded.ltrim()
+    if (ltrimmed.cmp("Hello  ") != 0) {
+        std.out.printf("FAIL: ltrim() - expected 'Hello  ', got '%s'\n", ltrimmed)
+        failures = failures + 1
+    }
+    
+    // Test 8: rtrim()
+    string rtrimmed = padded.rtrim()
+    if (rtrimmed.cmp("  Hello") != 0) {
+        std.out.printf("FAIL: rtrim() - expected '  Hello', got '%s'\n", rtrimmed)
+        failures = failures + 1
+    }
+    
+    // Test 9: trim() with custom cutset
+    string custom = "__Hello__"
+    string custom_trimmed = custom.trim("_")
+    if (custom_trimmed.cmp("Hello") != 0) {
+        std.out.printf("FAIL: trim('_') - expected 'Hello', got '%s'\n", custom_trimmed)
+        failures = failures + 1
+    }
+    
+    // Test 10: substr()
+    string sub = s.substr(0, 5)
+    if (sub.cmp("Hello") != 0) {
+        std.out.printf("FAIL: substr(0, 5) - expected 'Hello', got '%s'\n", sub)
+        failures = failures + 1
+    }
+    
+    if (failures == 0) {
+        std.out.printf("PASS: All transformation tests passed (10/10)\n")
+        return 0
+    } else {
+        std.out.printf("FAIL: %d test(s) failed\n", failures)
+        return 1
+    }
+}

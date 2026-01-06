@@ -1,0 +1,22 @@
+TOP_DIR=../
+# Subdirectories to build if they have Makefiles (core modules that don't need CO compiler)
+SUB_DIRS := core mem array map
+
+include $(TOP_DIR)/Makefile.inc
+
+# Final binary
+TARGET := $(BUILD_DIR)/come
+
+# Link all objects into final binary
+.PHONY: $(SUB_DIRS)
+$(TARGET): $(SUB_MAKE_DIRS)
+	$(CC) $(CFLAGS) -o $@ $(wildcard $(BUILD_DIR)/*.o)
+
+# Build modules that require come compiler
+std: $(TARGET)
+	$(MAKE) -C std
+
+string: $(TARGET)
+	$(MAKE) -C string
+
+all: $(SUB_MAKE_DIRS) $(TARGET) std string

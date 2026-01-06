@@ -1,0 +1,38 @@
+module main
+import std
+
+int main() {
+    int x = 10
+    int y = 20
+
+    if (x < y) {
+        std.out.printf("Pass: 10 < 20\n")
+    } else {
+        std.out.printf("Fail: 10 < 20\n")
+    }
+
+    if (x > y) {
+        std.out.printf("Fail: 10 > 20\n")
+    } else {
+        std.out.printf("Pass: 10 not > 20\n")
+    }
+
+    if (x == 10) {
+        std.out.printf("Pass: x == 10\n")
+    }
+
+    if (y != 10) {
+        std.out.printf("Pass: y != 10\n")
+    }
+    
+    // Check bool literals
+    if (true) {
+        std.out.printf("Pass: true\n")
+    }
+    
+    if (false) {
+        std.out.printf("Fail: false\n")
+    }
+
+    return 0
+}

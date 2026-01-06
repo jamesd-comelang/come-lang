@@ -1,0 +1,68 @@
+module string
+
+const WHITESPACE = " \t\r\n\u00A0\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000"
+
+alias len = length
+
+void init()
+void exit()
+
+export (
+    void init(),
+    void exit(),
+
+    // Core Methods
+    uint size(),
+    uint length(),
+    int cmp(string b, uint upto = 0),
+    int casecmp(string b, uint upto = 0),
+
+    // Search
+    long chr(wchar c),
+    long rchr(wchar c),
+    long memchr(wchar c, uint n),
+    long find(string sub, bool ignore_case = false),
+    long rfind(string sub, bool ignore_case = false),
+    uint count(string sub),
+
+    // Validation
+    bool isdigit(),
+    bool isalpha(),
+    bool isalnum(),
+    bool isspace(),
+    bool isascii(),
+
+    // Transformation
+    string upper(),
+    string lower(),
+    string repeat(uint n),
+    string replace(string old_str, string new_str, uint upto),
+
+    // Trimming
+    string trim(string cutset = WHITESPACE),
+    string ltrim(string cutset = WHITESPACE),
+    string rtrim(string cutset = WHITESPACE),
+
+    // Element Access
+    wchar at(uint index),
+
+    // Splitting
+    string[] split(string sep, uint count = 0),
+
+    // Substring
+    string substr(uint start, uint end),
+
+    // Regex
+    bool regex(string pattern),
+    string[] regex_split(string pattern, uint count = 0),
+    string[] regex_groups(string pattern),
+    string regex_replace(string pattern, string repl, uint count = 0),
+
+    // Memory arena 
+    void chown(var new_variable),
+
+    // Conversions
+    byte[] byte_array(),
+    long tol(ubyte base = 10),
+    double tod()
+)

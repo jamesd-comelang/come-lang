@@ -1,0 +1,46 @@
+module main
+import std
+
+alias my_byte = byte
+alias (my_float, my_double) = (float, double)
+alias my_map = map
+
+alias my_int = int
+
+int main() {
+    // Alias test
+    my_int val = 100
+    if (val == 100) {
+        std.out.printf("Pass: Alias my_int works\n")
+    }
+//    my_byte b = 10
+//    if (b == 10) {
+//        std.out.printf("Pass: Alias my_byte works\n")
+//    }
+    // Var inference tests
+
+    // Var inference tests
+    var v_int = 10
+    if (v_int == 10) {
+        std.out.printf("Pass: var int inferred\n")
+    }
+
+    var v_bool = true
+    if (v_bool) {
+        std.out.printf("Pass: var bool inferred\n")
+    }
+
+    // Float literal test (requires lexer fix)
+    var v_float = 3.14
+    if (v_float > 3.0) {
+         std.out.printf("Pass: var float inferred\n")
+    }
+    
+    // String test
+    var v_str = "hello"
+    if (v_str.len() == 5) {
+         std.out.printf("Pass: var string inferred\n")
+    }
+
+    return 0
+}

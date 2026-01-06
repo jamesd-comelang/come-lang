@@ -1,0 +1,21 @@
+module array_test
+import std
+
+int main() {
+    int arr[] = [1, 2, 3, 4, 5]
+    
+    int sub[] = arr.slice(1, 4) // [2, 3, 4]
+    
+    if (sub.size() != 3) {
+        std.out.printf("FAIL: slice size mismatch, expected 3, got %d\n", sub.size())
+        return 1
+    }
+    
+    if (sub[0] != 2 || sub[1] != 3 || sub[2] != 4) {
+        std.out.printf("FAIL: slice content mismatch\n")
+        return 1
+    }
+    
+    std.out.printf("PASS: 03-slice\n")
+    return 0
+}

@@ -1,0 +1,27 @@
+module array_test
+import std
+
+int main() {
+    int arr[] = [1, 2, 3]
+    
+    if (arr.size() != 3) {
+        std.out.printf("FAIL: initial size mismatch\n")
+        return 1
+    }
+    
+    arr.resize(10)
+    
+    if (arr.size() != 10) {
+        std.out.printf("FAIL: resized size mismatch, expected 10, got %d\n", arr.size())
+        return 1
+    }
+    
+    arr[9] = 100
+    if (arr[9] != 100) {
+        std.out.printf("FAIL: out of bounds access after resize failed\n")
+        return 1
+    }
+    
+    std.out.printf("PASS: 02-resize\n")
+    return 0
+}

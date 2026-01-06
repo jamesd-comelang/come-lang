@@ -1,0 +1,29 @@
+module main
+import std
+
+int main() {
+    byte b = 10
+    ubyte ub = 255
+    short s = -32000
+    ushort us = 65000
+    int i = -2000000000
+    uint ui = 4000000000
+    long l = -9000000000000000000
+    ulong ul = 1000000000000000000
+    float f = 3.14
+    double d = 3.1415926535
+    bool tf = true
+    bool ff = false
+    wchar c = 'X'
+    string str = "Hello Core"
+    string str_empty = ""
+
+    std.out.printf("b=%d, ub=%u, s=%d, us=%u, i=%d, ui=%u\n", b, ub, s, us, i, ui)
+    std.out.printf("l=%ld, ul=%lu\n", l, ul)
+    std.out.printf("f=%f, d=%f\n", f, d)
+    std.out.printf("tf=%d, ff=%d, c=%C\n", tf, ff, c)
+    std.out.printf("str=%s, str_empty=%s\n", str, str_empty)
+
+    std.out.printf("Types test passed.\n")
+    return 0
+}

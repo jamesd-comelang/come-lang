@@ -1,0 +1,69 @@
+module main
+
+import (
+    std,
+    string
+)
+
+int main() {
+    map m = {}
+    
+    string k1 = "key1"
+    string k2 = "key2"
+    string v1 = "value1"
+    string v2 = "value2"
+    
+    // Test put
+    m.put(k1, v1)
+    m.put(k2, v2)
+    
+    // Test get
+    string r1 = m.get(k1)
+    string r2 = m.get(k2)
+    
+    if (r1 == null || r2 == null) {
+        std.out.printf("FAIL: Get returned null\n")
+        return 1
+    }
+    
+    // Note: r1 and r2 are string objects, printf handles it in codegen
+    std.out.printf("key1: %s\n", r1)
+    std.out.printf("key2: %s\n", r2)
+    
+    if (r1.cmp(v1) == 0 && r2.cmp(v2) == 0) {
+        std.out.printf("PASS: Map basic put/get\n")
+    } else {
+        std.out.printf("FAIL: Map basic put/get mismatch\n")
+        return 1
+    }
+    
+    // Test len (size_t cast to ulong for printf)
+    ulong length = m.len()
+    std.out.printf("Map length: %lu\n", length)
+
+    if (length == 2) {
+        std.out.printf("PASS: Map len is 2\n")
+    } else {
+        std.out.printf("FAIL: Map len check failed\n")
+        return 1
+    }
+    
+    // Test remove
+    m.remove(k1)
+    if (m.get(k1) == null) {
+        std.out.printf("PASS: Map remove\n")
+    } else {
+        std.out.printf("FAIL: Map remove failed\n")
+        return 1
+    }
+    
+    length = m.len()
+    if (length == 1) {
+        std.out.printf("PASS: Map len after remove is 1\n")
+    } else {
+        std.out.printf("FAIL: Map len after remove mismatch\n")
+        return 1
+    }
+    
+    return 0
+}
