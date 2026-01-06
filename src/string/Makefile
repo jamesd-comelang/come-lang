@@ -8,19 +8,19 @@ COME=$(BUILD_DIR)/come
 # into a single object file for the linker.
 all: $(BUILD_DIR)/string.o
 
-$(BUILD_DIR)/string.o: string_manual.o string_gen.o
-	$(LD) -r string_manual.o string_gen.o -o $@
+$(BUILD_DIR)/string.o: $(BUILD_DIR)/string_manual.o $(BUILD_DIR)/string_gen.o
+	$(LD) -r $(BUILD_DIR)/string_manual.o $(BUILD_DIR)/string_gen.o -o $@
 
-string_manual.o: string.c
-	$(CC) $(CFLAGS) -c string.c -o string_manual.o
+$(BUILD_DIR)/string_manual.o: string.c
+	$(CC) $(CFLAGS) -c string.c -o $(BUILD_DIR)/string_manual.o
 
-string_gen.o: string.co.c
-	$(CC) $(CFLAGS) -c string.co.c -o string_gen.o
+$(BUILD_DIR)/string_gen.o: $(BUILD_DIR)/string.co.c
+	$(CC) $(CFLAGS) -c $(BUILD_DIR)/string.co.c -o $(BUILD_DIR)/string_gen.o
 
-string.co.c: string.co $(COME)
-	$(COME) genc string.co -o string.co.c
+$(BUILD_DIR)/string.co.c: string.co $(COME)
+	$(COME) genc string.co -o $(BUILD_DIR)/string.co.c
 
 clean:
-	rm -f string.co.c string_manual.o string_gen.o $(BUILD_DIR)/string.o
+	rm -f string.co.c string_manual.o string_gen.o $(BUILD_DIR)/string.co.c $(BUILD_DIR)/string_manual.o $(BUILD_DIR)/string_gen.o $(BUILD_DIR)/string.o
 
 .PHONY: all clean

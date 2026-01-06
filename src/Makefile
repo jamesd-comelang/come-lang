@@ -20,3 +20,11 @@ string: $(TARGET)
 	$(MAKE) -C string
 
 all: $(SUB_MAKE_DIRS) $(TARGET) std string
+
+clean: clean-std clean-string
+
+clean-std:
+	$(MAKE) -C std clean
+
+clean-string:
+	$(MAKE) -C string clean

@@ -11,17 +11,17 @@ COME=$(BUILD_DIR)/come
 
 all: $(BUILD_DIR)/std.o
 
-$(BUILD_DIR)/std.o: std_manual.o std_gen.o
-	$(LD) -r std_manual.o std_gen.o -o $@
+$(BUILD_DIR)/std.o: $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o
+	$(LD) -r $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o -o $@
 
-std_manual.o: std.c
-	$(CC) $(CFLAGS) -c std.c -o std_manual.o
+$(BUILD_DIR)/std_manual.o: std.c
+	$(CC) $(CFLAGS) -c std.c -o $(BUILD_DIR)/std_manual.o
 
-std_gen.o: std.co.c
-	$(CC) $(CFLAGS) -c std.co.c -o std_gen.o
+$(BUILD_DIR)/std_gen.o: $(BUILD_DIR)/std.co.c
+	$(CC) $(CFLAGS) -c $(BUILD_DIR)/std.co.c -o $(BUILD_DIR)/std_gen.o
 
-std.co.c: std.co $(COME)
-	$(COME) genc std.co -o std.co.c
+$(BUILD_DIR)/std.co.c: std.co $(COME)
+	$(COME) genc std.co -o $(BUILD_DIR)/std.co.c
 
 clean:
-	rm -f std.co.c std_manual.o std_gen.o $(BUILD_DIR)/std.o
+	rm -f std.co.c std_manual.o std_gen.o $(BUILD_DIR)/std.co.c $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o $(BUILD_DIR)/std.o
