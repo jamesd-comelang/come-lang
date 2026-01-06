@@ -1,0 +1,23 @@
+#!/usr/bin/env python
+
+systemd_services = [
+    'systemd/smb.service',
+    'systemd/nmb.service',
+    'systemd/winbind.service',
+    'systemd/samba.service',
+    'systemd/samba-bgqd.service',
+]
+
+for srv in systemd_services:
+    bld.CONFIGURE_FILE(srv)
+    if bld.env.systemd_install_services:
+        bld.INSTALL_FILES(bld.env.SYSTEMDDIR, srv, flat=True)
+
+if bld.env.with_ctdb:
+    srv = 'systemd/ctdb.service'
+    bld.CONFIGURE_FILE(srv)
+    if bld.env.systemd_install_services:
+        bld.INSTALL_FILES(bld.env.SYSTEMDDIR, srv, flat=True)
+
+if bld.env.systemd_install_services:
+    bld.INSTALL_FILES('${SYSCONFDIR}/sysconfig', 'systemd/samba.sysconfig', destname='samba')

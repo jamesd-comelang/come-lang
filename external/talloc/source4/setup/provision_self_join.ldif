@@ -1,0 +1,34 @@
+# Accounts for selfjoin (joins DC to itself)
+
+# Object under "Domain Controllers"
+dn: CN=${NETBIOSNAME},OU=Domain Controllers,${DOMAINDN}
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: user
+objectClass: computer
+accountExpires: 9223372036854775807
+dNSHostName: ${DNSNAME}
+# "MSDFSR-ComputerReferenceBL" doesn't exist since we still miss DFSR support
+# "isCritcalSystemObject" is now filled in by the samldb LDB module
+localPolicyFlags: 0
+operatingSystem: ${OPERATING_SYSTEM}
+operatingSystemVersion: ${OPERATING_SYSTEM_VERSION}
+sAMAccountName: ${NETBIOSNAME}$
+userAccountControl: 532480
+clearTextPassword:: ${MACHINEPASS_B64}
+objectSid: ${DOMAINSID}-${DCRID}
+# While some "servicePrincipalName" updates might be handled by the
+# "samba_spnupdate" script, we need to get the basics in here before
+# we add any others.
+servicePrincipalName: HOST/${DNSNAME}
+servicePrincipalName: HOST/${NETBIOSNAME}
+servicePrincipalName: HOST/${DNSNAME}/${DNSNAME}
+
+
+dn: CN=RID Set,CN=${NETBIOSNAME},OU=Domain Controllers,${DOMAINDN}
+objectClass: rIDSet
+rIDAllocationPool: ${RIDALLOCATIONSTART}-${RIDALLOCATIONEND}
+rIDPreviousAllocationPool: ${RIDALLOCATIONSTART}-${RIDALLOCATIONEND}
+rIDUsedPool: 0
+rIDNextRID: ${RIDALLOCATIONSTART}

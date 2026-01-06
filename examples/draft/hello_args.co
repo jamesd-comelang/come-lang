@@ -1,0 +1,15 @@
+module main
+
+import std
+
+int main(string args[])
+{
+    if (args.length() > 1) {
+        std.printf("Hello, %s\n", args[1])
+        return args.length()
+    } else {
+        std.printf("Hello, world\n")
+    }
+    return 0
+}
+

@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE refentry PUBLIC "-//Samba-Team//DTD DocBook V4.2-Based Variant V1.0//EN" "http://www.samba.org/samba/DTD/samba-doc">
+<refentry id="vfs_acl_xattr.8">
+
+<refmeta>
+	<refentrytitle>vfs_acl_xattr</refentrytitle>
+	<manvolnum>8</manvolnum>
+	<refmiscinfo class="source">Samba</refmiscinfo>
+	<refmiscinfo class="manual">System Administration tools</refmiscinfo>
+	<refmiscinfo class="version">&doc.version;</refmiscinfo>
+</refmeta>
+
+
+<refnamediv>
+	<refname>vfs_acl_xattr</refname>
+	<refpurpose>Save NTFS-ACLs in Extended Attributes (EAs)</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<cmdsynopsis>
+		<command>vfs objects = acl_xattr</command>
+	</cmdsynopsis>
+</refsynopsisdiv>
+
+<refsect1>
+	<title>DESCRIPTION</title>
+
+	<para>This VFS module is part of the
+	<citerefentry><refentrytitle>samba</refentrytitle>
+	<manvolnum>7</manvolnum></citerefentry> suite.</para>
+
+	<para>This module is made for systems which do not support
+	standardized NFS4 ACLs but only a deprecated POSIX ACL
+	draft implementation. This is usually the case on Linux systems.
+	Systems that do support just use NFSv4 ACLs directly instead
+	of this module. Such support is usually provided by the filesystem
+	VFS module specific to the underlying filesystem that supports
+	NFS4 ACLs
+	</para>
+
+	<para>The <command>vfs_acl_xattr</command> VFS module stores
+	NTFS Access Control Lists (ACLs) in Extended Attributes (EAs).
+	This enables the full mapping of Windows ACLs on Samba
+	servers even if the ACL implementation is not capable of
+	doing so.
+	</para>
+
+	<para>The NT ACLs are stored in the
+	<parameter>security.NTACL</parameter> extended attribute of files and
+	directories in a form containing the Windows SID representing the users
+	and groups in the ACL.
+	This is different from the uid and gids stored in local filesystem ACLs
+	and the mapping from users and groups to Windows SIDs must be
+	consistent in order to maintain the meaning of the stored NT ACL
+	That extended attribute is <emphasis>not</emphasis> listed by the Linux
+	command <command>getfattr -d <filename>filename</filename></command>.
+	To show the current value, the name of the EA must be specified
+	(e.g. <command>getfattr -n security.NTACL <filename>filename</filename>
+	</command>).
+	</para>
+
+	<para>
+	This module forces the following parameters:
+	<itemizedlist>
+	<listitem><para>inherit acls = true</para></listitem>
+	<listitem><para>dos filemode = true</para></listitem>
+	<listitem><para>force unknown acl user = true</para></listitem>
+	</itemizedlist>
+	</para>
+
+	<para>This module is stackable.</para>
+</refsect1>
+
+<refsect1>
+	<title>OPTIONS</title>
+
+	<variablelist>
+		<!-- please keep in sync with the other acl vfs modules that provide the same options -->
+		<varlistentry>
+		<term>acl_xattr:security_acl_name = NAME</term>
+		<listitem>
+		<para>
+                This option allows to redefine the default location for the
+                NTACL extended attribute (xattr). If not set, NTACL xattrs are
+                written to security.NTACL which is a protected location, which
+                means the content of the security.NTACL attribute is not
+                accessible from normal users outside of Samba. When this option
+                is set to use a user-defined value, e.g. user.NTACL then any
+                user can potentially access and overwrite this information. The
+                module prevents access to this xattr over SMB, but the xattr may
+                still be accessed by other means (eg local access, SSH, NFS). This option must only be used
+                when this consequence is clearly understood and when specific precautions
+                are taken to avoid compromising the ACL content.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>acl_xattr:ignore system acls = [yes|no]</term>
+		<listitem>
+		<para>
+		When set to <emphasis>yes</emphasis>, a best effort mapping
+		from/to the POSIX draft ACL layer will <emphasis>not</emphasis> be
+		done by this module. The default is <emphasis>no</emphasis>,
+		which means that Samba keeps setting and evaluating both the
+		system ACLs and the NT ACLs. This is better if you need your
+		system ACLs be set for local or NFS file access, too. If you only
+		access the data via Samba you might set this to yes to achieve
+		better NT ACL compatibility.
+		</para>
+
+		<para>
+		If <emphasis>acl_xattr:ignore system acls</emphasis>
+		is set to <emphasis>yes</emphasis>, the following
+		additional settings will be enforced:
+		<itemizedlist>
+		<listitem><para>create mask = 0666</para></listitem>
+		<listitem><para>directory mask = 0777</para></listitem>
+		<listitem><para>map archive = no</para></listitem>
+		<listitem><para>map hidden = no</para></listitem>
+		<listitem><para>map readonly = no</para></listitem>
+		<listitem><para>map system = no</para></listitem>
+		<listitem><para>store dos attributes = yes</para></listitem>
+		</itemizedlist>
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>acl_xattr:default acl style = [posix|windows|everyone]</term>
+		<listitem>
+		<para>
+		This parameter determines the type of ACL that is synthesized in
+		case a file or directory lacks an
+		<emphasis>security.NTACL</emphasis> xattr.
+		</para>
+		<para>
+		When set to <emphasis>posix</emphasis>, an ACL will be
+		synthesized based on the POSIX mode permissions for user, group
+		and others, with an additional ACE for <emphasis>NT
+		Authority\SYSTEM</emphasis> will full rights.
+		</para>
+		<para>
+		When set to <emphasis>windows</emphasis>, an ACL is synthesized
+		the same way Windows does it, only including permissions for the
+		owner and <emphasis>NT Authority\SYSTEM</emphasis>.
+		</para>
+		<para>
+		When set to <emphasis>everyone</emphasis>, an ACL is synthesized
+		giving full permissions to everyone (S-1-1-0).
+		</para>
+		<para>
+		The default for this option is <emphasis>posix</emphasis>.
+		</para>
+		</listitem>
+		</varlistentry>
+	</variablelist>
+
+</refsect1>
+
+<refsect1>
+	<title>AUTHOR</title>
+
+	<para>The original Samba software and related utilities
+	were created by Andrew Tridgell. Samba is now developed
+	by the Samba Team as an Open Source project similar
+	to the way the Linux kernel is developed.</para>
+</refsect1>
+
+</refentry>

@@ -1,0 +1,32 @@
+<samba:parameter name="kernel share modes"
+                 type="boolean"
+                 context="S"
+                 xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
+<description>
+	<para>
+	This parameter controls whether SMB share modes are
+	translated into file system specific sharemode calls.
+	</para>
+
+	<para>
+	Kernel share modes provide a minimal level of interoperability
+	with local UNIX processes and NFS operations by preventing
+	access corresponding to the SMB share modes. This requires
+	a file system specific VFS module with proper support.
+	</para>
+
+	<para>
+	Note that in order to use SMB2 durable file handles on a share,
+	you have to turn kernel share modes off.
+	</para>
+
+	<para>
+	This parameter defaults to <constant>no</constant>. Setting
+	it to <constant>yes</constant> requires a file system module
+	that supports file system sharemodes, otherwise attempts to
+	access files will fail with a sharing violation.
+	</para>
+</description>
+
+<value type="default">no</value>
+</samba:parameter>

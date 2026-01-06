@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE refentry PUBLIC "-//Samba-Team//DTD DocBook V4.2-Based Variant V1.0//EN" "http://www.samba.org/samba/DTD/samba-doc">
+<refentry id="vfs_preopen.8">
+
+<refmeta>
+	<refentrytitle>vfs_preopen</refentrytitle>
+	<manvolnum>8</manvolnum>
+	<refmiscinfo class="source">Samba</refmiscinfo>
+	<refmiscinfo class="manual">System Administration tools</refmiscinfo>
+	<refmiscinfo class="version">&doc.version;</refmiscinfo>
+</refmeta>
+
+<refnamediv>
+	<refname>vfs_preopen</refname>
+	<refpurpose>Hide read latencies for applications reading numbered files</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<cmdsynopsis>
+		<command>vfs objects = preopen</command>
+	</cmdsynopsis>
+</refsynopsisdiv>
+
+<refsect1>
+	<title>DESCRIPTION</title>
+
+	<para>This VFS module is part of the
+	<citerefentry><refentrytitle>samba</refentrytitle>
+	<manvolnum>7</manvolnum></citerefentry> suite.</para>
+
+	<para>This module assists applications that want to read numbered
+	files in sequence with very strict latency requirements. One area
+	where this happens in video streaming applications that want to read
+	one file per frame.</para>
+
+	<para>When you use this module, a number of helper processes is
+	started that speculatively open files and read a number of bytes to
+	prime the file system cache, so that later on when the real
+	application's request comes along, no disk access is necessary.</para>
+
+	<para>This module is stackable.</para>
+
+</refsect1>
+
+
+<refsect1>
+	<title>OPTIONS</title>
+
+	<variablelist>
+
+		<varlistentry>
+		<term>preopen:posix-basic-regex = BOOL (default: no)</term>
+		<listitem>
+		<para>
+		<command>preopen:posix-basic-regex = yes</command> changes
+		the meaning of the <command>preopen:names</command> option.
+		Further details are described there.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:names = /pattern1/pattern2/</term>
+		<listitem>
+		<para>
+		preopen:names specifies the file name pattern(s) which should
+		trigger the preopen helpers to do their work. We assume that
+		the files are numbered incrementally. So if your file names
+		are numbered FRAME00000.frm FRAME00001.frm and so on you would
+		list them as <command>preopen:names=/FRAME*.frm/</command>.
+		The default algorithm uses the first (at least 3) digits it finds
+		in order to calculate the name of the next frames.
+		</para>
+
+		<para><command>preopen:posix-basic-regex = yes</command> changes
+		the meaning of the <command>preopen:names</command> option.
+		It means 'POSIX Basic Regular Expression' strings are used
+		as patterns. The key is each pattern requires exactly one
+		'subexpression' starting with '\(' and ending with '\)' in
+		order to specify the position of the digits representing
+		the incrementing frame numbers. Given a file names like
+		Movie7599Frame0v1234.txt, Movie7599Frame1v1234.txt, Movie7599Frame2v1234.txt
+		up to Movie7599Frame9v1234.txt you can use <command>preopen:names = /.*Frame\([0-9]\).*\.txt/</command>
+		in order to match just a single digits, this might not be a real world example,
+		but it shows the flexibility that is possible here.
+		</para>
+
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:num_bytes = BYTES</term>
+		<listitem>
+		<para>
+		Specifies the number of bytes the helpers should speculatively
+		read, defaults to 1.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:helpers = NUM-PROCS</term>
+		<listitem>
+		<para>
+		Number of forked helper processes, defaults to 1.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:queuelen = NUM-FILES</term>
+		<listitem>
+		<para>
+		Number of files that should be speculatively opened. Defaults
+		to the 10 subsequent files.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:nomatch_log_level = LOGLEVEL</term>
+		<listitem>
+		<para>
+		In order to debug or audit the usage of the preopen logic
+		you can use this option to specify at what log level details
+		about filenames not matching any pattern from '<command>preopen:names</command>'
+		are logged.
+		</para>
+		<para>
+		Defaults to the log level 5.
+		See also <citerefentry><refentrytitle>smb.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+		in the '<smbconfoption name="log level"/>' section
+		for special handling of the 'preopen' debug class.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:match_log_level = LOGLEVEL</term>
+		<listitem>
+		<para>
+		In order to debug or audit the usage of the preopen logic
+		you can use this option to specify at what log level details
+		about filenames actually matching a pattern from '<command>preopen:names</command>'
+		are logged.
+		</para>
+		<para>
+		See also '<command>preopen:founddigits_log_level</command>' and '<command>preopen:push_log_level</command>'.
+		</para>
+		<para>
+		Defaults to the log level 5.
+		See also <citerefentry><refentrytitle>smb.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+		in the '<smbconfoption name="log level"/>' section
+		for special handling of the 'preopen' debug class.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:nodigits_log_level = LOGLEVEL</term>
+		<listitem>
+		<para>
+		In order to debug or audit problems with the preopen configuration
+		you can use this option to specify at what log level details
+		about filenames actually matching a pattern from '<command>preopen:names</command>',
+		but at the same time don't contain the expected digits, are logged.
+		This is typically something the administrator wants to notice and
+		adjust the configuration in order to define more precisely where to
+		find the digits in the filename.
+		</para>
+		<para>
+		Defaults to the log level 1.
+		See also <citerefentry><refentrytitle>smb.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+		in the '<smbconfoption name="log level"/>' section
+		for special handling of the 'preopen' debug class.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:founddigits_log_level = LOGLEVEL</term>
+		<listitem>
+		<para>
+		In order to debug or audit the usage of the preopen logic
+		you can use this option to specify at what log level details
+		about filenames actually matching a pattern from '<command>preopen:names</command>',
+		and at the same time having valid expected digits, are logged. This means enough information is available
+		in order to queue preopens.
+		</para>
+		<para>
+		Defaults to the log level 3.
+		See also <citerefentry><refentrytitle>smb.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+		in the '<smbconfoption name="log level"/>' section
+		for special handling of the 'preopen' debug class.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:reset_log_level = LOGLEVEL</term>
+		<listitem>
+		<para>
+		If a matching filename belongs to a different pattern from '<command>preopen:names</command>',
+		a different parent directory or differs in a significant way from the last filename
+		that was found before, the module needs to reset it's internal queue state.
+		This means that no more preopens will be pushed to helper processes belonging to the
+		former queue state. In order to debug or audit such queue resets you can use this option to specify at what
+		log level details are logged.
+		</para>
+		<para>
+		Defaults to the log level 5.
+		See also <citerefentry><refentrytitle>smb.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+		in the '<smbconfoption name="log level"/>' section
+		for special handling of the 'preopen' debug class.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:push_log_level = LOGLEVEL</term>
+		<listitem>
+		<para>
+		In order to debug or audit the usage of the preopen logic
+		you can use this option to specify at what log level details
+		about filenames actually pushed to preopen helper processes are logged.
+		This means they will actually be preopened soon.
+		</para>
+		<para>
+		Defaults to the log level 3.
+		See also <citerefentry><refentrytitle>smb.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+		in the '<smbconfoption name="log level"/>' section
+		for special handling of the 'preopen' debug class.
+		</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>preopen:queue_log_level = LOGLEVEL</term>
+		<listitem>
+		<para>
+		In order to debug details about internal queue processing
+		you can use this option to specify at what log level the details are logged.
+		</para>
+		<para>
+		Defaults to the log level 10.
+		See also <citerefentry><refentrytitle>smb.conf</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+		in the '<smbconfoption name="log level"/>' section
+		for special handling of the 'preopen' debug class.
+		</para>
+		</listitem>
+		</varlistentry>
+
+	</variablelist>
+</refsect1>
+
+<refsect1>
+	<title>VERSION</title>
+	<para>This man page is part of version &doc.version; of the Samba suite.
+	</para>
+</refsect1>
+
+<refsect1>
+	<title>AUTHOR</title>
+
+	<para>The original Samba software and related utilities
+	were created by Andrew Tridgell. Samba is now developed
+	by the Samba Team as an Open Source project similar
+	to the way the Linux kernel is developed.</para>
+
+	<para>The PREOPEN VFS module was created with contributions from
+	Volker Lendecke and the developers at IBM.
+	</para>
+</refsect1>
+
+</refentry>

@@ -1,0 +1,431 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE refentry PUBLIC "-//Samba-Team//DTD DocBook V4.2-Based Variant V1.0//EN" "http://www.samba.org/samba/DTD/samba-doc">
+<refentry id="smbstatus.1">
+
+<refmeta>
+	<refentrytitle>smbstatus</refentrytitle>
+	<manvolnum>1</manvolnum>
+	<refmiscinfo class="source">Samba</refmiscinfo>
+	<refmiscinfo class="manual">User Commands</refmiscinfo>
+	<refmiscinfo class="version">&doc.version;</refmiscinfo>
+</refmeta>
+
+
+<refnamediv>
+	<refname>smbstatus</refname>
+	<refpurpose>report on current Samba connections</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<cmdsynopsis>
+		<command>smbstatus</command>
+		<arg choice="opt">-p|--processes</arg>
+		<arg choice="opt">-v|--verbose</arg>
+		<arg choice="opt">-L|--locks</arg>
+		<arg choice="opt">-S|--shares</arg>
+		<arg choice="opt">-N|--notify</arg>
+		<arg choice="opt">-u|--user=STRING</arg>
+		<arg choice="opt">-b|--brief</arg>
+		<arg choice="opt">-P|--profile</arg>
+		<arg choice="opt">-R|--profile-rates</arg>
+		<arg choice="opt">-B|--byterange</arg>
+		<arg choice="opt">-n|--numeric</arg>
+		<arg choice="opt">-f|--fast</arg>
+		<arg choice="opt">-j|--json</arg>
+		<arg choice="opt">--resolve-uids</arg>
+		<arg choice="opt">-?|--help</arg>
+		<arg choice="opt">--usage</arg>
+		<arg choice="opt">-d|--debuglevel=DEBUGLEVEL</arg>
+		<arg choice="opt">--debug-stdout</arg>
+		<arg choice="opt">--configfile=CONFIGFILE</arg>
+		<arg choice="opt">--option=name=value</arg>
+		<arg choice="opt">-l|--log-basename=LOGFILEBASE</arg>
+		<arg choice="opt">--leak-report</arg>
+		<arg choice="opt">--leak-report-full</arg>
+	</cmdsynopsis>
+</refsynopsisdiv>
+
+<refsect1>
+	<title>DESCRIPTION</title>
+
+	<para>This tool is part of the <citerefentry><refentrytitle>samba</refentrytitle>
+	<manvolnum>7</manvolnum></citerefentry> suite.</para>
+
+	<para><command>smbstatus</command> is a very simple program to 
+	list the current Samba connections.</para>
+</refsect1>
+
+<refsect1>
+	<title>OPTIONS</title>
+
+	<variablelist>
+		<varlistentry>
+		<term>-P|--profile</term>
+		<listitem><para>If samba has been compiled with the
+		profiling option, print only the contents of the profiling
+		shared memory area.</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-R|--profile-rates</term>
+		<listitem><para>If samba has been compiled with the
+		profiling option, print the contents of the profiling
+		shared memory area and the call rates.</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-b|--brief</term>
+		<listitem><para>gives brief output.</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-v|--verbose</term>
+		<listitem><para>gives verbose output.</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-L|--locks</term>
+		<listitem><para>causes smbstatus to only list locks.</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-B|--byterange</term>
+		<listitem><para>causes smbstatus to include byte range locks.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-p|--processes</term>
+		<listitem><para>print a list of <citerefentry><refentrytitle>smbd</refentrytitle>
+		<manvolnum>8</manvolnum></citerefentry> processes and exit. 
+		Useful for scripting.</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-S|--shares</term>
+		<listitem><para>causes smbstatus to only list shares.</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-N|--notify</term>
+		<listitem><para>causes smbstatus to display registered file
+		notifications</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-f|--fast</term>
+		<listitem><para>causes smbstatus to not check if the status data
+		is valid by checking if the processes that the status data refer to all still
+		exist. This speeds up execution on busy systems and clusters but
+		might display stale data of processes that died without cleaning up properly.</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-u|--user=&lt;username&gt;</term>
+		<listitem><para>selects information relevant to <parameter>username</parameter> only.</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-n|--numeric</term>
+		<listitem><para>causes smbstatus to display numeric UIDs and GIDs instead of
+				resolving them to names.</para>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>-j|--json</term>
+		<listitem><para>Output more detailed information in JSON format instead
+				of human readable.
+				The output has the following format:
+				<programlisting>
+{
+  "timestamp": "2022-04-15T18:25:15.364891+0200",
+  "version": "4.17.0pre1-GIT-a0f12b9c80b",
+  "smb_conf": "/opt/samba/etc/smb.conf",
+  "sessions": {
+    "3639217376": {
+      "session_id": "3639217376",
+      "server_id": {
+        "pid": "69650",
+        "task_id": "0",
+        "vnn": "4294967295",
+        "unique_id": "10756714984493602300"
+      },
+      "uid": 1000,
+      "gid": 1000,
+      "username": "johndoe",
+      "groupname": "johndoe",
+      "remote_machine": "127.0.0.1",
+      "hostname": "ipv4:127.0.0.1:59944",
+      "session_dialect": "SMB3_11",
+      "encryption": {
+        "cipher": "",
+        "degree": "none"
+      },
+      "signing": {
+        "cipher": "AES-128-GMAC",
+        "degree": "partial"
+      }
+    }
+  },
+  "tcons": {
+    "3813255619": {
+      "service": "sharename",
+      "server_id": {
+        "pid": "69650",
+        "task_id": "0",
+        "vnn": "4294967295",
+        "unique_id": "10756714984493602300"
+      },
+      "tcon_id": "3813255619",
+      "session_id": "3639217376",
+      "machine": "127.0.0.1",
+      "connected_at": "2022-04-15T17:30:37+0200",
+      "encryption": {
+        "cipher": "AES-128-GMAC",
+        "degree": "full"
+      },
+      "signing": {
+        "cipher": "",
+        "degree": "none"
+      }
+    }
+  },
+  "open_files": {
+    "/home/johndoe/testfolder/sample": {
+      "service_path": "/home/johndoe/testfolder",
+      "filename": "sample",
+      "fileid": {
+        "devid": 59,
+        "inode": 11404245,
+        "extid": 0
+      },
+      "num_pending_deletes": 0,
+      "opens": {
+        "56839/2": {
+          "server_id": {
+            "pid": "69650",
+            "task_id": "0",
+            "vnn": "4294967295",
+            "unique_id": "10756714984493602300"
+          },
+          "uid": 1000,
+          "share_file_id": 2,
+          "sharemode": {
+            "hex": "0x00000003",
+            "NONE": false,
+            "READ": true,
+            "WRITE": true,
+            "DELETE": false,
+            "text": "RW"
+          },
+          "access_mask": {
+            "hex": "0x00000003",
+            "READ_DATA": true,
+            "WRITE_DATA": true,
+            "APPEND_DATA": false,
+            "READ_EA": false,
+            "WRITE_EA": false,
+            "EXECUTE": false,
+            "READ_ATTRIBUTES": false,
+            "WRITE_ATTRIBUTES": false,
+            "DELETE_CHILD": false,
+            "DELETE": false,
+            "READ_CONTROL": false,
+            "WRITE_DAC": false,
+            "SYNCHRONIZE": false,
+            "ACCESS_SYSTEM_SECURITY": false,
+            "text": "RW"
+          },
+          "caching": {
+            "READ": false,
+            "WRITE": false,
+            "HANDLE": false,
+            "hex": "0x00000000",
+            "text": ""
+          },
+          "oplock": {},
+          "lease": {},
+          "opened_at": "2022-04-15T17:30:38+0200"
+        }
+      }
+    }
+  }
+}
+</programlisting> </para>
+
+			<para>If oplocks are used:
+				<programlisting>
+          "oplock": {
+            "EXCLUSIVE": false,
+            "BATCH": false,
+            "LEVEL_II": true,
+            "LEASE": false,
+            "text": "LEVEL_II"
+          }
+</programlisting> </para>
+
+			<para>If leases are used:
+
+				<programlisting>
+          "lease": {
+            "lease_key": "29316055-f55c-de10-c813-af7bf5a430bb",
+            "hex": "0x00000005",
+            "READ": true,
+            "WRITE": true,
+            "HANDLE": false,
+            "text": "RW"
+          }
+</programlisting> </para>
+
+			<para>With byte-range locks (-B, --byterange):
+				<programlisting>
+  "byte_range_locks": {
+    "/home/johndoe/testfolder/sample": {
+      "fileid": {
+        "devid": 59,
+        "inode": 11404245,
+        "extid": 0
+      },
+      "file_name": "sample",
+      "share_path": "/home/johndoe/testfolder",
+      "locks": [
+        {
+          "server_id": {
+            "pid": "69650",
+            "task_id": "0",
+            "vnn": "4294967295",
+            "unique_id": "10756714984493602300"
+          },
+          "type": "R",
+          "flavour": "Posix",
+          "start": 0,
+          "size": 16
+        }
+      ]
+    }
+</programlisting> </para>
+
+			<para> With notifies (-N, --notify):
+				<programlisting>
+  "notify": {
+    "77247": {
+      "server_id": {
+        "pid": "69650",
+        "task_id": "0",
+        "vnn": "4294967295",
+        "unique_id": "10756714984493602300"
+      },
+      "path": "/home/johndoe/testfolder/testdir",
+      "filter": 4095,
+      "subdir_filter": 4095,
+      "creation_time": "1970-01-01T01:00:14.326582+01:00"
+    }
+  }
+</programlisting> </para>
+
+			<para> For profiling (-P, --profile):
+				<programlisting>
+{
+  "timestamp": "2022-04-15T18:40:43.112216+0200",
+  "version": "4.17.0pre1-GIT-a0f12b9c80b",
+  "smb_conf": "/opt/samba/etc/smb.conf",
+  "SMBD loop": {
+    "connect": {
+      "count": 2
+    },
+    "disconnect": {
+      "count": 1
+    },
+    ...
+  },
+  "System Calls": {
+    "syscall_opendir": {
+      "count": 0,
+      "time": 0
+    },
+    ...
+  },
+  "ACL Calls": {
+    "get_nt_acl": {
+      "count": 0,
+      "time": 0
+    },
+    ...
+  },
+  "Stat Cache": {
+    "statcache_lookups": {
+      "count": 2
+    },
+    ...
+  },
+  "SMB Calls": {
+    "SMBmkdir": {
+      "count": 0,
+      "time": 0
+    },
+    ...
+  },
+  "Trans2 Calls": {
+    "Trans2_open": {
+      "count": 0,
+      "time": 0
+    },
+    ...
+  },
+  "NT Transact Calls": {
+    "NT_transact_create": {
+      "count": 0,
+      "time": 0
+    },
+    ...
+  },
+  "SMB2 Calls": {
+    "smb2_negprot": {
+      "count": 2,
+      "time": 3060,
+      "idle": 0,
+      "inbytes": 452,
+      "outbytes": 568
+    },
+    ...
+  }
+}
+</programlisting> </para>
+		</listitem>
+		</varlistentry>
+
+		&popt.autohelp;
+		&cmdline.common.samba.client;
+	</variablelist>
+</refsect1>
+
+<refsect1>
+	<title>VERSION</title>
+
+	<para>This man page is part of version &doc.version; of
+	the Samba suite.</para>
+</refsect1>
+
+<refsect1>
+	<title>SEE ALSO</title>
+	<para><citerefentry><refentrytitle>smbd</refentrytitle>
+	<manvolnum>8</manvolnum></citerefentry> and <citerefentry><refentrytitle>smb.conf</refentrytitle>
+	<manvolnum>5</manvolnum></citerefentry>.</para>
+</refsect1>
+
+<refsect1>
+	<title>AUTHOR</title>
+	
+	<para>The original Samba software and related utilities 
+	were created by Andrew Tridgell. Samba is now developed
+	by the Samba Team as an Open Source project similar 
+	to the way the Linux kernel is developed.</para>
+</refsect1>
+
+</refentry>

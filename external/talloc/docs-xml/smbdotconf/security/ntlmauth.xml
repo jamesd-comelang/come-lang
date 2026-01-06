@@ -1,0 +1,87 @@
+<samba:parameter name="ntlm auth"
+                 context="G"
+                 type="enum"
+                 enumlist="enum_ntlm_auth"
+                 xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
+<description>
+    <para>This parameter determines whether or not <citerefentry><refentrytitle>smbd</refentrytitle>
+    <manvolnum>8</manvolnum></citerefentry> will attempt to
+    authenticate users using the NTLM encrypted password response for
+    this local passdb (SAM or account database). </para>
+
+    <para>If disabled, both NTLM and LanMan authentication against the
+    local passdb is disabled.</para>
+
+    <para>Note that these settings apply only to local users,
+    authentication will still be forwarded to and NTLM authentication
+    accepted against any domain we are joined to, and any trusted
+    domain, even if disabled or if NTLMv2-only is enforced here.  To
+    control NTLM authentication for domain users, this option must
+    be configured on each DC.</para>
+
+    <para>By default with <command moreinfo="none">ntlm auth</command> set to
+    <constant>ntlmv2-only</constant> only NTLMv2 logins will be
+    permitted.  All modern clients support NTLMv2 by default, but some older
+    clients will require special configuration to use it.</para>
+
+    <para>The primary user of NTLMv1 is MSCHAPv2 for VPNs and 802.1x.</para>
+
+    <para>The available settings are:</para>
+
+    <itemizedlist>
+        <listitem>
+          <para><constant>ntlmv1-permitted</constant>
+	  (alias <constant>yes</constant>) - Allow NTLMv1 and above for all clients.</para>
+
+	  <para>This is the required setting to enable the <parameter
+	  moreinfo="none">lanman auth</parameter> parameter.</para>
+
+        </listitem>
+
+        <listitem>
+          <para><constant>ntlmv2-only</constant>
+	  (alias <constant>no</constant>) - Do not allow NTLMv1 to be used,
+	  but permit NTLMv2.</para>
+        </listitem>
+
+        <listitem>
+            <para><constant>mschapv2-and-ntlmv2-only</constant> - Only
+            allow NTLMv1 when the client promises that it is providing
+            MSCHAPv2 authentication (such as the <command
+            moreinfo="none">ntlm_auth</command> tool).</para>
+        </listitem>
+
+        <listitem>
+          <para><constant>disabled</constant> - Do not accept NTLM (or
+          LanMan) authentication of any level, nor permit
+          NTLM password changes.</para>
+
+	  <para><emphasis>WARNING:</emphasis> Both Microsoft Windows
+	  and Samba <emphasis>Read Only Domain Controllers</emphasis>
+	  (RODCs) convert a plain-text LDAP Simple Bind into an NTLMv2
+	  authentication to forward to a full DC.  Setting this option
+	  to <constant>disabled</constant> will cause these forwarded
+	  authentications to fail.</para>
+
+	  <para>Additionally, for Samba acting as an Active Directory
+	  Domain Controller, for user accounts, if <parameter moreinfo="none">nt hash store</parameter>
+	  is set to the default setting of <constant>auto</constant>,
+	  the <emphasis>NT hash will not be stored</emphasis>
+	  in the sam.ldb database for new users and after a
+	  password change.</para>
+
+        </listitem>
+
+    </itemizedlist>
+
+    <para>The default changed from <constant>yes</constant> to
+    <constant>no</constant> with Samba 4.5. The default changed again
+    to <constant>ntlmv2-only</constant> with Samba 4.7, however the
+    behaviour is unchanged.</para>
+</description>
+
+<related>nt hash store</related>
+<related>lanman auth</related>
+<related>raw NTLMv2 auth</related>
+<value type="default">ntlmv2-only</value>
+</samba:parameter>

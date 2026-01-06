@@ -1,0 +1,20 @@
+# Opening O_RDONLY screws kernel oplocks which is not a problem
+# as only Linux has kernel oplocks and as Linux has O_PATH, we
+# don't need O_RDONLY in the first place.
+^samba3.smb2.kernel-oplocks.*
+^samba3.smbtorture_s3.plain.OPLOCK5.*
+#
+# These fail because become_root() doesn't work in make test
+^samba3.blackbox.dropbox.*
+^samba3.raw.samba3hide.*
+
+# samba.tests.smb1posix.samba.tests.smb1posix.Smb1PosixTests.test_mknod
+# creates a socket and posix stat() gives an error because opening the
+# socket from filename_covert_dirfsp() returns ENXIO. With O_PATH
+# available this works fine. So for now restrict testing posix
+# extensions to environments where we have O_PATH around
+^samba.tests.smb1posix
+
+# These don't work without /proc/fd support
+^samba3.blackbox.shadow_copy_torture.*\(fileserver\)
+^samba3.blackbox.virus_scanner.*\(fileserver:local\)

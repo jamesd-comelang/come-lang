@@ -1,0 +1,188 @@
+<samba:parameter name="log level"
+                 type="string"
+                 context="G"
+                 handler="handle_debug_list"
+                 substitution="1"
+                 xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
+<synonym>debuglevel</synonym>
+<description>
+    <para>
+    The value of the parameter (a string) allows the debug level (logging level) to be specified in the
+    <filename moreinfo="none">smb.conf</filename> file. 
+    </para>
+
+    <para>This parameter has been extended since the 2.2.x 
+    series, now it allows one to specify the debug level for multiple 
+    debug classes and distinct logfiles for debug classes. This is to give
+    greater flexibility in the configuration of the system. The following
+    debug classes are currently implemented:
+    </para>
+
+    <itemizedlist>
+	<listitem><para><parameter moreinfo="none">all</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">tdb</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">printdrivers</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">lanman</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">smb</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">rpc_parse</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">rpc_srv</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">rpc_cli</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">passdb</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">sam</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">auth</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">winbind</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">vfs</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">idmap</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">quota</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">acls</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">locking</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">msdfs</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dmapi</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">registry</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">scavenger</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dns</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">ldb</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">tevent</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">auth_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">auth_json_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">kerberos</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">drs_repl</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">smb2</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">smb2_credits</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_json_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_password_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_password_json_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_transaction_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_transaction_json_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_group_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dsdb_group_json_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">ldapsrv</parameter></para></listitem>
+    </itemizedlist>
+
+    <para>Various modules register dynamic debug classes at first usage:</para>
+    <itemizedlist>
+	<listitem><para><parameter moreinfo="none">catia</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">dfs_samba4</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">extd_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">fileid</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">fruit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">full_audit</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">media_harmony</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">preopen</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">recycle</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">shadow_copy</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">shadow_copy</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">unityed_media</parameter></para></listitem>
+	<listitem><para><parameter moreinfo="none">virusfilter</parameter></para></listitem>
+    </itemizedlist>
+
+    <para>To configure the logging for specific classes to go into a different
+    file then <smbconfoption name="log file"/>, you can append
+    <emphasis>@PATH</emphasis> to the class, eg <parameter>log level = 1
+    full_audit:1@/var/log/audit.log</parameter>.</para>
+
+    <para>Authentication and authorization audit information is logged
+    under the <parameter>auth_audit</parameter>, and if Samba was not compiled with
+    --without-json, a JSON representation is logged under
+    <parameter>auth_json_audit</parameter>.</para>
+
+    <para>Support is comprehensive for all authentication and authorisation
+    of user accounts in the Samba Active Directory Domain Controller,
+    as well as the implicit authentication in password changes.  In
+    the file server, NTLM authentication, SMB and RPC authorization is
+    covered.</para>
+
+    <para>Log levels for <parameter>auth_audit</parameter> and
+    <parameter>auth_audit_json</parameter> are:</para>
+    <itemizedlist>
+	<listitem><para>2: Authentication Failure</para></listitem>
+	<listitem><para>3: Authentication Success</para></listitem>
+	<listitem><para>4: Authorization Success</para></listitem>
+	<listitem><para>5: Anonymous Authentication and Authorization Success</para></listitem>
+    </itemizedlist>
+
+    <para>Changes to the AD DC <command moreinfo="none">sam.ldb</command>
+    database are logged under the <parameter>dsdb_audit</parameter>
+    and a JSON representation is logged under
+    <parameter>dsdb_json_audit</parameter>.</para>
+
+    <para>Group membership changes to the AD DC <command
+    moreinfo="none">sam.ldb</command> database are logged under the
+    <parameter>dsdb_group_audit</parameter> and a JSON representation
+    is logged under
+    <parameter>dsdb_group_json_audit</parameter>.</para>
+
+    <para>Log levels for <parameter>dsdb_audit</parameter>,
+    <parameter>dsdb_json_audit</parameter>,
+    <parameter>dsdb_group_audit</parameter>,
+    <parameter>dsdb_group_json_audit</parameter> and
+    <parameter>dsdb_json_audit</parameter> are:</para>
+    <itemizedlist>
+	<listitem><para>5: Database modifications</para></listitem>
+	<listitem><para>5: Replicated updates from another DC</para></listitem>
+    </itemizedlist>
+
+    <para>In the AD DC, password changes, password resets, and certain
+    authentication related attribute changes are logged under
+    <parameter>dsdb_password_audit</parameter> and a JSON
+    representation is logged under the
+    <parameter>dsdb_password_json_audit</parameter>. Password changes
+    will also appears as authentication events via
+    <parameter>auth_audit</parameter> and
+    <parameter>auth_audit_json</parameter>.</para>
+
+    <para>Log levels for <parameter>dsdb_password_audit</parameter> and
+    <parameter>dsdb_password_json_audit</parameter> are:</para>
+    <itemizedlist>
+	<listitem><para>5: Successful password changes and resets, and
+	authentication related attribute changes.</para></listitem>
+    </itemizedlist>
+
+    <para>Changes to the following attributes are logged:</para>
+    <itemizedlist>
+	<listitem><para>altSecurityIdentities</para></listitem>
+	<listitem><para>dNSHostName</para></listitem>
+	<listitem><para>msDS-AdditionalDnsHostName</para></listitem>
+	<listitem><para>msDS-KeyCredentialLink</para></listitem>
+	<listitem><para>servicePrincipalName</para></listitem>
+    </itemizedlist>
+    <para>In the <parameter>dsdb_password_json_audit</parameter> log
+    these are given the value "Auth info change" in the "action"
+    field. Password changes and resets have the value "change" and
+    "reset" in this field, respectively.</para>
+
+
+    <para>Transaction rollbacks and prepare commit failures are logged under
+    the <parameter>dsdb_transaction_audit</parameter> and a JSON representation is logged under the
+    <parameter>dsdb_transaction_json_audit</parameter>. </para>
+
+    <para>Log levels for <parameter>dsdb_transaction_audit</parameter> and
+    <parameter>dsdb_transaction_json</parameter> are:</para>
+
+    <itemizedlist>
+	<listitem><para>5: Transaction failure (rollback)</para></listitem>
+	<listitem><para>10: Transaction success (commit)</para></listitem>
+    </itemizedlist>
+
+    <para>Transaction roll-backs are possible in Samba, and whilst
+    they rarely reflect anything more than the failure of an
+    individual operation (say due to the add of a conflicting record),
+    they are possible.  Audit logs are already generated and sent to
+    the system logs before the transaction is complete.  Logging the
+    transaction details allows the identification of password and
+    <command moreinfo="none">sam.ldb</command> operations that have
+    been rolled back, and so have not actually persisted.</para>
+
+    <warning><para> Changes to <command
+    moreinfo="none">sam.ldb</command> made locally by the <command
+    moreinfo="none">root</command> user with direct access to the
+    database are not logged to the system logs, but to the
+    administrator's own console.  While less than ideal, any user able
+    to make such modifications could disable the audit logging in any
+    case. </para></warning>
+</description>
+<value type="default">0</value>
+<value type="example">3 passdb:5 auth:10 winbind:2</value>
+<value type="example">1 full_audit:1@/var/log/audit.log winbind:2</value>
+</samba:parameter>

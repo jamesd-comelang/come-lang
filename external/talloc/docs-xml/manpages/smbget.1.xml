@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE refentry PUBLIC "-//Samba-Team//DTD DocBook V4.2-Based Variant V1.0//EN" "http://www.samba.org/samba/DTD/samba-doc">
+<refentry id="smbget.1">
+
+<refmeta>
+	<refentrytitle>smbget</refentrytitle>
+	<manvolnum>1</manvolnum>
+	<refmiscinfo class="source">Samba</refmiscinfo>
+	<refmiscinfo class="manual">User Commands</refmiscinfo>
+	<refmiscinfo class="version">&doc.version;</refmiscinfo>
+</refmeta>
+
+
+<refnamediv>
+	<refname>smbget</refname>
+	<refpurpose>wget-like utility for download files over SMB</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<cmdsynopsis>
+		<command>smbget</command>
+		<arg choice="opt">-a, --guest</arg>
+		<arg choice="opt">-r, --resume</arg>
+		<arg choice="opt">--recursive</arg>
+		<arg choice="opt">-D, --dots</arg>
+		<arg choice="opt">-o, --outputfile</arg>
+		<arg choice="opt">-q, --quiet</arg>
+		<arg choice="opt">-v, --verbose</arg>
+		<arg choice="opt">-b, --blocksize</arg>
+		<arg choice="opt">-O, --stdout</arg>
+		<arg choice="opt">-u, --update</arg>
+		<arg choice="opt">-e, --encrypt</arg>
+		<arg choice="opt">--limit-rate=INT</arg>
+		<arg choice="opt">-?|--help</arg>
+		<arg choice="opt">--usage</arg>
+		<arg choice="opt">-d|--debuglevel=DEBUGLEVEL</arg>
+		<arg choice="opt">--debug-stdout</arg>
+		<arg choice="opt">-s|--configfile=CONFIGFILE</arg>
+		<arg choice="opt">--option=name=value</arg>
+		<arg choice="opt">-l|--log-basename=LOGFILEBASE</arg>
+		<arg choice="opt">--leak-report</arg>
+		<arg choice="opt">--leak-report-full</arg>
+		<arg choice="opt">-R|--name-resolve=NAME-RESOLVE-ORDER</arg>
+		<arg choice="opt">-O|--socket-options=SOCKETOPTIONS</arg>
+		<arg choice="opt">-m|--max-protocol=MAXPROTOCOL</arg>
+		<arg choice="opt">-n|--netbiosname=NETBIOSNAME</arg>
+		<arg choice="opt">--netbios-scope=SCOPE</arg>
+		<arg choice="opt">-W|--workgroup=WORKGROUP</arg>
+		<arg choice="opt">--realm=REALM</arg>
+		<arg choice="opt">-U|--user=[DOMAIN/]USERNAME%[PASSWORD]</arg>
+		<arg choice="opt">-N|--no-pass</arg>
+		<arg choice="opt">--password=STRING</arg>
+		<arg choice="opt">--pw-nt-hash</arg>
+		<arg choice="opt">-A|--authentication-file=FILE</arg>
+		<arg choice="opt">-P|--machine-pass</arg>
+		<arg choice="opt">--simple-bind-dn=DN</arg>
+		<arg choice="opt">--use-kerberos=desired|required|off</arg>
+		<arg choice="opt">--use-krb5-ccache=CCACHE</arg>
+		<arg choice="opt">--use-winbind-ccache</arg>
+		<arg choice="opt">--client-protection=sign|encrypt|off</arg>
+		<arg choice="opt">-V|--version</arg>
+		<arg choice="req">smb://host/share/path/to/file</arg>
+		<arg choice="opt">smb://url2/</arg>
+		<arg choice="opt">...</arg>
+	</cmdsynopsis>
+</refsynopsisdiv>
+
+<refsect1>
+	<title>DESCRIPTION</title>
+
+	<para>This tool is part of the <citerefentry><refentrytitle>samba</refentrytitle>
+	<manvolnum>7</manvolnum></citerefentry> suite.</para>
+
+	<para>smbget is a simple utility with wget-like semantics, that can download files from SMB servers. You can specify the files you would like to download on the command-line.
+	</para>
+
+	<para>
+		The files should be in the smb-URL standard, e.g. use smb://host/share/file
+		for the UNC path <emphasis>\\\\HOST\\SHARE\\file</emphasis>.
+	</para>
+</refsect1>
+
+<refsect1>
+	<title>OPTIONS</title>
+
+	<varlistentry>
+		<term>-a, --guest</term>
+		<listitem><para>Work as user guest</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>-r, --resume</term>
+		<listitem><para>Automatically resume aborted files</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>--recursive</term>
+		<listitem><para>Recursively download files</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>-D, --dots</term>
+		<listitem><para>Show dots as progress indication</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>-o, --outputfile</term>
+		<listitem><para>Write the file that is being downloaded to the specified file. Can not be used together with -R.</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>--stdout</term>
+		<listitem><para>Write the file that is being downloaded to standard output.</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>-q, --quiet</term>
+		<listitem><para>Be quiet</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>-v, --verbose</term>
+		<listitem><para>Be verbose</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>-b, --blocksize</term>
+		<listitem><para>Number of bytes to download in a block. Defaults to 64000.</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+		<term>-u, --update</term>
+		<listitem><para>Download only when remote file is newer than local file or local file is missing.</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+        <term>-e, --encrypt</term>
+		<listitem><para>Enable SMB encryption.</para></listitem>
+	</varlistentry>
+
+	<varlistentry>
+        <term>--limit-rate=INT</term>
+		<listitem><para>Limit download rate by this many KB/s.</para></listitem>
+	</varlistentry>
+
+		&popt.autohelp;
+		&cmdline.common.samba.client;
+		&cmdline.common.connection;
+		&cmdline.common.credentials;
+</refsect1>
+
+<refsect1>
+	<title>SMB URLS</title>
+
+	<para> SMB URL's should be specified in the following format:</para>
+
+	<para><programlisting>
+smb://[[[domain;]user[:password@]]server[/share[/path[/file]]]]
+</programlisting></para>
+
+<para><programlisting>
+smb:// means all the workgroups
+</programlisting></para>
+
+<para><programlisting>
+smb://name/ means, if <replaceable>name</replaceable> is a workgroup, all the servers in this workgroup, or if <replaceable>name</replaceable> is a server, all the shares on this server.
+</programlisting></para>
+
+</refsect1>
+
+<refsect1>
+	<title>EXAMPLES</title>
+
+<programlisting>
+# Recursively download 'src' directory
+smbget --recursive smb://rhonwyn/jelmer/src
+# Download FreeBSD ISO and enable resuming
+smbget --resume smb://rhonwyn/isos/FreeBSD5.1.iso
+# Recursively download all ISOs
+smbget --recursive --resume smb://rhonwyn/isos
+# Backup my data on rhonwyn
+smbget --recursive -resume smb://rhonwyn/
+</programlisting>
+
+</refsect1>
+
+<refsect1>
+	<title>BUGS</title>
+
+	<para>Permission denied is returned in some cases where the cause of the error is unknown
+(such as an illegally formatted smb:// url or trying to get a directory without --resursive
+turned on).</para>
+</refsect1>
+
+<refsect1>
+	<title>VERSION</title>
+
+	<para>This man page is part of version &doc.version; of
+	the Samba suite.</para>
+</refsect1>
+
+<refsect1>
+	<title>AUTHOR</title>
+
+	<para>The original Samba software and related utilities
+	were created by Andrew Tridgell. Samba is now developed
+	by the Samba Team as an Open Source project similar
+	to the way the Linux kernel is developed.</para>
+
+	<para>The smbget manpage was written by Jelmer Vernooij.</para>
+
+</refsect1>
+
+</refentry>

@@ -1,0 +1,23 @@
+#
+# We expect all the heimdal specific compatibility tests to fail on MIT
+# kerberos
+^samba.tests.krb5.compatability_tests.samba.tests.krb5.compatability_tests.CompatabilityTests.test_heimdal_
+#
+# Differences in our KDC compared to windows
+#
+^samba4.krb5.kdc .*.as-req-pac-request # We should reply to a request for a PAC over UDP with KRB5KRB_ERR_RESPONSE_TOO_BIG unconditionally
+#
+# fl2000dc doesn't support AES
+^samba4.krb5.kdc.*as-req-aes.*fl2000dc
+#
+# MIT does not support password history in order to avoid badPwdCount changes
+# with the last password, see https://bugzilla.samba.org/show_bug.cgi?id=14054
+#
+^samba4.ldap.login_basics.python.*.__main__.BasicUserAuthTests.test_login_basics_krb5
+#
+# MIT does not currently support key trust logons.
+#
+^samba.tests.krb5.key_trust_tests.*
+#
+# MIT does not currently support Windows certificate mappings for PKINIT
+^samba.tests.krb5.pkinit_certificate_mapping_tests.*

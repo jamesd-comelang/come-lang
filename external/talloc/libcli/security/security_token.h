@@ -1,0 +1,74 @@
+/*
+   Unix SMB/CIFS implementation.
+
+   security descriptor utility functions
+
+   Copyright (C) Andrew Tridgell 		2004
+   Copyright (C) Andrew Bartlett 		2010
+   Copyright (C) Stefan Metzmacher 		2005
+
+   This program is free software; you can redistribute it and/or modify
+   it under the terms of the GNU General Public License as published by
+   the Free Software Foundation; either version 3 of the License, or
+   (at your option) any later version.
+
+   This program is distributed in the hope that it will be useful,
+   but WITHOUT ANY WARRANTY; without even the implied warranty of
+   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+   GNU General Public License for more details.
+
+   You should have received a copy of the GNU General Public License
+   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+*/
+
+#ifndef _LIBCLI_SECURITY_SECURITY_TOKEN_H_
+#define _LIBCLI_SECURITY_SECURITY_TOKEN_H_
+
+#include "replace.h"
+#include "lib/util/data_blob.h"
+#include "librpc/gen_ndr/security.h"
+
+#define PRIMARY_USER_SID_INDEX 0
+#define PRIMARY_GROUP_SID_INDEX 1
+#define PRIMARY_SIDS_COUNT 2
+#define REMAINING_SIDS_INDEX 2
+
+/*
+  return a blank security token
+*/
+struct security_token *security_token_initialise(TALLOC_CTX *mem_ctx,
+						 enum claims_evaluation_control evaluate_claims);
+
+struct security_token *security_token_duplicate(TALLOC_CTX *mem_ctx, const struct security_token *src);
+
+/****************************************************************************
+ prints a struct security_token to debug output.
+****************************************************************************/
+void security_token_debug(int dbg_class, int dbg_lev, const struct security_token *token);
+
+bool security_token_is_sid(const struct security_token *token, const struct dom_sid *sid);
+
+bool security_token_is_system(const struct security_token *token);
+
+bool security_token_is_anonymous(const struct security_token *token);
+
+bool security_token_has_sid(const struct security_token *token, const struct dom_sid *sid);
+
+/*
+ * Return any of the domain sids found in the token matching "domain"
+ * in _domain_sid, makes most sense if you just found one.
+ */
+size_t security_token_count_flag_sids(const struct security_token *token,
+				      const struct dom_sid *prefix_sid,
+				      size_t num_flags,
+				      const struct dom_sid **_flag_sid);
+
+bool security_token_has_builtin_guests(const struct security_token *token);
+
+bool security_token_has_builtin_administrators(const struct security_token *token);
+
+bool security_token_has_nt_authenticated_users(const struct security_token *token);
+
+bool security_token_has_enterprise_dcs(const struct security_token *token);
+
+#endif

@@ -1,0 +1,113 @@
+module main
+
+import std
+import string
+alias print = std.out.printf
+
+int main(string args[])
+{
+    string s = "  Hello 世界World  "
+    print("Original: '%s'\n", s)
+
+    // 1. Basic Info
+    print("Size (bytes): %u\n", s.size())
+    print("Len (chars): %u\n", s.len())
+    print("Is ASCII: %t\n", s.isascii())
+
+    // 2. Comparison
+    string other = "  hello world  "
+    if (s.cmp(other) == 0) {
+        print("'%s' and '%s' Equal (case-sensitive)\n", s, other)
+    } else {
+        print("'%s' and '%s' Not equal (case-sensitive)\n", s, other)
+    }
+
+    if (s.casecmp(other) == 0) {
+        print("Equal (case-insensitive)\n")
+    }
+
+    // Partial comparison
+    if (s.cmp(other, 5) == 0) {
+        print("First 5 chars equal\n")
+    }
+
+    // 3. Search
+    print("Find 'World': %ld\n", s.find("World"))
+    print("RFind 'l': %ld\n", s.rfind("l"))
+    print("Count 'l': %u\n", s.count("l"))
+    
+    // Character search
+    print("Chr 'e': %ld\n", s.chr('e'))
+    print("RChr 'l': %ld\n", s.rchr('l'))
+    print("Memchr 'e' in first 10: %ld\n", s.memchr('e', 10))
+
+    // 4. Validation
+    string alpha = "Hello"
+    if (alpha.isalpha()) print("'%s' is alpha\n", alpha)
+    
+    string digits = "12345"
+    if (digits.isdigit()) print("'%s' is digit\n", digits)
+    
+    string alnum = "H3ll0"
+    if (alnum.isalnum()) print("'%s' is alnum\n", alnum)
+    
+    string space = " \t\n"
+    if (space.isspace()) print("'%s' is space\n", space)
+
+    // 5. Transformation
+    print("Upper: '%s'\n", s.upper())
+    print("Lower: '%s'\n", s.lower())
+    print("Repeated: '%s'\n", "Go".repeat(3))
+    print("Replaced: '%s'\n", s.replace("World", "COME"))
+    print("Replaced (max 1): '%s'\n", s.replace("l", "L", 1))
+
+    // 6. Trimming
+    string trimmed = s.trim()
+    print("Trimmed: '%s'\n", trimmed)
+    print("LTrimmed: '%s'\n", s.ltrim())
+    print("RTrimmed: '%s'\n", s.rtrim())
+    
+    string custom_trim = "__Hello__"
+    print("Custom Trim: '%s'\n", custom_trim.trim("_"))
+
+    // 7. Substring
+    // "  Hello World  " -> index 2 is 'H', index 7 is ' ' (after Hello)
+    print("Substr(2, 7): '%s'\n", s.substr(2, 7))
+
+    // 8. Split and Join
+    string csv = "apple,banana,cherry"
+    string parts[] = csv.split(",")
+    print("Split count: %u\n", parts.length()) // Assuming array length
+    print("Part 0: %s\n", parts[0])
+    
+    string parts_n[] = csv.split_n(",", 2)
+    print("Split N=2 count: %u\n", parts_n.length())
+
+    string joined = ",".join(parts)
+    print("Joined: %s\n", joined)
+
+    // 9. Regex
+    string email = "user@example.com"
+    if (email.regex("^[a-z]+@[a-z]+\\.com$")) {
+        print("Valid email format\n")
+    }
+
+    string text = "foo123bar456"
+    string regex_parts[] = text.regex_split("[0-9]+")
+    print("Regex Split count: %u\n", regex_parts.length())
+
+    string groups[] = email.regex_groups("^([a-z]+)@([a-z]+)\\.com$")
+    if (groups.length() > 0) {
+        print("User: %s, Domain: %s\n", groups[1], groups[2])
+    }
+
+    string regex_replaced = text.regex_replace("[0-9]+", "#")
+    print("Regex Replaced: %s\n", regex_replaced)
+
+    // 10. Memory Management
+    // Explicitly change ownership of a string to a new context (e.g. 'other')
+    // This is advanced usage.
+    s.chown(other)
+    
+    return 0
+}

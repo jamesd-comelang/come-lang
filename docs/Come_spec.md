@@ -34,85 +34,59 @@ Come supports both single-line and multi-line comments.
 # 3. Modules and Imports
 
 Imports expose symbols under a module namespace.
+`as` forces system-module import.
+Local modules cannot use `as`.
 
-as forces system-module import.
+## Module Resolution
 
-Local modules cannot use as.
+`import X` is resolved in order:
+1. `./X.co`
+2. `./X/*.co`
+3. `./modules/X/*.co`
+4. System module depot
 
-Module Resolution
+Found in (1–3): local module.
+Found in (4): system module.
 
-import X is resolved in order:
+## Local vs System Modules
 
-./X.co
-./X/*.co
-./modules/X/*.co
+### Local modules
+* Have private memory contexts
+* May define lifecycle functions (see [Module Lifecycle](#32-module-lifecycle-init-and-exit))
+* Lifecycle is managed by `main`
 
-System module depot
+### System modules
+* API-only
+* No memory context
+* No lifecycle functions
 
-Found in (1–3): local module
+## Export
 
-Found in (4): system module
-
-Local vs System Modules
-
-Local modules
-
-Have private memory contexts
-
-May define:
-
-void module_init()
-void module_exit()
-
-
-Lifecycle is managed by main
-
-Init order follows import order
-
-Exit order is reversed
-
-System modules
-
-API-only
-
-No memory context
-
-No lifecycle functions
-
-Export
-
-Symbols are private by default
-
-Explicit export required:
-
+Symbols are private to the current module by default. Public symbols must be explicitly exported:
+```come
 export (PI, Point, add)
+```
 
-Namespaces
+## Namespaces
 
 Access via:
-
+```come
 module.symbol
+```
 
+No implicit imports into global scope.
 
-No implicit imports into global scope
+Aliases can be used to simplify symbol references:
+```come
+alias printf = std.out.printf
+// printf("msg") is transparently rewritten to std.out.printf("msg")
+```
 
 ## 3.1 Importing Modules
 
-Single module:
-
 ```come
 import std
-```
-
-Multiple modules (single line):
-
-```come
 import (net, conv)
-```
-
-Multiple modules (multi-line):
-
-```come
 import (
     string,
     mem
@@ -125,6 +99,38 @@ Imported modules are referenced using dot notation:
 std.out.printf("hello")
 net.hton(port)
 ```
+
+## 3.2 Module Lifecycle: `.init()` and `.exit()`
+
+In **Come**, every module follows a strictly deterministic lifecycle to ensure memory contexts are established and dependencies are resolved before execution begins.
+
+---
+
+### 1. The Initialization Protocol
+The `.init()` method serves as the module's constructor. 
+
+* **Automatic Invocation:** The compiler automatically triggers `.init()` for every imported module.
+* **Import Ordering:** Initialization follows the exact sequence defined in the `import (...)` block.
+* **Dependency Guarantee:** A module's dependencies are guaranteed to be fully initialized before its own `.init()` executes.
+
+---
+
+### 2. The Finalization Protocol
+The `.exit()` method serves as the module's destructor.
+
+* **Reverse Order:** To prevent dangling dependencies, modules are finalized in the **exact reverse order** of their initialization.
+* **Context Cleanup:** This is the primary location for releasing memory anchored to the **Module Context** (e.g., globals initialized with `.size()`).
+
+| Stage | Execution Order | Purpose |
+| :--- | :--- | :--- |
+| **`.init()`** | Top-to-Bottom | Setup memory headers, pre-allocate globals. |
+| **`main()`** | Entry Point | Execute application logic. |
+| **`.exit()`** | Bottom-to-Top | Close handles, free contexted memory. |
+
+---
+
+### 3. Design Pattern: The "Skeleton" Init
+Because `.init()` is automatic, use it to establish a **Known Safe State** (Skeleton) while deferring heavy resource allocation to manual methods.
 
 # 4. Constants and Enumerations
 
@@ -194,11 +200,11 @@ alias SQUARE(x) = ((x) * (x))
 ## 6.1 Primitive Types
 
 * `bool`
-* `byte`, `ubyte`
-* `short`, `ushort`
-* `int`, `uint`
-* `long`, `ulong`
-* `float`, `double`
+* `byte` (`i8`), `ubyte` (`u8`)
+* `short` (`i16`), `ushort` (`u16`)
+* `int` (`i32`), `uint` (`u32`)
+* `long` (`i64`), `ulong` (`u64`)
+* `float` (`f32`), `double` (`f64`)
 * `wchar` (32-bit Unicode scalar)
 
 Character literals:
@@ -244,42 +250,81 @@ element_count is the number of elements currently stored.
 Elements are stored contiguously in memory.
 
 ```come
-string name = "John" //Initially allocated on stack or heap with fixed size
-string json //Initially empty string, default dynamic 
-string filebuf="" //Initially empty string, default dynamic 
-int arr[10]       // Initially allocated on stack or heap  with fixed size
-int dyn[]         // Initially empty array, default dynamic 
+string name = "John"
+string json
+string filebuf = ""
+int arr[10]
+int dyn[]
 ```
 
-**Dynamic Promotion**
+### 6.2.4 Map
 
-A fixed-size string/array may be created on stack or heap initially, and later being promoted
-to a fully dynamic array and relocated into the current memory arena when required.
-Dynamic promotion occurs under the following conditions:
-1. The array is assigned to another array variable.
-2. The array is passed as a function argument.
-3. The .resize(n) method is invoked.
-4. The .chown() method is invoked.
+Maps are dynamic key-value associations.
 
-Promotion is transparent to the programmer.
-The compiler guarantees array validity across promotions.
-Memory ownership follows the active arena and ownership rules.
+```come
+map m = {}
+```
+
+# 6.3 Dynamic Promotion
+
+Composite type variables in Come are initially allocated in the most efficient storage available (stack or static data).
+When a composite type variable requires dynamic behavior—such as being passed, resized, stored, or transferred—it is automatically promoted to a dynamic, headered buffer allocated in the current module memory context.
+Promotion is deterministic and performed by the compiler; it is invisible to the programmer.
 
 # 7. Methods and Ownership
 
-## 7.1 Built-in Composite Methods
+## 7.1 Built-in Type Methods
 
-All composite types support:
+All types support:
+
+| Method | Description |
+|---|---|
+| `.type()` | Returns type name as a string (compile-time). The compiler tracks and lists all types used. |
+| `.size()` | Memory size in bytes |
+
+**Possible type name strings returned by `.type()`:**
+
+Primitives: `"bool"`, `"byte"`, `"ubyte"`, `"short"`, `"ushort"`, `"int"`, `"uint"`, `"long"`, `"ulong"`, `"float"`, `"double"`, `"wchar"`, `"void"`
+
+Managed types: `"string"`, `"map"`, `"array"`
+
+Composite types: `"struct"`, `"union"`)
+
+Composite types additionally support:
 
 | Method | Description |
 |---|---|
 | `.length()` | Logical element count |
-| `.size()` | Memory size in bytes |
-| `.type()` | Runtime type name |
 | `.owner()` | Current owner |
 | `.chown()` | Transfer ownership |
+| `.dup(depth)` | Creates a copy with specified recursion depth |
 
-## 7.2 Struct Methods
+### 7.1.1 The `.dup()` Method
+
+The `.dup()` method is a built-in for all composite types (strings, arrays, maps, structs, and unions) used to create copies of objects.
+
+**Signature:** `obj.dup(ubyte depth)`
+
+* **Argument:** Accepts a `ubyte` (0-255).
+* **Default:** Calling `.dup()` without an argument defaults to `.dup(0)`.
+
+#### Depth Logic
+
+| Depth | Type | Description |
+|---|---|---|
+| `0` | **Deep Copy** | Performs a full recursive clone of the entire object tree (Infinite Depth). |
+| `1` | **Shallow Copy** | Allocates a new top-level Headered Buffer, but all nested composite members remain as references (aliases) to the original children. |
+| `n` | **N-Level Copy** | Recursively clones down to the specified level *n*. |
+
+> [!NOTE]
+> Maximum manual depth is 255. Depths beyond this are considered functionally equivalent to a deep copy (0) or are structurally impossible in standard memory contexts.
+
+#### Memory & Ownership Integration
+
+* **Allocation:** Every `.dup` call where $n > 0$ (or $n=0$) triggers a new memory allocation for the top-level object.
+* **Ownership:** The new object is anchored to the **Local Scope** by default.
+* **Identity:** While `b = a` creates an identity (`a == b`), `b = a.dup()` creates a new identity (`a != b`), even if the content is identical.
+
 
 Structs may declare methods:
 
@@ -406,7 +451,7 @@ do { } while (cond)
 
 ```come
 int dyn[]
-dyn.resize(3)
+dyn.alloc(3)
 ```
 
 ## 11.2 Ownership Propagation
@@ -446,9 +491,7 @@ export (PI, Point, add)
 
 # 14. Semicolons
 
-* `;` is optional
-* Acts as a line separator
-* Useful for multiple statements on one line
+* `;` is optional. Acts as a line separator. Useful for multiple statements on one line.
 
 # 15. Design Summary
 
@@ -458,10 +501,11 @@ export (PI, Point, add)
 | UTF-8 | Default |
 | Switch | No fallthrough |
 | Memory | Ownership-based |
-| Arrays | Static + dynamic |
+| Strings, Arrays, Maps | Added |
 | Typing | Static with inference |
 | Methods | Object-style |
 | Compatibility | C mental model |
+| Module Lifecycle | Deterministic (.init/.exit) |
 
 # 16. Come Language Keywords
 
@@ -486,7 +530,7 @@ Come uses a robust type system ranging from low-level primitives to high-level m
 ### Primitives & Objects
 * **Special**: `void`, `bool`
 * **Local inference**: `var` (Enables local type inference)
-* **Managed**: `string`, `map`, array in T v[] format (Headered Buffer objects)
+* **Managed**: `string`, `map`, array in T v[] format
 * **Character**: `wchar` (Unicode support)
 
 ### Integer Types
@@ -526,3 +570,4 @@ Standard procedural logic enhanced with explicit safety keywords.
 ## 4. Values
 * `true`, `false`
 * `null`
+

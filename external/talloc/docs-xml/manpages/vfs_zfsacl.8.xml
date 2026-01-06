@@ -1,0 +1,173 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE refentry PUBLIC "-//Samba-Team//DTD DocBook V4.2-Based Variant V1.0//EN" "http://www.samba.org/samba/DTD/samba-doc">
+<ns:Root xmlns:xi="http://www.w3.org/2003/XInclude"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:ns="urn:TestNamespace">
+<refentry id="vfs_zfsacl.8">
+
+<refmeta>
+	<refentrytitle>vfs_zfsacl</refentrytitle>
+	<manvolnum>8</manvolnum>
+	<refmiscinfo class="source">Samba</refmiscinfo>
+	<refmiscinfo class="manual">System Administration tools</refmiscinfo>
+	<refmiscinfo class="version">&doc.version;</refmiscinfo>
+</refmeta>
+
+
+<refnamediv>
+	<refname>vfs_zfsacl</refname>
+	<refpurpose>ZFS ACL samba module</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<cmdsynopsis>
+		<command>vfs objects = zfsacl</command>
+	</cmdsynopsis>
+</refsynopsisdiv>
+
+<refsect1>
+	<title>DESCRIPTION</title>
+
+	<para>This VFS module is part of the
+	<citerefentry><refentrytitle>samba</refentrytitle>
+	<manvolnum>7</manvolnum></citerefentry> suite.</para>
+
+	<para>The <command>zfsacl</command> VFS module is the home
+	for all ACL extensions that Samba requires for proper integration
+	with ZFS.
+	</para>
+
+	<para>Currently the zfsacl vfs module provides extensions in following areas :
+	<itemizedlist>
+	<listitem><para>NFSv4 ACL Interfaces with configurable options for ZFS</para></listitem>
+	</itemizedlist>
+	</para>
+
+	<para><command>NOTE:</command>This module follows the posix-acl behaviour
+	and hence allows permission stealing via chown. Samba might allow at a later
+	point in time, to restrict the chown via this module as such restrictions
+	are the responsibility of the underlying filesystem than of Samba.
+	</para>
+
+	<para>This module makes use of the smb.conf parameter
+	<smbconfoption name="acl map full control">acl map full control</smbconfoption>
+	When set to yes (the default), this parameter will add in the FILE_DELETE_CHILD
+	bit on a returned ACE entry for a file (not a directory) that already
+	contains all file permissions except for FILE_DELETE and FILE_DELETE_CHILD.
+	This can prevent Windows applications that request GENERIC_ALL access
+	from getting ACCESS_DENIED errors when running against a filesystem
+	with NFSv4 compatible ACLs.
+	</para>
+
+	<para>ZFS has multiple dataset configuration parameters that determine ACL behavior.
+	Although the nuances of these parameters are outside the scope of this manpage, the
+	"aclmode" and "aclinherit" are of particular importance for samba shares.
+	For datasets that are intended solely as Samba shares, "aclmode = restricted"
+	and "aclinherit = passthrough" provide inheritance behavior most consistent with NTFS ACLs.
+	A "restricted" aclmode prevents chmod() on files that have a non-trivial ACL (one that
+	cannot be expressed as a POSIX mode without loss of information). Consult the relevant ZFS
+	manpages for further information.
+	</para>
+
+	<para>This module is stackable.</para>
+
+	<para>Since Samba 4.0 all options are per share options.</para>
+
+</refsect1>
+
+
+<refsect1>
+	<title>OPTIONS</title>
+
+	<xi:include href="nfs4.xml.include" xpointer="xpointer(*/*)" />
+
+	<variablelist>
+
+		<varlistentry>
+		<term>zfsacl:denymissingspecial = [yes|no]</term>
+		<listitem>
+		<para>Prevent users from setting an ACL that lacks NFSv4 special entries
+		(owner@, group@, everyone@). ZFS will automatically generate these these entries
+		when calculating the inherited ACL of new files if the ACL of the parent directory
+		lacks an inheriting special entry. This may result in user confusion and unexpected
+		change in permissions of files and directories as the inherited ACL is generated.</para>
+		<itemizedlist>
+		<listitem><para><command>yes</command></para></listitem>
+		<listitem><para><command>no (default)</command></para></listitem>
+		</itemizedlist>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>zfsacl:block_special = [yes|no]</term>
+		<listitem>
+		<para>Prevent ZFS from automatically adding NFSv4 special
+		entries (owner@, group@, everyone@).  ZFS will automatically
+		generate these these entries when calculating the inherited ACL
+		of new files if the ACL of the parent directory lacks an
+		inheriting special entry. This may result in user confusion and
+		unexpected change in permissions of files and directories as the
+		inherited ACL is generated. Blocking this behavior is achieved
+		by setting an inheriting everyone@ that grants no permissions
+		and not adding the entry to the file's Security
+		Descriptor</para>
+		<itemizedlist>
+		<listitem><para><command>yes (default)</command></para></listitem>
+		<listitem><para><command>no</command></para></listitem>
+		</itemizedlist>
+		</listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>zfsacl:map_dacl_protected = [yes|no]</term>
+		<listitem>
+		<para>If enabled and the ZFS ACL on the underlying filesystem does not contain
+		any inherited access control entries, then set the SEC_DESC_DACL_PROTECTED flag
+		on the Security Descriptor returned to SMB clients.
+		This ensures correct Windows client behavior when disabling inheritance on
+		directories.</para>
+
+		<para>Following is the behaviour of Samba for different values : </para>
+		<itemizedlist>
+		<listitem><para><command>yes</command> - Enable mapping to
+		SEC_DESC_DACL_PROTECTED</para></listitem>
+		<listitem><para><command>no (default)</command></para></listitem>
+		</itemizedlist>
+		</listitem>
+		</varlistentry>
+
+
+	</variablelist>
+</refsect1>
+
+<refsect1>
+	<title>EXAMPLES</title>
+
+	<para>A ZFS mount can be exported via Samba as follows :</para>
+
+<programlisting>
+        <smbconfsection name="[samba_zfs_share]"/>
+	<smbconfoption name="vfs objects">zfsacl</smbconfoption>
+	<smbconfoption name="path">/test/zfs_mount</smbconfoption>
+	<smbconfoption name="nfs4: mode">simple</smbconfoption>
+	<smbconfoption name="nfs4: acedup">merge</smbconfoption>
+</programlisting>
+</refsect1>
+
+<refsect1>
+	<title>VERSION</title>
+	<para>This man page is part of version &doc.version; of the Samba suite.
+	</para>
+</refsect1>
+
+<refsect1>
+	<title>AUTHOR</title>
+
+	<para>The original Samba software and related utilities
+	were created by Andrew Tridgell. Samba is now developed
+	by the Samba Team as an Open Source project similar
+	to the way the Linux kernel is developed.</para>
+</refsect1>
+
+</refentry>
+</ns:Root>

@@ -1,0 +1,4 @@
+include:
+  - /.gitlab-ci-default-runners.yml
+
+# Currently we're happy with the defaults

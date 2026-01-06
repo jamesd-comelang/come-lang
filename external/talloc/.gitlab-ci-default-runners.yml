@@ -1,0 +1,30 @@
+# From https://docs.gitlab.com/ee/ci/runners/hosted_runners/linux.html
+#
+#   ...
+#
+#   Runner Tag              vCPUs   Memory   Storage
+#   saas-linux-small-amd64  2       8 GB     25 GB
+#
+# Our current private runner 'docker', 'samba-ci-private', 'shared' and
+# 'ubuntu2204'. It runs with an ubuntu2204 kernel (5.15) and provides an
+# ext4 filesystem, 2 CPU and 4 GB (shared tag) 8G (samba-ci-private tag) RAM.
+#
+
+.shared_runner_build:
+  # We use saas-linux-small-amd64 shared runners by default.
+  # We avoid adding explicit tags for them in order
+  # to work with potential changes in future
+  #
+  # In order to generate valid yaml, we define a dummy variable...
+  variables:
+    SAMBA_SHARED_RUNNER_BUILD_DUMMY_VARIABLE: shared_runner_build
+
+.shared_runner_test:
+  # We use saas-linux-small-amd64 shared runners by default.
+  extends: .shared_runner_build
+
+.private_runner_test:
+  # We use our private runner only for special tests
+  tags:
+    - docker
+    - samba-ci-private

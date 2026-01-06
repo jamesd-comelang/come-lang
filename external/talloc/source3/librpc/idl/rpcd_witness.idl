@@ -1,0 +1,109 @@
+#include "idl_types.h"
+
+import "misc.idl";
+import "server_id.idl";
+import "security.idl";
+import "witness.idl";
+
+[
+	uuid("d320d080-a007-11ee-9cb4-37fa942d84d2"),
+	version(0.0),
+	pointer_default(unique),
+	helpstring("rpcd_witness structures")
+]
+interface rpcd_witness
+{
+	/*
+	 * This the content of records stored in
+	 * rpcd_witness_registration.tdb.
+	 */
+	typedef [public] struct {
+		witness_version version;
+		[string,charset(UTF8)] char net_name[];
+		[string,charset(UTF8)] char *share_name;
+		[string,charset(UTF8)] char ip_address[];
+		[string,charset(UTF8)] char client_computer_name[];
+		witness_RegisterEx_flags flags;
+		uint32 timeout;
+		policy_handle context_handle;
+		server_id server_id;
+		[charset(UTF8),string] char account_name[];
+		[charset(UTF8),string] char domain_name[];
+		dom_sid account_sid;
+		[charset(UTF8),string] char local_address[];
+		[charset(UTF8),string] char remote_address[];
+		NTTIME registration_time;
+	} rpcd_witness_registration;
+
+	void rpcd_witness_registration_decode(
+		[in] rpcd_witness_registration reg
+		);
+
+	typedef [enum16bit] enum {
+		RPCD_WITNESS_REGISTRATION_UPDATE_CLIENT_MOVE_TO_NODE  = 0x0001,
+		RPCD_WITNESS_REGISTRATION_UPDATE_CLIENT_MOVE_TO_IPV4  = 0x0002,
+		RPCD_WITNESS_REGISTRATION_UPDATE_CLIENT_MOVE_TO_IPV6  = 0x0003,
+		RPCD_WITNESS_REGISTRATION_UPDATE_SHARE_MOVE_TO_NODE   = 0x0004,
+		RPCD_WITNESS_REGISTRATION_UPDATE_SHARE_MOVE_TO_IPV4   = 0x0005,
+		RPCD_WITNESS_REGISTRATION_UPDATE_SHARE_MOVE_TO_IPV6   = 0x0006,
+		RPCD_WITNESS_REGISTRATION_UPDATE_FORCE_UNREGISTER     = 0x0007,
+		RPCD_WITNESS_REGISTRATION_UPDATE_FORCE_RESPONSE       = 0x0008
+	} rpcd_witness_registration_update_type;
+
+	typedef struct {
+		uint32 new_node;
+	} rpcd_witness_registration_update_move_to_node;
+
+	typedef struct {
+		[flag(NDR_BIG_ENDIAN)] ipv4address new_ipv4;
+	} rpcd_witness_registration_update_move_to_ipv4;
+
+	typedef struct {
+		[flag(NDR_BIG_ENDIAN)] ipv6address new_ipv6;
+	} rpcd_witness_registration_update_move_to_ipv6;
+
+	typedef struct {
+		witness_notifyResponse *response;
+		WERROR result;
+	} rpcd_witness_registration_update_force_response;
+
+	typedef [switch_type(rpcd_witness_registration_update_type)] union {
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_CLIENT_MOVE_TO_NODE)]
+		rpcd_witness_registration_update_move_to_node client_move_to_node;
+
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_CLIENT_MOVE_TO_IPV4)]
+		rpcd_witness_registration_update_move_to_ipv4 client_move_to_ipv4;
+
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_CLIENT_MOVE_TO_IPV6)]
+		rpcd_witness_registration_update_move_to_ipv6 client_move_to_ipv6;
+
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_SHARE_MOVE_TO_NODE)]
+		rpcd_witness_registration_update_move_to_node share_move_to_node;
+
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_SHARE_MOVE_TO_IPV4)]
+		rpcd_witness_registration_update_move_to_ipv4 share_move_to_ipv4;
+
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_SHARE_MOVE_TO_IPV6)]
+		rpcd_witness_registration_update_move_to_ipv6 share_move_to_ipv6;
+
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_FORCE_UNREGISTER)];
+		/* empty */
+
+		[case(RPCD_WITNESS_REGISTRATION_UPDATE_FORCE_RESPONSE)]
+		rpcd_witness_registration_update_force_response force_response;
+	} rpcd_witness_registration_updateU;
+
+	/*
+	 * This is the content of
+	 * MSG_RPCD_WITNESS_REGISTRATION_UPDATE messages
+	 */
+	typedef [public] struct {
+		policy_handle context_handle;
+		rpcd_witness_registration_update_type type;
+		[switch_is(type)] rpcd_witness_registration_updateU update;
+	} rpcd_witness_registration_updateB;
+
+	void rpcd_witness_registration_update_decode(
+		[in] rpcd_witness_registration_updateB update
+		);
+}

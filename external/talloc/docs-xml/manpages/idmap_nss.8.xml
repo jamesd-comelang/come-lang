@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE refentry PUBLIC "-//Samba-Team//DTD DocBook V4.2-Based Variant V1.0//EN" "http://www.samba.org/samba/DTD/samba-doc">
+<refentry id="idmap_nss.8">
+
+<refmeta>
+	<refentrytitle>idmap_nss</refentrytitle>
+	<manvolnum>8</manvolnum>
+	<refmiscinfo class="source">Samba</refmiscinfo>
+	<refmiscinfo class="manual">System Administration tools</refmiscinfo>
+	<refmiscinfo class="version">&doc.version;</refmiscinfo>
+</refmeta>
+
+
+<refnamediv>
+	<refname>idmap_nss</refname>
+	<refpurpose>Samba's idmap_nss Backend for Winbind</refpurpose>
+</refnamediv>
+
+<refsynopsisdiv>
+	<title>DESCRIPTION</title>
+
+	<para>The idmap_nss plugin provides a means to map Unix users and groups
+	to Windows accounts. This provides a simple means of ensuring that the SID
+	for a Unix user named jsmith is reported as the one assigned to
+	DOMAIN\jsmith which is necessary for reporting ACLs on files and printers
+	stored on a Samba member server.
+	</para>
+</refsynopsisdiv>
+
+<refsect1>
+	<title>IDMAP OPTIONS</title>
+
+	<variablelist>
+		<varlistentry>
+		<term>range = low - high</term>
+		<listitem><para>
+			Defines the available matching UID and GID range for which the
+			backend is authoritative. Note that the range acts as a filter.
+			Returned UIDs or GIDs by NSS modules that fall outside the range
+			are ignored and the corresponding maps discarded. It is intended
+			as a way to avoid accidental UID/GID overlaps between local and
+			remotely defined IDs.
+		</para></listitem>
+		</varlistentry>
+
+		<varlistentry>
+		<term>use_upn = &lt;yes | no&gt;</term>
+		<listitem>
+		<para>
+			Some NSS modules can return and handle UPNs and/or down-level
+			logon names (e.g., DOMAIN\user or user@REALM).
+		</para>
+		<para>
+			If this parameter is enabled the returned names from NSS will be
+			parsed and the resulting namespace will be used as the authoritative
+			namespace instead of the IDMAP domain name. Also, down-level logon
+			names will be sent to NSS instead of the plain username to give NSS
+			modules a hint about the user's correct domain.
+		</para>
+		<para>Default: no</para>
+		</listitem>
+		</varlistentry>
+
+	</variablelist>
+</refsect1>
+
+
+<refsect1>
+	<title>EXAMPLES</title>
+
+	<para>
+    This example shows how to use idmap_nss to obtain the local account ID's
+    for its own domain (SAMBA) from NSS, whilst allocating new mappings for
+    the default domain (*) and any trusted domains.
+	</para>
+
+	<programlisting>
+	[global]
+	idmap config * : backend = tdb
+	idmap config * : range = 1000000-1999999
+
+	idmap config SAMBA : backend  = nss
+	idmap config SAMBA : range = 1000-999999
+</programlisting>
+</refsect1>
+
+<refsect1>
+	<title>AUTHOR</title>
+
+	<para>
+	The original Samba software and related utilities
+	were created by Andrew Tridgell. Samba is now developed
+	by the Samba Team as an Open Source project similar
+	to the way the Linux kernel is developed.
+	</para>
+</refsect1>
+
+</refentry>

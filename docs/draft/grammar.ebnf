@@ -1,0 +1,163 @@
+/* COME Language Grammar (EBNF) */
+
+/* 1. Program Structure */
+program = module_decl { top_level_decl } ;
+
+module_decl = "module" identifier ;
+
+top_level_decl 
+    = import_stmt
+    | const_block
+    | alias_decl
+    | struct_decl
+    | union_decl
+    | function_def
+    | export_decl 
+    ;
+
+/* 2. Imports */
+import_stmt = "import" ( identifier | "(" import_list ")" ) ;
+import_list = identifier { "," identifier } [ "," ] ;
+
+/* 3. Constants and Enumerations */
+const_block = "const" ( const_decl | "(" { const_decl "," } [ const_decl [ "," ] ] ")" ) ;
+const_decl  = identifier "=" expression ;
+
+/* Enum usage is an expression, typically inside a const block */
+
+/* 4. Aliases */
+alias_decl = "alias" identifier [ "(" identifier ")" ] "=" ( type | expression ) ;
+
+/* 5. Types */
+type 
+    = primitive_type 
+    | identifier /* struct/union/alias name */
+    ;
+
+primitive_type 
+    = "bool" 
+    | "byte" | "ubyte" 
+    | "short" | "ushort" 
+    | "int" | "uint" 
+    | "long" | "ulong" 
+    | "float" | "double" 
+    | "wchar" 
+    | "void" 
+    ;
+
+/* 6. Composite Types */
+struct_decl = "struct" identifier "{" { struct_member } "}" [ ";" ] ;
+struct_member = struct_field | method_decl ;
+struct_field  = type identifier [ array_dim ] [ ";" ] ;
+method_decl   = "method" identifier "(" [ param_list ] ")" ;
+
+union_decl = "union" identifier "{" { struct_field } "}" ;
+
+array_dim = "[" [ expression ] "]" ;
+
+/* 7. Functions */
+function_def = [ return_sig ] identifier "(" [ param_list ] ")" block ;
+
+return_sig 
+    = type 
+    | "(" type { "," type } ")" 
+    ;
+
+param_list = param { "," param } ;
+param      = type identifier [ array_dim ] ;
+
+/* 8. Statements */
+block = "{" { statement } "}" ;
+
+statement 
+    = var_decl
+    | assignment
+    | if_stmt
+    | switch_stmt
+    | loop_stmt
+    | return_stmt
+    | expr_stmt 
+    | block 
+    ;
+
+var_decl = ( type | "var" ) identifier [ array_dim ] [ "=" expression ] [ ";" ] ;
+
+assignment = lvalue "=" expression [ ";" ] ;
+
+if_stmt = "if" "(" expression ")" block [ "else" ( block | if_stmt ) ] ;
+
+switch_stmt = "switch" "(" expression ")" "{" { case_clause } [ default_clause ] "}" ;
+case_clause = "case" expression ":" { statement } [ "fallthrough" ] ;
+default_clause = "default" ":" { statement } ;
+
+loop_stmt 
+    = for_stmt 
+    | while_stmt 
+    | do_while_stmt 
+    ;
+
+for_stmt = "for" "(" [ simple_stmt ] ";" [ expression ] ";" [ simple_stmt ] ")" block ;
+simple_stmt = var_decl | assignment | expression ;
+
+while_stmt = "while" "(" expression ")" block ;
+
+do_while_stmt = "do" block "while" "(" expression ")" [ ";" ] ;
+
+return_stmt = "return" [ expression_list ] [ ";" ] ;
+
+expr_stmt = expression [ ";" ] ;
+
+/* 9. Expressions */
+expression_list = expression { "," expression } ;
+
+expression = ternary_expr ;
+
+ternary_expr = logic_or [ "?" expression ":" ternary_expr ] ;
+logic_or     = logic_and { "||" logic_and } ;
+logic_and    = equality { "&&" equality } ;
+equality     = relational { ( "==" | "!=" ) relational } ;
+relational   = additive { ( "<" | ">" | "<=" | ">=" ) additive } ;
+additive     = multiplicative { ( "+" | "-" ) multiplicative } ;
+multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
+unary        = ( "!" | "-" | "~" ) unary | primary ;
+
+primary 
+    = literal
+    | lvalue
+    | "(" expression ")" 
+    | basic_call
+    ;
+
+/* Access chains */
+lvalue 
+    = identifier { accessor } 
+    ;
+
+accessor
+    = "." identifier         /* Field/Method access */
+    | "[" expression "]"     /* Array access */
+    | "(" [ arg_list ] ")"   /* Method call (on object) */
+    ;
+
+basic_call = identifier "(" [ arg_list ] ")" ; /* Function call */
+
+arg_list = expression { "," expression } ;
+
+/* 10. Literals & Lexical */
+literal 
+    = integer 
+    | float_literal 
+    | string_literal 
+    | char_literal 
+    | "true" | "false" 
+    | "enum" [ "(" expression ")" ]
+    | struct_init
+    ;
+
+struct_init = "{" [ struct_init_list ] "}" ;
+struct_init_list = ( "." identifier "=" expression ) { "," "." identifier "=" expression } ;
+
+identifier = letter { letter | digit | "_" } ;
+integer    = digit { digit } ;
+/* string_literal, float_literal, char_literal definitions assumed standard */
+export_decl = "export" "(" identifier { "," identifier } ")" ;

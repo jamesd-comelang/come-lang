@@ -1,0 +1,80 @@
+<samba:parameter name="veto files"
+                 context="S"
+                 type="string"
+                 substitution="1"
+                 xmlns:samba="http://www.samba.org/samba/DTD/samba-doc">
+ <description>
+	<para>
+	This is a list of files and directories that are neither visible nor accessible.  Each entry in 
+	the list must be separated by a '/', which allows spaces to be included in the entry. '*' and '?' 
+	can be used to specify multiple files or directories as in DOS wildcards.
+	</para>
+
+	<para>
+	<smbconfoption name="veto files"/> can also be used as a
+	parametric option where NAME in</para>
+
+	<para>
+	veto files : NAME =
+	</para>
+
+	<para>
+	specifies a user or group name with the same syntax as
+	<smbconfoption name="valid users"/>. This parametric form can
+	be specified multiple times for different users or
+	groups. This means that &quot;veto files : NAME&quot; set both
+	in the [global] and the share section add up, whereas normally
+	options set in a share section overwrite the default in the
+	[global] section.
+	</para>
+
+	<para>
+	Each filename must be a unix path, not a DOS path and must
+	<emphasis>not</emphasis> include the
+	unix directory 	separator '/'.
+	</para>
+
+	<para>
+	Note that the <smbconfoption name="case sensitive"/> option is applicable in vetoing files.
+	</para>
+		
+	<para>
+	One feature of the veto files parameter that it is important to be aware of is Samba's behaviour when
+	trying to delete a directory. If a directory that is to be deleted contains nothing but veto files this
+	deletion will <emphasis>fail</emphasis> unless you also set the <smbconfoption name="delete veto files"/> 
+	parameter to <parameter moreinfo="none">yes</parameter>.
+	</para>
+
+	<para>
+	Setting this parameter will affect the performance of Samba, as it will be forced to check all files 
+	and directories for a match as they are scanned.
+	</para>
+
+	<para>
+	Examples of use include:
+<programlisting>
+; Veto any files containing the word Security,
+; any ending in .tmp, and any directory containing the
+; word root.
+veto files = /*Security*/*.tmp/*root*/
+
+; Veto some files for anyone and some files for specific users and groups
+veto files = /vetoforall1/
+veto files : USER = /vetotoforuser/
+veto files : GROUP = /vetoforgroup/
+veto files : UNIVERSITY\Alumnis = /somefile.txt/
+veto files : john@university.org = /anotherfile.txt/
+veto files : S-1-5-21-123-456-789-1000 = /secretfile.txt/
+
+; Veto the Apple specific files that a NetAtalk server
+; creates.
+veto files = /.AppleDouble/.bin/.AppleDesktop/Network Trash Folder/
+</programlisting>
+	</para>
+
+</description>
+<related>hide files</related>
+<related>case sensitive</related>
+
+<value type="default"><comment>No files or directories are vetoed</comment></value>
+</samba:parameter>

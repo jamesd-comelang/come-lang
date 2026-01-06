@@ -1,0 +1,40 @@
+module main
+
+import net.tls      // TLS primitives
+import net.http     // HTTP request/response handling
+import std          // printing, etc.
+
+client() 
+{
+    // 1. Create a TLS context (cert & key)
+    net.tls.context tls_ctx = {
+        cert_file: "server.crt",
+        key_file: "server.key",
+    }
+
+    // 2. connect to ith the TLS context
+    var tls_conn = net.tls.connect("127.0.0.1", 443)
+
+    // 3. For every new TLS connection, wrap it in an HTTP session
+	tls_conn.on(CONNECT) {
+		// Create an HTTP session that will speak over this socket
+		var http = net.http.new()
+		http.attach(tls_conn)                   // bind the HTTP layer to the TLS socket
+
+		// 4. Handle each HTTP request as it arrives
+		http.req.send(
+			"GET / HTTP/1.1\r\n" +
+			"Host: localhost\r\n" 
+		)
+		var resp = http.resp;
+		resp.on(READ_DONE) {
+			std.printf("%s), resp.body)
+		}
+		tls_conn.close()
+    }
+}
+
+main() 
+{
+    client()
+}

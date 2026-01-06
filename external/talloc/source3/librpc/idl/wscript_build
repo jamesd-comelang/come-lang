@@ -1,0 +1,34 @@
+#!/usr/bin/env python
+
+import os
+
+topinclude=os.path.join(bld.srcnode.abspath(), 'librpc/idl')
+
+bld.SAMBA_PIDL_LIST('PIDL',
+                    '''open_files.idl
+                       perfcount.idl secrets.idl
+                       smbXsrv.idl
+                       leases_db.idl
+                       rpcd_witness.idl
+                    ''',
+                    options='--includedir=%s --header --ndr-parser --client --python' % topinclude,
+                    output_dir='../gen_ndr')
+
+bld.SAMBA_PIDL_LIST('PIDL',
+                    '''
+                    libnetapi.idl
+                    rpc_host.idl
+                    ''',
+                    options='--includedir=%s --header --ndr-parser' % topinclude,
+                    output_dir='../gen_ndr',
+                    generate_tables=False)
+
+absinclude=os.path.join(bld.srcnode.abspath(), 'bin/default/include')
+
+bld.SAMBA_PIDL_LIST('PIDL',
+                    '''
+                       libnet_join.idl ads.idl
+                    ''',
+                    options='--includedir=%s --includedir=%s --header --ndr-parser' % (topinclude, absinclude),
+                    output_dir='../gen_ndr',
+                    generate_tables=False)

@@ -1,0 +1,78 @@
+#!/usr/bin/env python
+
+
+def build(bld):
+    legacy_gnutls_helpers = ''
+    if not bld.CONFIG_SET('HAVE_GNUTLS_CB_TLS_SERVER_END_POINT'):
+        legacy_gnutls_helpers += ' gnutls_server_end_point_cb.c'
+
+    bld.SAMBA_SUBSYSTEM("GNUTLS_HELPERS",
+                        source='''
+                        gnutls_error.c
+                        gnutls_aead_aes_256_cbc_hmac_sha512.c
+                        gnutls_arcfour_confounded_md5.c
+                        gnutls_weak_crypto.c
+                        gnutls_sp800_108.c
+                        ''' + legacy_gnutls_helpers,
+                        deps="gnutls samba-errors")
+
+    bld.SAMBA_SUBSYSTEM('LIBCRYPTO',
+                        source='''
+                        md4.c
+                        ''',
+                        deps='''
+                        talloc
+                        ''')
+
+    bld.SAMBA_SUBSYSTEM('TORTURE_LIBCRYPTO',
+                        source='md4test.c',
+                        autoproto='test_proto.h',
+                        deps='''
+                        LIBCRYPTO
+                        ''')
+
+    bld.SAMBA_SUBSYSTEM('gkdi',
+                        source='gkdi.c',
+                        deps='''
+                        talloc
+                        GNUTLS_HELPERS
+                        NDR_GKDI
+                        ''')
+
+    bld.SAMBA_SUBSYSTEM('gmsa',
+                        source='gmsa.c',
+                        deps='''
+                        gkdi
+                        ''')
+
+    bld.SAMBA_PYTHON('python_crypto',
+                     source='py_crypto.c',
+                     deps='gnutls talloc LIBCLI_AUTH',
+                     realname='samba/crypto.so')
+
+    bld.SAMBA_BINARY('test_gnutls_aead_aes_256_cbc_hmac_sha512',
+                     source='''
+                            gnutls_error.c
+                            tests/test_gnutls_aead_aes_256_cbc_hmac_sha512.c
+                            ''',
+                     deps='cmocka gnutls samba-util samba-errors',
+                     local_include=False,
+                     for_selftest=True)
+
+    bld.SAMBA_BINARY('test_gnutls_sp800_108',
+                     source='''
+                            tests/test_gnutls_sp800_108.c
+                            ''',
+                     deps='cmocka GNUTLS_HELPERS samba-util',
+                     local_include=False,
+                     for_selftest=True)
+
+    bld.SAMBA_BINARY('test_gkdi',
+                     source='test_gkdi.c',
+                     deps='cmocka gkdi gmsa talloc NDR_GKDI NDR_GMSA samba-util samba-security',
+                     for_selftest=True)
+
+    bld.SAMBA_BINARY('test_gkdi_key_derivation',
+                     source='test_gkdi_key_derivation.c',
+                     deps='cmocka gkdi talloc NDR_GKDI samba-util samba-security',
+                     for_selftest=True)

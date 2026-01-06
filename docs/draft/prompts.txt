@@ -1,0 +1,114 @@
+C Object and Module Extensions(COME) Development Master Prompts
+
+1. Design Goals Prompt
+You are assisting in the design of a new programming language called C Object and Module Extensions (COME).
+
+Goals:
+- Retain C-like syntax and semantics for familiarity.
+- Add object/method features without full OOP complexity.
+- Improve modularity (packages), safety (limited pointers), and productivity (semicolons optional).
+- Provide modern tooling (`come build`).
+- Compile to efficient native code like C.
+- Target use cases: systems programming, embedded, and server-side software.
+- Everything in a module. and two types of module
+- A source module is a compile-time namespace that groups related methods, types, and definitions. It has no runtime identity.
+- A runtime module is a stateful, memory-backed entity that exists during program execution and provides encapsulated behavior and data.
+
+When designing features, balance minimalism (like C) and usability (like Go).
+
+
+2. Language Specification Prompt
+Generate or refine the COME language specification.
+
+Inputs:
+- The comparison tables with C and Go (provided).
+- COME feature highlights:
+  * Module system (like Go package).
+  * Interfaces and methods on structs.
+  * Coroutines for concurrency.
+  * Context-based memory pools, module specific (instead of GC).
+  * UTF-8 strings.
+  * Multiple return values.
+  * Optional semicolons.
+  * Import-based module system (no headers).
+  * Simple build tooling (`come build`).
+
+Outputs:
+- A structured specification (syntax, semantics, runtime model).
+- Example code snippets for each feature.
+- Any ambiguities should be resolved by choosing the simplest consistent rule.
+
+
+3. Example Programs Prompt
+Generate example COME programs:
+
+1. Hello world (basic).
+2. Command-line args (with args.length()).
+3. Struct with methods.
+4. Interface and implementation.
+5. Coroutines with async IO.
+6. Memory pool allocation example.
+7. Unit test using built-in test framework.
+
+Each example should:
+- Be a single `.co` file.
+- Compile with `come build`.
+- Use COME idioms (not just C code).
+
+4. Compiler & Toolchain Prompt
+Propose architecture for the COME compiler and toolchain.
+
+Requirements:
+- Frontend: Parse COME into AST.
+- Middle-end: Perform semantic checks, type checking, and optimizations.
+- Backend: Output LLVM IR or C code for portability.
+- Tooling: `come build`, `come test`, `come fmt`.
+- Dependency resolution: lightweight (like Go modules).
+- Error reporting: user-friendly but concise.
+
+Output:
+- Compiler pipeline description.
+- Example error messages.
+- Roadmap for implementation (MVP to advanced).
+
+
+5. Interoperability Prompt
+Design COME’s interoperability with existing languages.
+
+Requirements:
+- Direct interop with C libraries via `import c "libname"`.
+- Ability to declare `extern` functions.
+- Safe wrappers for common POSIX APIs.
+- Gradual migration path from C to COME.
+
+Output:
+- Example code calling a C library.
+- Rules for data type compatibility.
+
+
+6. Testing & Ecosystem Prompt
+Propose a standard testing and ecosystem model for COME.
+
+Requirements:
+- Built-in `come test` command.
+- Simple assert-based unit tests.
+- Package registry (optional, lightweight).
+- Compatibility with CI/CD pipelines.
+
+Output:
+- Example test file.
+- Expected output from `come test`.
+
+
+7. Documentation & Learning Prompt
+Generate user-friendly documentation for COME:
+
+- Quick start guide (install, build, run).
+- Language tour (syntax, data types, functions, concurrency).
+- Comparison with C/Go.
+- FAQ and gotchas.
+- Code examples.
+
+Output format: Markdown docs suitable for publishing.
+
+

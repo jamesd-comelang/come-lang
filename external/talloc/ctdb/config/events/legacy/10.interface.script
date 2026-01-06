@@ -1,0 +1,260 @@
+#!/bin/sh
+
+# Handle public IP address release and takeover, as well as monitoring
+# interfaces used by public IP addresses.
+
+[ -n "$CTDB_BASE" ] ||
+	CTDB_BASE=$(d="$(dirname "$0")" && cd -P "$d/../../" && pwd)
+
+. "${CTDB_BASE}/functions"
+
+load_script_options
+
+if ! have_public_addresses; then
+	if [ "$1" = "init" ]; then
+		echo "No public addresses file found"
+	fi
+	exit 0
+fi
+
+monitor_interfaces()
+{
+	get_public_ifaces
+
+	down_interfaces_found=false
+	up_interfaces_found=false
+
+	# Note that this loop must not exit early.  It must process
+	# all interfaces so that the correct state for each interface
+	# is set in CTDB using setifacelink.
+	#
+	# public_ifaces set by get_public_ifaces() above
+	# shellcheck disable=SC2154
+	for _iface in $public_ifaces; do
+		if interface_monitor "$_iface"; then
+			up_interfaces_found=true
+			$CTDB setifacelink "$_iface" up >/dev/null 2>&1
+		else
+			down_interfaces_found=true
+			$CTDB setifacelink "$_iface" down >/dev/null 2>&1
+		fi
+	done
+
+	if ! $down_interfaces_found; then
+		return 0
+	fi
+
+	if ! $up_interfaces_found; then
+		return 1
+	fi
+
+	if [ "$CTDB_PARTIALLY_ONLINE_INTERFACES" != "yes" ]; then
+		return 1
+	fi
+
+	return 0
+}
+
+# Sets: iface, ip, maskbits
+get_iface_ip_maskbits()
+{
+	_iface_in="$1"
+	ip="$2"
+	_maskbits_in="$3"
+
+	# Intentional word splitting here
+	# shellcheck disable=SC2046
+	set -- $(ip_maskbits_iface "$ip")
+	if [ -n "$1" ]; then
+		maskbits="$1"
+		iface="$2"
+
+		if [ "$iface" != "$_iface_in" ]; then
+			printf 'WARNING: Public IP %s hosted on interface %s but VNN says %s\n' \
+				"$ip" "$iface" "$_iface_in"
+		fi
+		if [ "$maskbits" != "$_maskbits_in" ]; then
+			printf 'WARNING: Public IP %s has %s bit netmask but VNN says %s\n' \
+				"$ip" "$maskbits" "$_maskbits_in"
+		fi
+	else
+		if [ "$_iface_in" = "__none__" ]; then
+			echo "WARNING: Unable to determine interface for IP ${ip}"
+			iface="$_iface_in"
+			return
+		fi
+		die "ERROR: Unable to determine interface for IP ${ip}"
+	fi
+}
+
+ip_block()
+{
+	_ip="$1"
+	_iface="$2"
+
+	case "$_ip" in
+	*:*) _family="inet6" ;;
+	*) _family="inet" ;;
+	esac
+
+	# Extra delete copes with previously killed script
+	iptables_wrapper "$_family" \
+		-D INPUT -i "$_iface" -d "$_ip" -j DROP 2>/dev/null
+	iptables_wrapper "$_family" \
+		-I INPUT -i "$_iface" -d "$_ip" -j DROP
+}
+
+ip_unblock()
+{
+	_ip="$1"
+	_iface="$2"
+
+	case "$_ip" in
+	*:*) _family="inet6" ;;
+	*) _family="inet" ;;
+	esac
+
+	iptables_wrapper "$_family" \
+		-D INPUT -i "$_iface" -d "$_ip" -j DROP 2>/dev/null
+}
+
+ctdb_check_args "$@"
+
+case "$1" in
+init)
+	_promote="sys/net/ipv4/conf/all/promote_secondaries"
+	get_proc "$_promote" >/dev/null 2>&1 ||
+		die "Public IPs only supported if promote_secondaries is available"
+
+	# Make sure we drop any IPs that might still be held if
+	# previous instance of ctdbd got killed with -9 or similar
+	drop_all_public_ips
+	;;
+
+startup)
+	monitor_interfaces
+	;;
+
+shutdown)
+	drop_all_public_ips
+	;;
+
+takeip)
+	iface=$2
+	ip=$3
+	maskbits=$4
+
+	update_my_public_ip_addresses "takeip" "$ip"
+
+	add_ip_to_iface "$iface" "$ip" "$maskbits" || {
+		exit 1
+	}
+
+	# In case a previous "releaseip" for this IP was killed...
+	ip_unblock "$ip" "$iface"
+
+	flush_route_cache
+	;;
+
+releaseip)
+	# Releasing an IP is a bit more complex than it seems. Once
+	# the IP is released, any open TCP connections to that IP on
+	# this host will end up being stuck. Some of them (such as NFS
+	# connections) will be unkillable so we need to terminate
+	# them. We also need to make sure that no new connections get
+	# established while we are doing this.
+	#
+	# The steps are:
+	#
+	# 1) firewall this IP, so no new external packets arrive for it
+	# 2) find existing connections, and kill them
+	# 3) remove the IP from the interface
+	# 4) remove the firewall rule
+	shift
+	get_iface_ip_maskbits "$@"
+
+	ip_block "$ip" "$iface"
+
+	kill_tcp_connections "$iface" "$ip"
+
+	update_my_public_ip_addresses "releaseip" "$ip"
+
+	delete_ip_from_iface "$iface" "$ip" "$maskbits" || {
+		ip_unblock "$ip" "$iface"
+		exit 1
+	}
+
+	ip_unblock "$ip" "$iface"
+
+	flush_route_cache
+	;;
+
+updateip)
+	# Moving an IP is a bit more complex than it seems.  First we
+	# drop all traffic on the old interface.  Then we try to
+	# remove the IP from the old interface and add it to the new
+	# interface.
+	#
+	# The steps are:
+	#
+	# 1) firewall this IP, so no new external packets arrive for it
+	# 2) remove the IP from the old interface (and new interface, to be sure)
+	# 3) add the IP to the new interface
+	# 4) remove the firewall rule
+	# 5) use ctdb gratarp to propagate the new mac address
+	# 6) send tickle ACKs for existing connections, so dropped
+	#    packets are resent
+	_oiface=$2
+	niface=$3
+	_ip=$4
+	_maskbits=$5
+
+	get_iface_ip_maskbits "$_oiface" "$_ip" "$_maskbits"
+	oiface="$iface"
+
+	# Could check maskbits too.  However, that should never change
+	# so we want to notice if it does.
+	if [ "$oiface" = "$niface" ]; then
+		echo "Redundant \"updateip\" - ${ip} already on ${niface}"
+		exit 0
+	fi
+
+	# Behave more like takeip when the IP is not assigned.  No
+	# need for a similar condition around ip_unblock()s because
+	# they will silently fail.
+	if [ "$oiface" != "__none__" ]; then
+		ip_block "$ip" "$oiface"
+		delete_ip_from_iface "$oiface" "$ip" "$maskbits" >/dev/null 2>&1
+	fi
+	delete_ip_from_iface "$niface" "$ip" "$maskbits" >/dev/null 2>&1
+
+	add_ip_to_iface "$niface" "$ip" "$maskbits" || {
+		ip_unblock "$ip" "$oiface"
+		exit 1
+	}
+
+	ip_unblock "$ip" "$oiface"
+
+	flush_route_cache
+
+	# Propagate the new MAC address
+	$CTDB gratarp "$ip" "$niface"
+
+	# Tickle all existing connections, so that dropped packets
+	# are retransmitted and the tcp streams work
+	tickle_tcp_connections "$ip"
+	;;
+
+ipreallocated)
+	# Just to make sure
+	update_my_public_ip_addresses "ipreallocated"
+	;;
+
+monitor)
+	monitor_interfaces || exit 1
+
+	update_tickles
+	;;
+esac
+
+exit 0

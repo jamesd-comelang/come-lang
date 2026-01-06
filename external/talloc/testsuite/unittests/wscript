@@ -1,0 +1,36 @@
+#!/usr/bin/env python
+
+import os
+
+def configure(conf):
+    return
+
+def build(bld):
+    bld.SAMBA_BINARY('test_krb5samba',
+                     source='test_krb5_samba.c',
+                     deps='krb5samba cmocka',
+                     for_selftest=True)
+
+    bld.SAMBA_BINARY('test_lib_util_modules',
+                     source='test_lib_util_modules.c',
+                     deps='''
+                          samba-modules
+                          cmocka
+                          ''',
+                     for_selftest=True)
+
+    bld.SAMBA_BINARY('test_background_send',
+                     source='test_background_send.c',
+                     deps='''
+                     samba3core
+                     ''',
+                     for_selftest=True)
+
+    bld.SAMBA_MODULE('rpc_test_dummy_module',
+                     source='rpc_test_dummy_module.c',
+                     deps='ndr smbd_base RPC_SERVICE RPC_SOCK_HELPER',
+                     subsystem='rpc',
+                     allow_undefined_symbols=True,
+                     init_function='',
+                     internal_module=False,
+                     install=False)

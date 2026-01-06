@@ -1,0 +1,10 @@
+#!/bin/sh
+
+case "$1" in
+"failure") exit 1 ;;
+"disablehack")
+	ctdb-event script disable data 02.disabled
+	ctdb-event script disable data 03.notalink
+	;;
+*) exit 0 ;;
+esac

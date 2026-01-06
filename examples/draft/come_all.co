@@ -1,0 +1,201 @@
+// This a COME language exmaple with all language features
+/* 
+    Another type of comment
+*/
+module main // every source file need to specify its own module
+
+import std   // import one module
+import (net, conv) // import multiple modules in one line
+import (  // import multiple modules 
+	string,
+	mem
+)
+
+export (PI, Point, add)
+
+const PI = 3.14
+
+//const enum, also multiple consts
+const ( RED = enum, YELLOW, GREEN, UNKNOWN, BLUE)
+
+const (
+	b_alpha = enum(100),
+    b_beta,
+    b_delta, // ok with extra coma ,
+)
+
+alias tcpport_t = ushort // alias as typedef
+alias Point = struct Point //alias as typedef
+alias MAX_ARRAY = 5  // alias as define
+alias SQUARE(x)=((x)*(x))   //alias as define
+
+// module variable, local to module unless exported
+int global_count = 0
+
+union TwoBytes {
+    short signed_s
+    ushort unsiged_s
+    byte first_byte;
+}
+
+// Struct
+struct Point {
+    int x
+    int y
+}
+
+// Struct with method
+struct TCP_ADDR {
+	tcpport_t portnumber
+    byte ipaddr[16]
+}
+
+//define a method
+byte TCP_ADDR.nport()
+{
+	return net.hton(self.portnumber)
+}
+
+int main(string args)
+{
+	struct TCP_ADDR addr
+
+	if (args.length() > 2) {
+		//addr.portnumber = (ushort)conv.strtol(args[2])
+        mem.cpy(addr.ipaddr, args[1].byte_array(), addr.ipaddr.size())
+	} else {
+		std.printf("Usage: %s ipv4_str port\n", args[0])
+	}
+
+    return demo()
+}
+
+// Function prototype
+int add(int a, int b)
+
+// Static function (internal linkage)
+void print_point(const struct Point p) {
+    printf("Point(%d, %d)\n", p.x, p.y);
+}
+
+// Function demonstrating pointers, arrays, const, restrict
+void scale_array(const int input[], int output[], int factor) {
+	if ( output.size() < input.size() ) {
+		std.eprintf("Size mismatch!!");
+        return
+    }		
+    for (int i = 0; i < output.size(); i++) {
+        output[i] = input[i] * factor;
+    }
+}
+
+// Main function
+int demo(void) {
+    // Primitive types
+    byte c1 = 'A'
+    byte c2 = 0x36
+    byte c3 = 100
+    short s = 10
+    int i = 42
+    long l = 1000L
+    float f = 3.14f
+    double d = 2.718
+    bool flag = true
+    var later_var
+
+    // Array
+    int arr[MAX_ARRAY] = {1, 2, 3, 4, 5}
+    int[] scaled = arr
+
+    // Struct
+    struct Point p1 = { .x = 15, .y = 10 }
+    print_point(p1)
+
+    // Function call
+    int sum = add(i, s);
+
+    // Call multiple return functions
+    // string cmp
+	// (sum, cmp) = add_n_compare(i, s)
+    // std.printf("%d %s %d\n", i, cmp, s)  
+
+
+    // Scale array
+    scale_array(arr, scaled, 2);
+
+    // Control flow: if-else, switch, loops
+    if (flag) {
+        std.printf("Flag is true\n");
+    } else {
+        std.printf("Flag is false\n");
+    }
+
+	later_var = YELLOW 
+    switch (later_var) {
+        case RED: std.printf("Red\n")
+        case GREEN: 
+			std.printf("Green\n")
+        case BLUE:
+			std.printf("Blue\n")
+        case UNKNOWN:
+			fallthrough
+        default:
+            std.printf("UNKNOWN\n"); 
+    }
+
+    for (int j = 0; j < MAX_ARRAY; j++) {
+        std.printf("scaled[%d] = %d\n", j, scaled[j])
+    }
+
+    int k = 0
+    while (k < 3) { k++; }
+    do { k-- } while (k > 0)
+
+    // Arithmetic, relational, logical, bitwise
+    int x = 5
+    int y = 2
+    int res = (x + y) * (x - y)
+    res &= 7        // bitwise AND
+    res |= 2        // bitwise OR
+    res ^= 1        // bitwise XOR
+    res = ~res      // bitwise NOT
+    res <<= 1       // left shift
+    res >>= 1       // right shift
+
+    if ((res > 0) && (res != 10)) {
+        std.printf("res = %d\n", res)
+    }
+
+    // Dynamic memory
+    int dyn[]  //array without dimension is a dynamic var
+    dyn.resize(3); // pre allocate 3 elements
+    if (dyn.size() == 0) return 1  // mem allocation failed
+    std.printf("dyn size is:%d\n", dyn.size())
+    for (int n = 0; n < 3; n++) dyn[n] = n * n
+
+    byte buf[]
+    buf.resize(512)
+    if (buf.size() == 0) return 1    
+
+    dyn.free()  //free all dynamic blocks within dyn include buf
+
+    string sbuf = std.sprintf("Sum: %d", sum)
+    std.printf("%s", sbuf)
+
+    double root = sqrt(16.0)
+    std.printf("Debug info: %c %d %d %ld %f %f %f %d\n", c1, c2, c3, l, f, d, root, k)
+    std.printf("Debug info continue: %d %d %d\n", sum, p1.x, scaled[0])
+    return 0
+}
+
+// Function definition
+int add(int a, int b) {
+    return a + b;
+}
+
+// Function with multiple returns
+(int,string) add_n_compare(int a, int b) {
+    return (a + b), (a > b) ? ">" : "<="  
+}
+
+

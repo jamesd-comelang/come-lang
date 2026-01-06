@@ -1,0 +1,8 @@
+module main
+
+import std
+
+main() {
+    std.out.printf("Hello world!\n")
+}
+
