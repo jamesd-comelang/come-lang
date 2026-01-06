@@ -1,2 +1,0 @@
-# This is not implemented yet
-^samba.tests.krb5.netlogon.*.NetlogonSchannel.test_ticket_samlogon

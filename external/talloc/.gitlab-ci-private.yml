@@ -1,5 +1,0 @@
-# This is just a legacy alias used by the
-# https://gitlab.com/samba-team/devel/samba configuration
-#
-include:
-  - '/.gitlab-ci.yml'

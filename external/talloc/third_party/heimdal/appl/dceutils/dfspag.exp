@@ -1,3 +1,0 @@
-#!/unix
-* kernel extensions used to get the pag
-kafs_syscall syscall

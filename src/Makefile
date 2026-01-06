@@ -10,7 +10,7 @@ TARGET := $(BUILD_DIR)/come
 # Link all objects into final binary
 .PHONY: $(SUB_DIRS)
 $(TARGET): $(SUB_MAKE_DIRS)
-	$(CC) $(CFLAGS) -o $@ $(wildcard $(BUILD_DIR)/*.o)
+	$(CC) $(CFLAGS) -o $@ $(filter-out %_manual.o %_gen.o,$(wildcard $(BUILD_DIR)/*.o))
 
 # Build modules that require come compiler
 std: $(TARGET)

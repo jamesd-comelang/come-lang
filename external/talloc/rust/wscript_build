@@ -1,5 +1,0 @@
-#!/usr/bin/env python
-
-bld.vendor_sources()
-
-# There are no Rust integrations at the moment. If there were, they would be built here.
