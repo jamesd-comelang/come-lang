@@ -1,5 +1,5 @@
 #include "mem/talloc.h"
-#include "talloc.h"   // from external/talloc/include
+#include "talloc.h"   // from src/external/talloc/include
 #include <stdio.h>
 
 static void* co_mem_root = NULL;

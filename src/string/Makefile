@@ -1,6 +1,6 @@
 TOP_DIR=../../
 CC=gcc
-CFLAGS=-Wall -g -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/ -I$(TOP_DIR)external/talloc/lib/talloc -I$(TOP_DIR)external/talloc/lib/replace
+CFLAGS=-Wall -g -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/ -I$(TOP_DIR)src/external/talloc/lib/talloc -I$(TOP_DIR)src/external/talloc/lib/replace
 BUILD_DIR=$(TOP_DIR)/build
 COME=$(BUILD_DIR)/come
 

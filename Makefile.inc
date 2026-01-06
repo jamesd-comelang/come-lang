@@ -1,6 +1,6 @@
 
 CC=gcc
-CFLAGS += -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/ -I$(TOP_DIR)external/talloc/lib/talloc -I$(TOP_DIR)external/talloc/lib/replace
+CFLAGS += -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/ -I$(TOP_DIR)src/external/talloc/lib/talloc -I$(TOP_DIR)src/external/talloc/lib/replace
 
 # Source and build dirs
 SRC_DIR := .
@@ -62,8 +62,8 @@ test:
 		echo "Results: $$passed passed, $$failed failed"; \
 		[ $$failed -eq 0 ]; \
 	else \
-		echo "No t/ directory found in $$(pwd)"; \
-		exit 1; \
+		echo "No t/ directory found in $$(pwd), skipping tests."; \
+		exit 0; \
 	fi
 
 # Clean test binaries and generated C files
@@ -76,6 +76,8 @@ clean-test:
 			testname=$$(basename $$test .co); \
 			rm -f "t/$$testname"; \
 		done; \
+	else \
+		echo "No t/ directory found in $$(pwd), skipping test cleanup."; \
 	fi
 
 # Ensure build dir exists

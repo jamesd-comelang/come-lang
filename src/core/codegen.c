@@ -1596,9 +1596,8 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "static __attribute__((unused)) const char* come_strerror() { return strerror(errno); }\n");
     // Auto-include headers for simple modules detection
     // In a real compiler this would be driven by the symbol table/imports
-    fprintf(f, "#include \"net/tls.h\"\n");
-    fprintf(f, "#include \"net/http.h\"\n");
-    
+    // Net includes removed
+
     // Global ERR object externs if std is imported
     int std_imported = 0;
     for (int i = 0; i < current_import_count; i++) {
@@ -1614,11 +1613,8 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         // We need the type for ERR object too
         fprintf(f, "typedef struct come_std__ERR_t come_std__ERR_t;\n");
         fprintf(f, "extern come_std__ERR_t come_std__ERR;\n");
-
     }
-    
     // Macros for method dispatch
-    fprintf(f, "#define come_call_accept(x) _Generic((x), net_tls_listener*: net_tls_accept((net_tls_listener*)(x)))\n");
     fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);
     
     // Module memory context

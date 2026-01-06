@@ -227,7 +227,7 @@ int main(int argc, char *argv[]) {
     get_project_root(project_root, sizeof(project_root));
 
     if (run_cmd("gcc -Wall -Werror -Wno-cpp -g -D__STDC_WANT_LIB_EXT1__=1 "
-                "-I%s/src/include -I%s/src/core/include -I%s/external/talloc/lib/talloc -I%s/external/talloc/lib/replace "
+                "-I%s/src/include -I%s/src/core/include -I%s/src/external/talloc/lib/talloc -I%s/src/external/talloc/lib/replace "
                 "\"%s\" %s/build/std.o %s/build/string.o %s/build/array.o %s/build/map.o %s/build/talloc.o %s/build/talloc_lib.o -o \"%s\" -ldl", 
                 project_root, project_root, project_root, project_root,
                 c_file, project_root, project_root, project_root, project_root, project_root, project_root, bin_file) != 0) {
