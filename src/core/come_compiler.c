@@ -17,6 +17,9 @@
 #include "codegen.h"
 #include "common.h"
 
+// Silence truncation warnings for path operations
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+
 int g_verbose = 0;
 static char g_project_root[PATH_MAX];
 static char g_ccache_dir[PATH_MAX];
@@ -67,10 +70,6 @@ static void die(const char *fmt, ...) {
     exit(1);
 }
 
-static int ends_with(const char *s, const char *suffix) {
-    size_t ls = strlen(s), lt = strlen(suffix);
-    return (ls >= lt) && memcmp(s + ls - lt, suffix, lt) == 0;
-}
 
 // Check if file exists
 static int file_exists(const char *path) {
@@ -279,7 +278,7 @@ static void compile_file(const char *source_path, const char *forced_o_path) {
              dirname(project_base);
         }
 
-        char cmd[8192];
+        char cmd[65536];
         // Check if we are running from an installed location (e.g. /usr/bin or /usr/local/bin)
         // If "build" is not in the path, we assume installed.
         // Actually, let's check for ../include/come_string.h relative to executable
