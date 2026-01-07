@@ -110,6 +110,15 @@ static int run_cmd(const char *fmt, ...) {
     return system(buf);
 }
 
+static void check_build_essentials(void) {
+    int ret = system("gcc --version > /dev/null 2>&1");
+    if (ret != 0) {
+        fprintf(stderr, "Error: Build essentials (gcc) not found.\n");
+        fprintf(stderr, "Please install gcc/build-essential (e.g. apt install build-essential)\n");
+        exit(1);
+    }
+}
+
 // Find project root based on .git or build/come presence, or fallback to cwd
 static void detect_project_root(char *out, size_t sz) {
     if (getcwd(out, sz) == NULL) die("getcwd failed");
@@ -320,6 +329,9 @@ static void compile_file(const char *source_path, const char *forced_o_path) {
 /* ---------- Main ---------- */
 
 int main(int argc, char *argv[]) {
+    // Ensure we have gcc before doing anything
+    check_build_essentials();
+
     setbuf(stdout, NULL);
     if (argc < 3) {
         fprintf(stderr, "Usage: come build <file.co|.> [-o output]\n");
