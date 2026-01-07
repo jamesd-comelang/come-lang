@@ -1,0 +1,9 @@
+Package: ${PKG_NAME}
+Version: ${PKG_VERSION}
+Section: devel
+Priority: optional
+Architecture: ${ARCH}
+Maintainer: ${MAINTAINER}
+Description: The Come Programming Language
+ A static, compiled, strong-typed systems programming language
+ that transpiles to C.

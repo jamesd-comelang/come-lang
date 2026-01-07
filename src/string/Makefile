@@ -18,7 +18,7 @@ $(BUILD_DIR)/string_gen.o: $(BUILD_DIR)/string.co.c
 	$(CC) $(CFLAGS) -c $(BUILD_DIR)/string.co.c -o $(BUILD_DIR)/string_gen.o
 
 $(BUILD_DIR)/string.co.c: string.co $(COME)
-	$(COME) genc string.co -o $(BUILD_DIR)/string.co.c
+	cd $(TOP_DIR) && ./build/come genc src/string/string.co -o build/string.co.c
 
 clean:
 	rm -f string.co.c string_manual.o string_gen.o $(BUILD_DIR)/string.co.c $(BUILD_DIR)/string_manual.o $(BUILD_DIR)/string_gen.o $(BUILD_DIR)/string.o

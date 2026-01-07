@@ -90,6 +90,44 @@ test-come: $(TARGET)
 clean:
 	@$(MAKE) -C $(SRC_DIR) clean
 	@$(MAKE) -C $(EXAMPLES_DIR) clean
+	@rm -rf $(BUILD_DIR)/dist
+	@rm -rf packaging/come-pkg
+	@rm -f packaging/*.deb
+	@rm -rf src/std/.ccache src/std/build src/string/.ccache src/string/build
+
+# Create distribution package (local)
+dist-local: all
+	@echo "Creating distribution package (local)..."
+	@rm -rf $(BUILD_DIR)/dist
+	@mkdir -p $(BUILD_DIR)/dist/bin $(BUILD_DIR)/dist/lib/modules $(BUILD_DIR)/dist/include
+	@# Copy compiler
+	@cp $(TARGET) $(BUILD_DIR)/dist/bin/
+	@# Create static library
+	@echo "Creating libcome.a..."
+	@ar rcs $(BUILD_DIR)/dist/lib/libcome.a \
+		$(BUILD_DIR)/array.o \
+		$(BUILD_DIR)/map.o \
+		$(BUILD_DIR)/talloc.o \
+		$(BUILD_DIR)/talloc_lib.o \
+		$(BUILD_DIR)/string.o \
+		$(BUILD_DIR)/std.o
+	@# Copy modules
+	@cp src/std/std.co $(BUILD_DIR)/dist/lib/modules/
+	@cp src/string/string.co $(BUILD_DIR)/dist/lib/modules/
+	@# Copy headers
+	@cp -r src/include/* $(BUILD_DIR)/dist/include/
+	@# Copy talloc headers
+	@mkdir -p $(BUILD_DIR)/dist/include/talloc
+	@cp -r src/external/talloc/lib/talloc/*.h $(BUILD_DIR)/dist/include/talloc/
+	@cp -r src/external/talloc/lib/replace/*.h $(BUILD_DIR)/dist/include/talloc/
+	@# Remove any vim swap files or hidden files from include
+	@find $(BUILD_DIR)/dist/include -name ".*.swp" -delete
+
+# Create full distribution package (including .deb)
+dist: dist-local
+	@echo "Building Debian package..."
+	@./packaging/build_deb.sh
+
 
 .PHONY: all examples run-examples test test-come clean
 

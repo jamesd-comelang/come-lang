@@ -204,12 +204,20 @@ static void generate_expression(FILE* f, ASTNode* node) {
         ASTNode* receiver = node->children[0];
         
         // Detect module static calls
+        int is_import = 0;
+        if (receiver->type == AST_IDENTIFIER) {
+            for (int i=0; i<current_import_count; i++) {
+                if (strcmp(receiver->text, current_imports[i]) == 0) { is_import = 1; break; }
+            }
+        }
+        
         if (receiver->type == AST_IDENTIFIER && (
             strcmp(receiver->text, "net")==0 || 
             strcmp(receiver->text, "conv")==0 || 
             strcmp(receiver->text, "mem")==0 ||
             strcmp(receiver->text, "std")==0 ||
-            strcmp(receiver->text, "ERR")==0)) {
+            strcmp(receiver->text, "ERR")==0 ||
+            is_import)) {
             
             skip_receiver = 1;
             
@@ -218,7 +226,13 @@ static void generate_expression(FILE* f, ASTNode* node) {
              } else if (strcmp(receiver->text, "std")==0 && strcmp(method, "printf")==0) {
                  strcpy(c_func, "printf"); 
              } else {
-                 snprintf(c_func, sizeof(c_func), "come_%s_%s", receiver->text, method);
+                 if (is_import) {
+                     // New schema for imported modules: come_MODULE__FUNC
+                     snprintf(c_func, sizeof(c_func), "come_%s__%s", receiver->text, method);
+                 } else {
+                     // Legacy schema for core modules
+                     snprintf(c_func, sizeof(c_func), "come_%s_%s", receiver->text, method);
+                 }
              }
         } 
         // Detect std.out.printf / std.err.printf

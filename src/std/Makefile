@@ -21,7 +21,7 @@ $(BUILD_DIR)/std_gen.o: $(BUILD_DIR)/std.co.c
 	$(CC) $(CFLAGS) -c $(BUILD_DIR)/std.co.c -o $(BUILD_DIR)/std_gen.o
 
 $(BUILD_DIR)/std.co.c: std.co $(COME)
-	$(COME) genc std.co -o $(BUILD_DIR)/std.co.c
+	cd $(TOP_DIR) && ./build/come genc src/std/std.co -o build/std.co.c
 
 clean:
 	rm -f std.co.c std_manual.o std_gen.o $(BUILD_DIR)/std.co.c $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o $(BUILD_DIR)/std.o
