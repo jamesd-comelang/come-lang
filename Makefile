@@ -126,7 +126,8 @@ dist-local: all
 # Create full distribution package (including .deb)
 dist: dist-local
 	@echo "Building Debian package..."
-	@./packaging/build_deb.sh
+	@VERSION=$$(git describe --tags --abbrev=0 | sed 's/^v//') && \
+	./packaging/build_deb.sh $$VERSION
 
 
 .PHONY: all examples run-examples test test-come clean

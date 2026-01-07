@@ -3,10 +3,12 @@ set -e
 
 # Configuration
 PKG_NAME="come"
-PKG_VERSION="1.0.0"
+PKG_VERSION="${1:-1.0.0}"
 ARCH=$(dpkg --print-architecture)
 PKG_DIR="packaging/come-pkg"
-DEB_NAME="packaging/${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
+RELEASE_DIR="packaging/releases"
+mkdir -p "$RELEASE_DIR"
+DEB_NAME="${RELEASE_DIR}/${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
 
 # Ensure we are in the project root
 if [ ! -f "Makefile" ]; then
