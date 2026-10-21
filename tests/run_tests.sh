@@ -12,3 +12,6 @@ gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_codegen.c src/core/pars
 gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_string.c src/string/string.c src/mem/memory.c src/core/utils.c -o build/tests/test_string
 ./build/tests/test_string
 
+gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_mem.c src/mem/memory.c -o build/tests/test_mem
+./build/tests/test_mem
+
