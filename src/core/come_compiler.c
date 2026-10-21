@@ -303,17 +303,16 @@ static void compile_file(const char *source_path, const char *forced_o_path) {
         if (is_installed) {
              snprintf(cmd, sizeof(cmd), 
                 "gcc -c -Wall -Wno-cpp -Wno-implicit-function-declaration -D__STDC_WANT_LIB_EXT1__=1 "
-                "-I\"%s\" -I\"%s/talloc\" "
+                "-I\"%s\" "
                 "\"%s\" -o \"%s\"",
-                include_dir, include_dir,
+                include_dir,
                 c_file, o_file);
         } else {
              snprintf(cmd, sizeof(cmd), 
                 "gcc -c -Wall -Wno-cpp -Wno-implicit-function-declaration -D__STDC_WANT_LIB_EXT1__=1 "
                 "-I%s/src/include -I%s/src/core/include "
-                "-I%s/src/external/talloc/lib/talloc -I%s/src/external/talloc/lib/replace "
                 "\"%s\" -o \"%s\"",
-                project_base, project_base, project_base, project_base,
+                project_base, project_base,
                 c_file, o_file);
         }
             
@@ -468,8 +467,8 @@ int main(int argc, char *argv[]) {
     if (use_lib) {
         pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, " \"%s\"", libcome);
     } else {
-        const char *std_objs[] = {"std.o", "string.o", "array.o", "map.o", "talloc.o", "talloc_lib.o"};
-        for (int i=0; i<6; i++) {
+        const char *std_objs[] = {"std.o", "string.o", "array.o", "map.o", "memory.o"};
+        for (int i=0; i<5; i++) {
             pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, " \"%s/build/%s\"", project_base, std_objs[i]);
         }
     }

@@ -1,6 +1,6 @@
 
 CC=gcc
-CFLAGS += -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/ -I$(TOP_DIR)src/external/talloc/lib/talloc -I$(TOP_DIR)src/external/talloc/lib/replace
+CFLAGS += -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/
 
 # Source and build dirs
 SRC_DIR := .

@@ -107,8 +107,7 @@ dist-local: all
 	@ar rcs $(BUILD_DIR)/dist/lib/libcome.a \
 		$(BUILD_DIR)/array.o \
 		$(BUILD_DIR)/map.o \
-		$(BUILD_DIR)/talloc.o \
-		$(BUILD_DIR)/talloc_lib.o \
+		$(BUILD_DIR)/memory.o \
 		$(BUILD_DIR)/string.o \
 		$(BUILD_DIR)/std.o
 	@# Copy modules
@@ -116,10 +115,6 @@ dist-local: all
 	@cp src/string/string.co $(BUILD_DIR)/dist/lib/modules/
 	@# Copy headers
 	@cp -r src/include/* $(BUILD_DIR)/dist/include/
-	@# Copy talloc headers
-	@mkdir -p $(BUILD_DIR)/dist/include/talloc
-	@cp -r src/external/talloc/lib/talloc/*.h $(BUILD_DIR)/dist/include/talloc/
-	@cp -r src/external/talloc/lib/replace/*.h $(BUILD_DIR)/dist/include/talloc/
 	@# Remove any vim swap files or hidden files from include
 	@find $(BUILD_DIR)/dist/include -name ".*.swp" -delete
 

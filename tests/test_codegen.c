@@ -6,6 +6,8 @@
 #include "codegen.h"
 #include "ast.h"
 
+int g_verbose = 0;  // defined in come_compiler.c for the real driver; the test provides its own
+
 int main() {
     ASTNode* root = NULL;
     // parse_file currently returns a hardcoded AST, so the input file doesn't matter much
