@@ -1,8 +1,16 @@
 TOP_DIR=../../
+ifeq ($(OS),Windows_NT)
+SHELL := cmd.exe
+.SHELLFLAGS := /C
+EXEEXT := .exe
+else
+EXEEXT :=
+endif
 CC=gcc
 CFLAGS=-Wall -g -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/ -I$(TOP_DIR)src/external/talloc/lib/talloc -I$(TOP_DIR)src/external/talloc/lib/replace
 BUILD_DIR=$(TOP_DIR)/build
-COME=$(BUILD_DIR)/come
+COME=$(BUILD_DIR)/come$(EXEEXT)
+COME_FROM_ROOT=build\come$(EXEEXT)
 
 # We need to link both the manual C code (std.c) and the generated C code (std.co.c)
 # into a single object file for the linker.
@@ -21,7 +29,11 @@ $(BUILD_DIR)/std_gen.o: $(BUILD_DIR)/std.co.c
 	$(CC) $(CFLAGS) -c $(BUILD_DIR)/std.co.c -o $(BUILD_DIR)/std_gen.o
 
 $(BUILD_DIR)/std.co.c: std.co $(COME)
-	cd $(TOP_DIR) && ./build/come genc src/std/std.co -o build/std.co.c
+	cd $(TOP_DIR) && $(COME_FROM_ROOT) genc src/std/std.co -o build/std.co.c
 
 clean:
+ifeq ($(OS),Windows_NT)
+	-powershell -NoProfile -Command "Remove-Item -Force -ErrorAction SilentlyContinue std.co.c,std_manual.o,std_gen.o,$(BUILD_DIR)/std.co.c,$(BUILD_DIR)/std_manual.o,$(BUILD_DIR)/std_gen.o,$(BUILD_DIR)/std.o"
+else
 	rm -f std.co.c std_manual.o std_gen.o $(BUILD_DIR)/std.co.c $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o $(BUILD_DIR)/std.o
+endif

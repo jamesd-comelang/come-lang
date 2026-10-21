@@ -30,6 +30,9 @@ src/net/http/
 ### Running Tests
 
 ```bash
+# Rebuild compiler/runtime from current sources, then run everything.
+python tests/test_runner.py --rebuild --all
+
 # Run all COME tests
 make test-come
 

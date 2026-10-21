@@ -1,0 +1,71 @@
+module main
+import std
+
+int main() {
+    FILE f = std.tmpfile()
+    if (!f.isopen()) {
+        std.out.printf("FAIL: tmpfile was not open\n")
+        return 1
+    }
+
+    uint written = f.puts("alpha")
+    if (written == 0) {
+        std.out.printf("FAIL: puts wrote no bytes\n")
+        return 1
+    }
+
+    f.rewind()
+    string line = f.gets()
+    if (line == null || line.cmp("alpha\n") != 0) {
+        std.out.printf("FAIL: gets returned %s\n", line)
+        return 1
+    }
+
+    string temp_name = std.tmpname()
+    if (temp_name.len() == 0) {
+        std.out.printf("FAIL: tmpname was empty\n")
+        return 1
+    }
+
+    f.close()
+    if (f.isopen()) {
+        std.out.printf("FAIL: close left file open\n")
+        return 1
+    }
+
+    FILE out = std.tmpfile()
+    string label = "row"
+    if (out.printf("%s:%d:%t\n", label, 7, true) <= 0) {
+        std.out.printf("FAIL: FILE.printf wrote no bytes\n")
+        return 1
+    }
+    out.rewind()
+    string formatted = out.gets()
+    if (formatted == null || formatted.cmp("row:7:true\n") != 0) {
+        std.out.printf("FAIL: FILE.printf/get formatted returned %s\n", formatted)
+        return 1
+    }
+    out.close()
+
+    FILE named = std.tmpfile()
+    string path = std.tmpname()
+    if (!named.reopen(path, "w+")) {
+        std.out.printf("FAIL: reopen named temp file failed\n")
+        return 1
+    }
+    named.puts("delete-me")
+    named.close()
+    if (!std.remove(path)) {
+        std.out.printf("FAIL: std.remove failed for temp file\n")
+        return 1
+    }
+
+    string path_env = std.proc.getenv("PATH")
+    if (path_env == null || path_env.len() == 0) {
+        std.out.printf("FAIL: std.proc.getenv(PATH) returned empty\n")
+        return 1
+    }
+
+    std.out.printf("PASS: std FILE API\n")
+    return 0
+}

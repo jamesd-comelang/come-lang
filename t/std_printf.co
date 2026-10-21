@@ -1,0 +1,14 @@
+module main
+
+import std
+
+int main() {
+    string name = "Come"
+    bool ok = true
+    long n = 1234567890123
+
+    std.printf("Hello, %s %t %ld\n", name, ok, n)
+    return 0
+}
+
+// EXPECT: Hello, Come true 1234567890123

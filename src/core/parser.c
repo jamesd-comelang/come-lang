@@ -17,9 +17,18 @@ typedef struct {
     ASTNode* replacement;
 } AliasEntry;
 
+typedef struct {
+    char name[256];
+    char params[16][256];
+    int param_count;
+    ASTNode* replacement;
+} MacroAliasEntry;
+
 #define MAX_ALIASES 1024
 static AliasEntry alias_table[MAX_ALIASES];
 static int alias_count = 0;
+static MacroAliasEntry macro_alias_table[MAX_ALIASES];
+static int macro_alias_count = 0;
 
 static void register_alias(const char* name, ASTNode* replacement) {
     if (alias_count < MAX_ALIASES) {
@@ -40,6 +49,30 @@ static ASTNode* find_alias(const char* name) {
     return NULL;
 }
 
+static void register_macro_alias(const char* name, char params[][256], int param_count, ASTNode* replacement) {
+    if (macro_alias_count >= MAX_ALIASES) {
+        printf("Error: Too many macro aliases defined\n");
+        return;
+    }
+
+    MacroAliasEntry* entry = &macro_alias_table[macro_alias_count++];
+    strcpy(entry->name, name);
+    entry->param_count = param_count;
+    entry->replacement = replacement;
+    for (int i = 0; i < param_count && i < 16; i++) {
+        strcpy(entry->params[i], params[i]);
+    }
+}
+
+static MacroAliasEntry* find_macro_alias(const char* name) {
+    for (int i = 0; i < macro_alias_count; i++) {
+        if (strcmp(macro_alias_table[i].name, name) == 0) {
+            return &macro_alias_table[i];
+        }
+    }
+    return NULL;
+}
+
 static ASTNode* ast_clone(ASTNode* node) {
     if (!node) return NULL;
     ASTNode* copy = ast_new(node->type);
@@ -48,6 +81,27 @@ static ASTNode* ast_clone(ASTNode* node) {
     copy->child_count = node->child_count;
     for (int i = 0; i < node->child_count; i++) {
         copy->children[i] = ast_clone(node->children[i]);
+    }
+    return copy;
+}
+
+static ASTNode* ast_clone_substitute(ASTNode* node, MacroAliasEntry* macro, ASTNode** args, int arg_count) {
+    if (!node) return NULL;
+
+    if (node->type == AST_IDENTIFIER) {
+        for (int i = 0; i < macro->param_count && i < arg_count; i++) {
+            if (strcmp(node->text, macro->params[i]) == 0) {
+                return ast_clone(args[i]);
+            }
+        }
+    }
+
+    ASTNode* copy = ast_new(node->type);
+    strcpy(copy->text, node->text);
+    copy->source_line = node->source_line;
+    copy->child_count = node->child_count;
+    for (int i = 0; i < node->child_count; i++) {
+        copy->children[i] = ast_clone_substitute(node->children[i], macro, args, arg_count);
     }
     return copy;
 }
@@ -264,16 +318,36 @@ static ASTNode* parse_primary() {
             // Function Call: expr(...)   (e.g. func(), arr[0]())
             
             if (node->type == AST_IDENTIFIER) {
-                 ASTNode* call = ast_new(AST_CALL);
-                 strcpy(call->text, node->text);
-                 free(node); 
-                 node = call;
-                 
-                 while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
-                     node->children[node->child_count++] = parse_expression();
-                     if (!match(TOKEN_COMMA)) break;
+                 MacroAliasEntry* macro = find_macro_alias(node->text);
+                 if (macro) {
+                     ASTNode* args[16];
+                     int arg_count = 0;
+                     while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                         ASTNode* arg = parse_expression();
+                         if (arg_count < 16) args[arg_count++] = arg;
+                         if (!match(TOKEN_COMMA)) break;
+                     }
+                     expect(TOKEN_RPAREN);
+
+                     if (arg_count != macro->param_count) {
+                         printf("Error: macro alias %s expects %d args, got %d\n", macro->name, macro->param_count, arg_count);
+                     }
+
+                     ASTNode* expanded = ast_clone_substitute(macro->replacement, macro, args, arg_count);
+                     ast_free(node);
+                     node = expanded;
+                 } else {
+                     ASTNode* call = ast_new(AST_CALL);
+                     strcpy(call->text, node->text);
+                     ast_free(node);
+                     node = call;
+
+                     while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                         node->children[node->child_count++] = parse_expression();
+                         if (!match(TOKEN_COMMA)) break;
+                     }
+                     expect(TOKEN_RPAREN);
                  }
-                 expect(TOKEN_RPAREN);
             } else if (node->type == AST_MEMBER_ACCESS) {
                  // Convert Member Access + Call -> Method Call (Alias Substitution case)
                  ASTNode* receiver = node->children[0];
@@ -370,6 +444,32 @@ static ASTNode* parse_var_decl() {
     char type_name[128];
     strcpy(type_name, t->text);
     advance();
+
+    if (strcmp(type_name, "var") == 0 && match(TOKEN_LPAREN)) {
+        ASTNode* destruct = ast_new(AST_TUPLE_DESTRUCT);
+        strcpy(destruct->text, "var");
+
+        while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+            if (current()->type == TOKEN_COMMA) {
+                advance();
+                continue;
+            }
+            if (current()->type != TOKEN_IDENTIFIER) {
+                printf("Expected identifier in tuple destructuring, got %d ('%s')\n", current()->type, current()->text);
+                break;
+            }
+            ASTNode* ident = ast_new(AST_IDENTIFIER);
+            strcpy(ident->text, current()->text);
+            destruct->children[destruct->child_count++] = ident;
+            advance();
+        }
+
+        expect(TOKEN_RPAREN);
+        expect(TOKEN_ASSIGN);
+        destruct->children[destruct->child_count++] = parse_expression();
+        if (current()->type == TOKEN_SEMICOLON) advance();
+        return destruct;
+    }
     
     // Special handling for struct/union: "struct Type varname" or "union Type varname"
     if ((strcmp(type_name, "struct") == 0 || strcmp(type_name, "union") == 0) && current()->type == TOKEN_IDENTIFIER) {
@@ -401,15 +501,17 @@ static ASTNode* parse_var_decl() {
          strcpy(decl->text, var_name); // Var name
          
          // Child 0: Initializer expression
-         if (tokens.tokens[pos-1].type == TOKEN_ASSIGN) { 
-              decl->children[decl->child_count++] = parse_expression();
-         } else if (match(TOKEN_ASSIGN)) {
+         if (match(TOKEN_ASSIGN)) {
               decl->children[decl->child_count++] = parse_expression();
          } else {
               // No initializer? Uninitialized var.
-              ASTNode* dummy = ast_new(AST_NUMBER);
-              strcpy(dummy->text, "0"); // Default init
-              decl->children[decl->child_count++] = dummy; 
+              if (strcmp(type_name, "var") == 0) {
+                  decl->children[decl->child_count++] = NULL;
+              } else {
+                  ASTNode* dummy = ast_new(AST_NUMBER);
+                  strcpy(dummy->text, "0"); // Default init
+                  decl->children[decl->child_count++] = dummy;
+              }
          }
 
          // Child 1: Type
@@ -836,7 +938,12 @@ static ASTNode* parse_statement() {
             if (current()->type == TOKEN_SEMICOLON) advance();
             return node;
         }
-        case TOKEN_FALLTHROUGH: advance(); return NULL;
+        case TOKEN_FALLTHROUGH: {
+            advance();
+            ASTNode* node = ast_new(AST_FALLTHROUGH);
+            if (current()->type == TOKEN_SEMICOLON) advance();
+            return node;
+        }
         default: return parse_expression_statement();
     }
 }
@@ -1000,8 +1107,10 @@ static void parse_struct(ASTNode* program) {
                  int start_pos = pos;
                  // Check for method decl inside struct: method name() OR Type name()
                  int is_method = 0;
+                 int used_method_keyword = 0;
                  if (match(TOKEN_METHOD)) {
                      is_method = 1;
+                     used_method_keyword = 1;
                  } else {
                      // Lookahead for Type name(
                      // We can peek.
@@ -1018,7 +1127,7 @@ static void parse_struct(ASTNode* program) {
                  if (is_method) {
                      // method ident() OR Type ident()
                      char ret_type[64] = "void"; 
-                     if (current()->type != TOKEN_METHOD) {
+                     if (!used_method_keyword) {
                          // It was Type ident(...)
                          strcpy(ret_type, current()->text);
                          advance(); // consume type
@@ -1028,17 +1137,71 @@ static void parse_struct(ASTNode* program) {
                          // Method name
                          char method_name[64];
                          strcpy(method_name, tokens.tokens[pos-1].text);
+                         ASTNode* func = ast_new(AST_FUNCTION);
+                         strncpy(func->text, node->text, sizeof(func->text) - 1);
+                         func->text[sizeof(func->text) - 1] = '\0';
+                         strncat(func->text, "_", sizeof(func->text) - strlen(func->text) - 1);
+                         strncat(func->text, method_name, sizeof(func->text) - strlen(func->text) - 1);
+
+                         ASTNode* ret_node = ast_new(AST_IDENTIFIER);
+                         strcpy(ret_node->text, ret_type);
+                         func->children[func->child_count++] = ret_node;
+
+                         ASTNode* self_arg = ast_new(AST_VAR_DECL);
+                         strcpy(self_arg->text, "self");
+                         self_arg->children[self_arg->child_count++] = NULL;
+
+                         ASTNode* self_type = ast_new(AST_IDENTIFIER);
+                         strncpy(self_type->text, node->text, sizeof(self_type->text) - 1);
+                         self_type->text[sizeof(self_type->text) - 1] = '\0';
+                         strncat(self_type->text, "*", sizeof(self_type->text) - strlen(self_type->text) - 1);
+                         self_arg->children[self_arg->child_count++] = self_type;
+                         func->children[func->child_count++] = self_arg;
                          
                          if (match(TOKEN_LPAREN)) {
-                             // Consume tokens until matching RPAREN
-                             int balance = 1;
-                             while(balance > 0 && current()->type != TOKEN_EOF) {
-                                 if (current()->type == TOKEN_LPAREN) balance++;
-                                 else if (current()->type == TOKEN_RPAREN) balance--;
-                                 advance();
+                             while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                                 if (current()->type == TOKEN_COMMA) { advance(); continue; }
+                                 if (current()->type == TOKEN_CONST) advance();
+
+                                 char arg_type[256];
+                                 if (current()->type == TOKEN_STRUCT) {
+                                     advance();
+                                     snprintf(arg_type, sizeof(arg_type), "struct %s", current()->text);
+                                     advance();
+                                 } else {
+                                     strcpy(arg_type, current()->text);
+                                     advance();
+                                 }
+
+                                 if (match(TOKEN_LBRACKET)) {
+                                     while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+                                     expect(TOKEN_RBRACKET);
+                                     strcat(arg_type, "[]");
+                                 }
+
+                                 if (current()->type == TOKEN_IDENTIFIER) {
+                                     ASTNode* arg = ast_new(AST_VAR_DECL);
+                                     strcpy(arg->text, current()->text);
+                                     advance();
+
+                                     ASTNode* arg_type_node = ast_new(AST_IDENTIFIER);
+                                     strcpy(arg_type_node->text, arg_type);
+
+                                     if (match(TOKEN_LBRACKET)) {
+                                         while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+                                         expect(TOKEN_RBRACKET);
+                                         strcat(arg_type_node->text, "[]");
+                                     }
+
+                                     arg->children[arg->child_count++] = NULL;
+                                     arg->children[arg->child_count++] = arg_type_node;
+                                     func->children[func->child_count++] = arg;
+                                 }
                              }
-                             // TODO: Store method signature in AST for full support
+                             expect(TOKEN_RPAREN);
                         }
+                        match(TOKEN_SEMICOLON);
+                        node->children[node->child_count++] = func;
                      }
                  } else {
                      ASTNode* field = parse_statement();
@@ -1085,10 +1248,31 @@ static void parse_single_alias(ASTNode* program) {
 
         if (match(TOKEN_LPAREN)) {
             // Macro alias: alias SQUARE(x) = ...
-             while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) advance(); // skip args
+             char params[16][256];
+             int param_count = 0;
+             while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                 if (current()->type == TOKEN_COMMA) {
+                     advance();
+                     continue;
+                 }
+                 if (current()->type != TOKEN_IDENTIFIER) {
+                     printf("Error: Expected identifier in macro alias args, got %s\n", current()->text);
+                     advance();
+                     continue;
+                 }
+                 if (param_count < 16) {
+                     strcpy(params[param_count++], current()->text);
+                 }
+                 advance();
+             }
              expect(TOKEN_RPAREN);
-             // Assume macro, skip for now
-             if (match(TOKEN_ASSIGN)) parse_expression();
+             if (match(TOKEN_ASSIGN)) {
+                 ASTNode* expr = parse_expression();
+                 if (expr) {
+                     register_macro_alias(name, params, param_count, expr);
+                 }
+                 if (current()->type == TOKEN_SEMICOLON) advance();
+             }
         }
         else if (match(TOKEN_ASSIGN)) {
              // alias X = Y
@@ -1167,7 +1351,7 @@ static void parse_top_level_decl(ASTNode* program) {
 
     // Variable or Function declaration
     // Check if it starts with a type OR is an implicit function definition (e.g. main() or myfunc())
-    if (is_type_token(t->type) || t->type == TOKEN_MAIN || 
+    if (is_type_token(t->type) || t->type == TOKEN_LPAREN || t->type == TOKEN_MAIN ||
         (t->type == TOKEN_IDENTIFIER && tokens.tokens[pos+1].type == TOKEN_LPAREN)) {
              
          // Parse type info
@@ -1417,6 +1601,8 @@ static void parse_top_level_decl(ASTNode* program) {
 int parse_file(const char* filename, ASTNode** out_ast) {
     if (lex_file(filename, &tokens) != 0) return 1;
     pos = 0;
+    alias_count = 0;
+    macro_alias_count = 0;
     
     *out_ast = ast_new(AST_PROGRAM);
     

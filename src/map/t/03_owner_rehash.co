@@ -1,0 +1,50 @@
+module main
+
+import (
+    std,
+    string
+)
+
+int main() {
+    string anchor = "anchor"
+    string value = "value"
+    map blank
+    map m = {}
+
+    if (blank.owner() != anchor.owner()) {
+        std.out.printf("FAIL: default map owner is not module context\n")
+        return 1
+    }
+
+    if (m.owner() != anchor.owner()) {
+        std.out.printf("FAIL: map literal owner is not module context\n")
+        return 1
+    }
+
+    m.put("k01", value)
+    m.put("k02", value)
+    m.put("k03", value)
+    m.put("k04", value)
+    m.put("k05", value)
+    m.put("k06", value)
+    m.put("k07", value)
+    m.put("k08", value)
+    m.put("k09", value)
+    m.put("k10", value)
+    m.put("k11", value)
+    m.put("k12", value)
+    m.put("k13", value)
+
+    if (m.owner() != anchor.owner()) {
+        std.out.printf("FAIL: map owner changed after rehash\n")
+        return 1
+    }
+
+    if (m.get("k01") == null || m.get("k13") == null) {
+        std.out.printf("FAIL: map lost values after rehash\n")
+        return 1
+    }
+
+    std.out.printf("PASS: Map owner survives rehash\n")
+    return 0
+}

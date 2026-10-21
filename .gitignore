@@ -1,0 +1,6 @@
+/.ccache/
+/build/
+/examples/*.exe
+/examples/*.c
+/src/**/t/*.exe
+/src/**/t/*.c

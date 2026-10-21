@@ -7,6 +7,7 @@ typedef enum {
     AST_PRINTF,
     AST_VAR_DECL,
     AST_ASSIGN,
+    AST_TUPLE_DESTRUCT,
     AST_METHOD_CALL,
     AST_CALL,
     AST_IF,
@@ -45,6 +46,7 @@ typedef enum {
     AST_IMPORT,
     AST_BREAK,
     AST_CONTINUE,
+    AST_FALLTHROUGH,
     AST_CAST,
     AST_TERNARY,
     AST_TYPE_END

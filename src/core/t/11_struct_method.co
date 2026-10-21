@@ -1,0 +1,25 @@
+module main
+
+import std
+
+struct Counter {
+    int value
+    int add(int delta)
+}
+
+int Counter.add(int delta) {
+    return self.value + delta
+}
+
+int main() {
+    struct Counter c = { .value = 7 }
+    int result = c.add(5)
+
+    if (result != 12) {
+        std.out.printf("FAIL: struct method call\n")
+        return 1
+    }
+
+    std.out.printf("PASS: struct method call\n")
+    return 0
+}

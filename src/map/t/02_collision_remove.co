@@ -1,0 +1,55 @@
+module main
+
+import (
+    std,
+    string
+)
+
+int main() {
+    map m = {}
+
+    // These keys collide in the initial 16-slot DJB2 table.
+    string k1 = "aa"
+    string k2 = "aq"
+    string k3 = "bp"
+    string v1 = "one"
+    string v2 = "two"
+    string v3 = "three"
+
+    m.put(k1, v1)
+    m.put(k2, v2)
+    m.put(k3, v3)
+
+    m.remove(k1)
+    if (m.get(k1) != null) {
+        std.out.printf("FAIL: removed collision-chain head is still present\n")
+        return 1
+    }
+    if (m.get(k2) == null || m.get(k2).cmp(v2) != 0) {
+        std.out.printf("FAIL: collision-chain second key was lost\n")
+        return 1
+    }
+    if (m.get(k3) == null || m.get(k3).cmp(v3) != 0) {
+        std.out.printf("FAIL: collision-chain third key was lost\n")
+        return 1
+    }
+
+    m.remove(k2)
+    if (m.get(k2) != null) {
+        std.out.printf("FAIL: removed collision-chain middle key is still present\n")
+        return 1
+    }
+    if (m.get(k3) == null || m.get(k3).cmp(v3) != 0) {
+        std.out.printf("FAIL: collision-chain tail key was lost\n")
+        return 1
+    }
+
+    ulong length = m.len()
+    if (length != 1) {
+        std.out.printf("FAIL: map length after collision removals is %lu\n", length)
+        return 1
+    }
+
+    std.out.printf("PASS: Map collision remove\n")
+    return 0
+}

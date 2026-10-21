@@ -1,0 +1,30 @@
+module main
+
+import (
+    std,
+    calc
+)
+
+int main() {
+    int sum = calc.add(2, 3)
+    string name = calc.label()
+    string echoed = calc.echo("ok")
+
+    if (sum != 5) {
+        std.out.printf("FAIL: imported int function\n")
+        return 1
+    }
+
+    if (name == null || name.cmp("calc") != 0) {
+        std.out.printf("FAIL: imported string function\n")
+        return 1
+    }
+
+    if (echoed == null || echoed.cmp("ok") != 0) {
+        std.out.printf("FAIL: imported string argument\n")
+        return 1
+    }
+
+    std.out.printf("PASS: local module import\n")
+    return 0
+}

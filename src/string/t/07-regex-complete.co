@@ -1,0 +1,32 @@
+module main
+import std
+
+int main() {
+    string mixed = "Item-42 ok; Item-7 fail"
+
+    if (!mixed.regex("Item-[0-9]+\\s+ok")) {
+        std.out.printf("FAIL: regex did not find class/plus/space pattern\n")
+        return 1
+    }
+
+    string parts[] = mixed.regex_split("\\s*[;]\\s*")
+    if (parts.length() != 2) {
+        std.out.printf("FAIL: regex_split expected 2 parts, got %u\n", parts.length())
+        return 1
+    }
+
+    string groups[] = mixed.regex_groups("(Item)-([0-9]+)")
+    if (groups.length() < 3 || groups[1].cmp("Item") != 0 || groups[2].cmp("42") != 0) {
+        std.out.printf("FAIL: regex_groups did not capture expected groups\n")
+        return 1
+    }
+
+    string limited = mixed.regex_replace("[0-9]+", "#", 1)
+    if (limited.cmp("Item-# ok; Item-7 fail") != 0) {
+        std.out.printf("FAIL: regex_replace count limit produced %s\n", limited)
+        return 1
+    }
+
+    std.out.printf("PASS: extended regex coverage\n")
+    return 0
+}

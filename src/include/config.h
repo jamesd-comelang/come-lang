@@ -41,11 +41,20 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <limits.h>
-#include <unistd.h>
-#include <dlfcn.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#ifdef _WIN32
+#include <io.h>
+#include <windows.h>
+#ifndef PATH_MAX
+#define PATH_MAX MAX_PATH
+#endif
+#else
+#include <unistd.h>
+#include <dlfcn.h>
+#endif
 
 #define memset_explicit(d,v,n) memset(d,v,n)
 

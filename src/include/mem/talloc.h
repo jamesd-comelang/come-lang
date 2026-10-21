@@ -15,6 +15,7 @@ void* mem_talloc_realloc(void* ctx, void* ptr, size_t size);
 void mem_talloc_free(void* ptr);
 void* mem_talloc_new_ctx(void* parent);
 void* mem_talloc_steal(void* new_ctx, void* ptr);
+void* mem_talloc_parent(void* ptr);
 
 #ifdef __cplusplus
 }

@@ -1,0 +1,11 @@
+module main
+
+const (
+    RED = enum,
+    YELLOW,
+)
+
+int main() {
+    var color = YELLOW
+    return color
+}

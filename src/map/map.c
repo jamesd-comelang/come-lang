@@ -32,7 +32,7 @@ come_map_t* come_map_new(TALLOC_CTX* ctx) {
 static void rehash(come_map_t** m_ptr) {
     come_map_t* old_m = *m_ptr;
     uint32_t new_size = old_m->size * 2;
-    TALLOC_CTX* ctx = NULL; // Use NULL context for rehash, or pass as param if needed
+    TALLOC_CTX* ctx = mem_talloc_parent(old_m);
     
     come_map_t* new_m = mem_talloc_alloc(ctx, sizeof(uint32_t) * 2 + sizeof(come_map_entry_t) * new_size);
     if (!new_m) return;
@@ -48,9 +48,6 @@ static void rehash(come_map_t** m_ptr) {
     }
     
     *m_ptr = new_m;
-    // We don't explicitly free old_m if it behaves like talloc_realloc but here it's a new alloc.
-    // In Come's model, we might want to let the arena handle it or free it.
-    // mem_talloc_free(old_m); // Safe to free since we copied entries
 }
 
 void come_map_put(come_map_t** m_ptr, string key, void* value) {
@@ -117,9 +114,6 @@ void come_map_remove(come_map_t* m, string key) {
             m->entries[idx].key = NULL;
             m->entries[idx].value = NULL;
             m->count--;
-            // Linear probing removal needs re-insertion of subsequent elements or tombstones.
-            // For MVP, we'll just mark it unoccupied. But collisions at this index will break.
-            // Better: re-insert until empty slot.
             uint32_t next = (idx + 1) % m->size;
             while (m->entries[next].occupied) {
                 come_map_entry_t entry = m->entries[next];

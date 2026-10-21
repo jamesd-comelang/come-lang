@@ -1,0 +1,23 @@
+module main
+import std
+
+int main() {
+    string parent = "hello"
+    string other = "owner"
+    string child = parent.upper()
+
+    if (child.owner() != parent) {
+        std.out.printf("FAIL: derived string owner was not parent\n")
+        return 1
+    }
+
+    child.chown(other)
+
+    if (child.owner() != other) {
+        std.out.printf("FAIL: chown did not move string owner\n")
+        return 1
+    }
+
+    std.out.printf("PASS: owner/chown semantics\n")
+    return 0
+}

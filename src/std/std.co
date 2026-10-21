@@ -19,6 +19,7 @@ export (
 
     // Pre-instantiated objects
     FILE in, out, err,
+    Proc proc,
 
     //hooks to start/end
     void FILE.init(),

@@ -1,0 +1,13 @@
+module calc
+
+string label() {
+    return "calc"
+}
+
+string echo(string value) {
+    return value
+}
+
+int add(int a, int b) {
+    return a + b
+}

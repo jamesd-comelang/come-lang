@@ -1,0 +1,25 @@
+module main
+
+import std
+
+alias SQUARE(x) = ((x) * (x))
+alias MIX(a, b) = ((a) + ((b) * 2))
+
+int main() {
+    int base = 5
+    int squared = SQUARE(base + 1)
+    int mixed = MIX(3, base)
+
+    if (squared != 36) {
+        std.out.printf("FAIL: macro alias expression argument\n")
+        return 1
+    }
+
+    if (mixed != 13) {
+        std.out.printf("FAIL: macro alias multiple arguments\n")
+        return 1
+    }
+
+    std.out.printf("PASS: macro alias\n")
+    return 0
+}

@@ -1,0 +1,23 @@
+module main
+import std
+
+(int, string) add_n_compare(int a, int b) {
+    return (a + b), (a > b) ? "Greater" : "Lesser/Equal"
+}
+
+int main() {
+    var (sum, msg) = add_n_compare(10, 20)
+
+    if (sum != 30) {
+        std.out.printf("FAIL: tuple sum was %d\n", sum)
+        return 1
+    }
+
+    if (msg.cmp("Lesser/Equal") != 0) {
+        std.out.printf("FAIL: tuple message was %s\n", msg)
+        return 1
+    }
+
+    std.out.printf("PASS: tuple return/destructuring\n")
+    return 0
+}

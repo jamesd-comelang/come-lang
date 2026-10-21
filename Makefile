@@ -1,18 +1,29 @@
 # Root Makefile: build tests and examples using compiler built in src/
+ifeq ($(OS),Windows_NT)
+SHELL := cmd.exe
+.SHELLFLAGS := /C
+EXEEXT := .exe
+PYTHON ?= python
+RED :=
+GREEN :=
+NC :=
+else
 SHELL := /bin/bash
-CFLAGS=-Wall -g -Isrc/include/ -Isrc/core/include/
-
-# Colors
+EXEEXT :=
+PYTHON ?= python3
 RED := $(shell printf "\033[1;38;2;255;255;255;48;2;200;0;0m")
 GREEN := $(shell printf "\033[1;38;2;255;255;255;48;2;0;150;0m")
 NC := $(shell printf "\033[0m")
+endif
+
+CFLAGS=-Wall -g -Isrc/include/ -Isrc/core/include/
 
 # Directories
 SRC_DIR = src
 BUILD_DIR = build
 EXAMPLES_DIR = examples
 TESTS_DIR = tests
-TARGET = $(BUILD_DIR)/come
+TARGET = $(BUILD_DIR)/come$(EXEEXT)
 
 # Test sources (optional C tests)
 # TEST_SRC = $(wildcard $(TESTS_DIR)/*.c)
@@ -22,7 +33,7 @@ TARGET = $(BUILD_DIR)/come
 all: $(TARGET) examples
 
 # Build compiler by invoking src Makefile
-$(TARGET):
+$(TARGET): FORCE
 	cd $(SRC_DIR) && $(MAKE)
 
 # Build all examples by invoking examples Makefile
@@ -44,15 +55,17 @@ tests:
 
 test: tests test-e2e test-come
 	@echo "Running unit tests..."
-	@chmod +x $(TESTS_DIR)/run_tests.sh
-	@$(TESTS_DIR)/run_tests.sh
+	@$(PYTHON) $(TESTS_DIR)/test_runner.py --unit
 
 test-e2e: $(TARGET)
 	@echo "Running end-to-end tests..."
-	@python3 $(TESTS_DIR)/test_runner.py
+	@$(PYTHON) $(TESTS_DIR)/test_runner.py --e2e
 
 # Run COME language tests (*.co files in t/ directories)
 test-come: $(TARGET)
+ifeq ($(OS),Windows_NT)
+	@$(PYTHON) $(TESTS_DIR)/test_runner.py --come
+else
 	@echo "Running COME language tests..."
 	@passed=0; failed=0; \
 	for tdir in $$(find src -type d -name 't'); do \
@@ -85,15 +98,20 @@ test-come: $(TARGET)
 	echo ""; \
 	echo "Results: $$passed passed, $$failed failed"; \
 	[ $$failed -eq 0 ]
+endif
 
 # Clean build artifacts
 clean:
 	@$(MAKE) -C $(SRC_DIR) clean
 	@$(MAKE) -C $(EXAMPLES_DIR) clean
+ifeq ($(OS),Windows_NT)
+	-powershell -NoProfile -Command "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '$(BUILD_DIR)/dist','packaging/come-pkg','src/std/.ccache','src/std/build','src/string/.ccache','src/string/build'; Remove-Item -Force -ErrorAction SilentlyContinue packaging/*.deb"
+else
 	@rm -rf $(BUILD_DIR)/dist
 	@rm -rf packaging/come-pkg
 	@rm -f packaging/*.deb
 	@rm -rf src/std/.ccache src/std/build src/string/.ccache src/string/build
+endif
 
 # Create distribution package (local)
 dist-local: all
@@ -130,5 +148,7 @@ dist: dist-local
 	./packaging/build_deb.sh $$VERSION
 
 
-.PHONY: all examples run-examples test test-come clean
+FORCE:
+
+.PHONY: all examples run-examples test test-come clean FORCE
 

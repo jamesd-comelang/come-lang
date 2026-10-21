@@ -60,9 +60,6 @@ come_string_t* come_string_rtrim(const come_string_t* a, const char* cutset);
 come_string_t* come_string_at(const come_string_t* a, size_t index);
 
 // Splitting/Joining
-// Note: These return arrays/lists, we'll define a simple list structure or use char** for now
-// For MVP, we might skip complex list returns or define a simple string_list_t
-
 come_string_list_t* come_string_split(const come_string_t* a, const char* sep);
 come_string_list_t* come_string_split_n(const come_string_t* a, const char* sep, size_t n);
 come_string_t* come_string_join(const come_string_list_t* list, const come_string_t* sep);

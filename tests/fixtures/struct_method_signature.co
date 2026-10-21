@@ -1,0 +1,10 @@
+module main
+
+struct Counter {
+    int value
+    int add(int delta)
+}
+
+int main() {
+    return 0
+}

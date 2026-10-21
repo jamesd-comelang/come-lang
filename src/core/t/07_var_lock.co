@@ -1,0 +1,24 @@
+module main
+import std
+
+int main() {
+    var late
+    late = 10
+    late = 12
+
+    var greeting = "hello"
+    greeting = greeting.upper()
+
+    if (late != 12) {
+        std.out.printf("FAIL: late var assignment did not keep int value\n")
+        return 1
+    }
+
+    if (greeting.cmp("HELLO") != 0) {
+        std.out.printf("FAIL: initialized var did not keep string type\n")
+        return 1
+    }
+
+    std.out.printf("PASS: var type locking\n")
+    return 0
+}

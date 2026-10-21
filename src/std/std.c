@@ -6,7 +6,18 @@
 #include <stdint.h>
 #include <errno.h>
 #include <ctype.h>
+#include <wchar.h>
 #include "come_string.h"
+#include "mem/talloc.h"
+#ifdef _WIN32
+#include <io.h>
+#define come_fdopen _fdopen
+#define come_fileno _fileno
+#else
+#include <unistd.h>
+#define come_fdopen fdopen
+#define come_fileno fileno
+#endif
 
 /* COME std module - FILE and related types */
 
@@ -22,6 +33,12 @@ struct come_std__FILE {
 };
 
 typedef struct come_std__FILE come_std__FILE_t;
+
+struct come_std__Proc {
+    int reserved;
+};
+
+typedef struct come_std__Proc come_std__Proc_t;
 
 // ERR_t structure with preallocated 1024-byte buffer
 struct come_std__ERR_t {
@@ -40,49 +57,7 @@ come_std__ERR_t come_std__ERR;
 come_std__FILE_t std_in;
 come_std__FILE_t std_out;
 come_std__FILE_t std_err;
-
-// Helper function to convert format string for COME types
-// Converts %t/%T to %s (for bool) and %c to %lc (for wchar)
-static char* come_convert_format(const char* fmt) {
-    if (!fmt) return NULL;
-    
-    size_t len = strlen(fmt);
-    char* new_fmt = (char*)malloc(len * 2 + 1); // Allocate extra space
-    if (!new_fmt) return NULL;
-    
-    const char* src = fmt;
-    char* dst = new_fmt;
-    
-    while (*src) {
-        if (*src == '%') {
-            *dst++ = *src++; // Copy '%'
-            
-            // Skip flags, width, precision
-            while (*src && (strchr("-+ #0", *src) || isdigit(*src) || *src == '.')) {
-                *dst++ = *src++;
-            }
-            
-            // Check format specifier
-            if (*src == 't' || *src == 'T') {
-                // %t or %T for bool -> convert to %s
-                *dst++ = 's';
-                src++;
-            } else if (*src == 'c') {
-                // %c for wchar -> convert to %lc
-                *dst++ = 'l';
-                *dst++ = 'c';
-                src++;
-            } else if (*src) {
-                // Copy other format specifiers as-is (including %s for come_string_t)
-                *dst++ = *src++;
-            }
-        } else {
-            *dst++ = *src++;
-        }
-    }
-    *dst = '\0';
-    return new_fmt;
-}
+come_std__Proc_t std_proc;
 
 // Helper to extract C string from come_string_t
 static const char* come_string_to_cstr(come_string_t* s) {
@@ -123,11 +98,14 @@ void come_std__FILE__exit() {
     // cleanup
 }
 
-bool come_std__FILE__open(come_std__FILE_t* self, char* path, char* mode) {
+bool come_std__FILE__open(come_std__FILE_t* self, come_string_t* path, come_string_t* mode) {
     if (!self) return false;
-    FILE* f = fopen(path, mode);
+    FILE* f = fopen(come_string_to_cstr(path), come_string_to_cstr(mode));
     if (!f) return false;
+    if (self->fp && self->fp != stdin && self->fp != stdout && self->fp != stderr) fclose(self->fp);
     self->fp = f;
+    self->fd = come_fileno(f);
+    self->fname = come_string_new((void*)self, come_string_to_cstr(path));
     return true;
 }
 
@@ -138,142 +116,285 @@ void come_std__FILE__close(come_std__FILE_t* self) {
     }
 }
 
-// Custom printf that handles COME types
-// %s expects come_string_t* (converted to char*)
-// %t/%T expects bool (converted to "true"/"false")
-// %c expects wchar (converted to %lc)
-int come_std__FILE__printf(come_std__FILE_t* self, const char* fmt, ...) {
-    if (!self || !self->fp) return -1;
-    
-    // Convert format string
-    char* converted_fmt = come_convert_format(fmt);
-    if (!converted_fmt) return -1;
-    
+static int come_std_vfprintf_come(FILE* fp, const char* fmt, va_list ap) {
+    if (!fp || !fmt) return -1;
+
+    int total = 0;
+    const char* p = fmt;
+
+    while (*p) {
+        if (*p != '%') {
+            if (fputc((unsigned char)*p++, fp) == EOF) return -1;
+            total++;
+            continue;
+        }
+
+        char spec[128];
+        int si = 0;
+        spec[si++] = *p++;
+
+        if (*p == '%') {
+            if (fputc('%', fp) == EOF) return -1;
+            p++;
+            total++;
+            continue;
+        }
+
+        while (*p && strchr("-+ #0", *p) && si < (int)sizeof(spec) - 2) spec[si++] = *p++;
+        while (*p && isdigit((unsigned char)*p) && si < (int)sizeof(spec) - 2) spec[si++] = *p++;
+        if (*p == '.' && si < (int)sizeof(spec) - 2) {
+            spec[si++] = *p++;
+            while (*p && isdigit((unsigned char)*p) && si < (int)sizeof(spec) - 2) spec[si++] = *p++;
+        }
+
+        char length[4] = "";
+        int li = 0;
+        while (*p && strchr("hljzL", *p) && li < 3 && si < (int)sizeof(spec) - 2) {
+            length[li++] = *p;
+            spec[si++] = *p++;
+            if ((length[0] == 'h' || length[0] == 'l') && li == 1 && *p == length[0]) {
+                length[li++] = *p;
+                spec[si++] = *p++;
+            }
+            break;
+        }
+        length[li] = '\0';
+
+        char conv = *p ? *p++ : '\0';
+        if (!conv) return -1;
+
+        if (conv == 't' || conv == 'T') {
+            bool b = va_arg(ap, int) != 0;
+            const char* s = b ? (conv == 't' ? "true" : "TRUE") : (conv == 't' ? "false" : "FALSE");
+            int r = fputs(s, fp);
+            if (r == EOF) return -1;
+            total += (int)strlen(s);
+            continue;
+        }
+
+        spec[si++] = conv;
+        spec[si] = '\0';
+
+        int written = 0;
+        switch (conv) {
+            case 's': {
+                come_string_t* s = va_arg(ap, come_string_t*);
+                written = fprintf(fp, "%s", come_string_to_cstr(s));
+                break;
+            }
+            case 'd':
+            case 'i':
+                if (strcmp(length, "ll") == 0) written = fprintf(fp, spec, va_arg(ap, long long));
+                else if (strcmp(length, "l") == 0) written = fprintf(fp, spec, va_arg(ap, long));
+                else written = fprintf(fp, spec, va_arg(ap, int));
+                break;
+            case 'u':
+            case 'o':
+            case 'x':
+            case 'X':
+                if (strcmp(length, "ll") == 0) written = fprintf(fp, spec, va_arg(ap, unsigned long long));
+                else if (strcmp(length, "l") == 0) written = fprintf(fp, spec, va_arg(ap, unsigned long));
+                else written = fprintf(fp, spec, va_arg(ap, unsigned int));
+                break;
+            case 'f':
+            case 'F':
+            case 'e':
+            case 'E':
+            case 'g':
+            case 'G':
+            case 'a':
+            case 'A':
+                if (strcmp(length, "L") == 0) written = fprintf(fp, spec, va_arg(ap, long double));
+                else written = fprintf(fp, spec, va_arg(ap, double));
+                break;
+            case 'c':
+            case 'C':
+                if (strcmp(length, "l") == 0 || conv == 'C') written = fprintf(fp, "%lc", (wint_t)va_arg(ap, int));
+                else written = fprintf(fp, spec, va_arg(ap, int));
+                break;
+            case 'p':
+                written = fprintf(fp, spec, va_arg(ap, void*));
+                break;
+            default:
+                return -1;
+        }
+
+        if (written < 0) return -1;
+        total += written;
+    }
+
+    return total;
+}
+
+int come_std__FILE__printf(come_std__FILE_t* self, come_string_t* fmt, ...) {
+    if (!self || !self->fp || !fmt) return -1;
     va_list args;
     va_start(args, fmt);
-    
-    // Build new argument list with converted values
-    void* converted_args[16]; // Support up to 16 arguments
-    int arg_idx = 0;
-    
-    const char* p = fmt;
-    while (*p && arg_idx < 16) {
-        if (*p == '%') {
-            p++;
-            if (*p == '%') { p++; continue; } // Skip %%
-            
-            // Skip flags, width, precision
-            while (*p && (strchr("-+ #0", *p) || isdigit(*p) || *p == '.')) p++;
-            
-            if (*p == 't' || *p == 'T') {
-                // bool -> "true" or "false"
-                bool b = va_arg(args, int); // bool promoted to int
-                converted_args[arg_idx++] = (void*)(b ? "true" : "false");
-                p++;
-            } else if (*p == 's') {
-                // come_string_t* -> char*
-                come_string_t* str = va_arg(args, come_string_t*);
-                converted_args[arg_idx++] = (void*)come_string_to_cstr(str);
-                p++;
-            } else if (*p == 'd' || *p == 'i' || *p == 'u' || *p == 'x' || *p == 'X' || *p == 'o') {
-                converted_args[arg_idx++] = (void*)(long)va_arg(args, int);
-                p++;
-            } else if (*p == 'l') {
-                p++;
-                if (*p == 'd' || *p == 'i' || *p == 'u' || *p == 'x' || *p == 'X' || *p == 'o') {
-                    converted_args[arg_idx++] = (void*)va_arg(args, long);
-                    p++;
-                } else if (*p == 'c') {
-                    // wchar (int32_t)
-                    converted_args[arg_idx++] = (void*)(long)va_arg(args, int32_t);
-                    p++;
-                }
-            } else if (*p == 'c') {
-                // char (promoted to int, but we converted to %lc)
-                converted_args[arg_idx++] = (void*)(long)va_arg(args, int);
-                p++;
-            } else if (*p == 'p') {
-                converted_args[arg_idx++] = va_arg(args, void*);
-                p++;
-            } else if (*p) {
-                // For other specifiers, just copy the argument as-is
-                // This is a simplification; a robust solution would need to know argument types
-                // and handle floating point types (double) which might take two `void*` slots.
-                // For now, we assume basic types fit in one `void*`.
-                // Floating point types are not explicitly handled here, relying on default va_arg behavior.
-                // If a double is passed, it will be read as a double, but if the format string
-                // was converted to something else, it might be problematic.
-                // The original code had a union for doubles, which is more correct.
-                // For simplicity of this change, we're omitting that for now.
-                converted_args[arg_idx++] = va_arg(args, void*);
-                p++;
-            }
-        } else {
-            p++;
-        }
-    }
-    
+    int ret = come_std_vfprintf_come(self->fp, fmt->data, args);
     va_end(args);
-    
-    // Call fprintf with converted format and args
-    int ret;
-    switch (arg_idx) {
-        case 0: ret = fprintf(self->fp, "%s", converted_fmt); break;
-        case 1: ret = fprintf(self->fp, converted_fmt, converted_args[0]); break;
-        case 2: ret = fprintf(self->fp, converted_fmt, converted_args[0], converted_args[1]); break;
-        case 3: ret = fprintf(self->fp, converted_fmt, converted_args[0], converted_args[1], converted_args[2]); break;
-        case 4: ret = fprintf(self->fp, converted_fmt, converted_args[0], converted_args[1], converted_args[2], converted_args[3]); break;
-        case 5: ret = fprintf(self->fp, converted_fmt, converted_args[0], converted_args[1], converted_args[2], converted_args[3], converted_args[4]); break;
-        case 6: ret = fprintf(self->fp, converted_fmt, converted_args[0], converted_args[1], converted_args[2], converted_args[3], converted_args[4], converted_args[5]); break;
-        case 7: ret = fprintf(self->fp, converted_fmt, converted_args[0], converted_args[1], converted_args[2], converted_args[3], converted_args[4], converted_args[5], converted_args[6]); break;
-        case 8: ret = fprintf(self->fp, converted_fmt, converted_args[0], converted_args[1], converted_args[2], converted_args[3], converted_args[4], converted_args[5], converted_args[6], converted_args[7]); break;
-        default: ret = -1; // Too many arguments
-    }
-    
-    free(converted_fmt);
     return ret;
 }
 
-// Just stubs for now to get it compiling/linking
-bool come_std__FILE__fdopen(come_std__FILE_t* self, int fd, char* mode) { return false; }
-bool come_std__FILE__reopen(come_std__FILE_t* self, char* path, char* mode) { return false; }
-int come_std__FILE__fileno(come_std__FILE_t* self) { return 0; }
-int come_std__FILE__scanf(come_std__FILE_t* self, char* fmt, ...) { return 0; }
-int come_std__FILE__vprintf(come_std__FILE_t* self, char* fmt, va_list ap) { return 0; }
-int come_std__FILE__vscanf(come_std__FILE_t* self, char* fmt, va_list ap) { return 0; }
-uint32_t come_std__FILE__read(come_std__FILE_t* self, uint8_t* buf, uint32_t n) { return 0; } // uint -> uint32_t
-uint32_t come_std__FILE__write(come_std__FILE_t* self, uint8_t* buf, uint32_t n) { return 0; }
-int32_t come_std__FILE__getc(come_std__FILE_t* self) { return 0; }
-void come_std__FILE__putc(come_std__FILE_t* self, int32_t c) { }
-char* come_std__FILE__gets(come_std__FILE_t* self) { return NULL; } // string -> char*
-uint32_t come_std__FILE__puts(come_std__FILE_t* self, char* s) { return 0; }
-char* come_std__FILE__fname(come_std__FILE_t* self) { return NULL; }
-void come_std__FILE__ungetc(come_std__FILE_t* self, int32_t c) { }
-void come_std__FILE__seek(come_std__FILE_t* self, long offset, int whence) { }
-long come_std__FILE__tell(come_std__FILE_t* self) { return 0; }
-void come_std__FILE__rewind(come_std__FILE_t* self) { }
-bool come_std__FILE__isopen(come_std__FILE_t* self) { return self && self->fp; }
-bool come_std__FILE__eof(come_std__FILE_t* self) { return false; }
-bool come_std__FILE__error(come_std__FILE_t* self) { return false; }
-void come_std__FILE__flush(come_std__FILE_t* self) { }
-void come_std__FILE__clearerr(come_std__FILE_t* self) { }
-void come_std__FILE__setbuf(come_std__FILE_t* self, uint8_t* buf, uint32_t size) { }
-void come_std__FILE__setvbuf(come_std__FILE_t* self, uint8_t* buf, int mode, uint32_t size) { }
-void come_std__FILE__setlinebuf(come_std__FILE_t* self) { }
+bool come_std__FILE__fdopen(come_std__FILE_t* self, int fd, come_string_t* mode) {
+    if (!self) return false;
+    FILE* f = come_fdopen(fd, come_string_to_cstr(mode));
+    if (!f) return false;
+    if (self->fp && self->fp != stdin && self->fp != stdout && self->fp != stderr) fclose(self->fp);
+    self->fp = f;
+    self->fd = fd;
+    return true;
+}
 
-// Proc stubs
-void come_std__Proc__abort(void* self) { abort(); }
-void come_std__Proc__exit(void* self, int status) { exit(status); }
-void come_std__Proc__atexit(void* self, void* cb) { }
-char* come_std__Proc__getenv(void* self, char* name) { return getenv(name); }
-int come_std__Proc__system(void* self, char* cmd) { return system(cmd); }
+bool come_std__FILE__reopen(come_std__FILE_t* self, come_string_t* path, come_string_t* mode) {
+    if (!self || !self->fp) return false;
+    FILE* f = freopen(come_string_to_cstr(path), come_string_to_cstr(mode), self->fp);
+    if (!f) return false;
+    self->fp = f;
+    self->fd = come_fileno(f);
+    self->fname = come_string_new((void*)self, come_string_to_cstr(path));
+    return true;
+}
+
+int come_std__FILE__fileno(come_std__FILE_t* self) {
+    if (!self || !self->fp) return -1;
+    return come_fileno(self->fp);
+}
+
+int come_std__FILE__scanf(come_std__FILE_t* self, come_string_t* fmt, ...) {
+    if (!self || !self->fp || !fmt) return -1;
+    va_list ap;
+    va_start(ap, fmt);
+    int ret = vfscanf(self->fp, fmt->data, ap);
+    va_end(ap);
+    return ret;
+}
+
+int come_std__FILE__vprintf(come_std__FILE_t* self, come_string_t* fmt, va_list ap) {
+    if (!self || !self->fp || !fmt) return -1;
+    return come_std_vfprintf_come(self->fp, fmt->data, ap);
+}
+
+int come_std__FILE__vscanf(come_std__FILE_t* self, come_string_t* fmt, va_list ap) {
+    if (!self || !self->fp || !fmt) return -1;
+    return vfscanf(self->fp, fmt->data, ap);
+}
+
+uint32_t come_std__FILE__read(come_std__FILE_t* self, come_byte_array_t* buf, uint32_t n) {
+    if (!self || !self->fp || !buf) return 0;
+    if (n > buf->size) n = buf->size;
+    size_t got = fread(buf->items, 1, n, self->fp);
+    if (got > buf->count) buf->count = (uint32_t)got;
+    return (uint32_t)got;
+}
+
+uint32_t come_std__FILE__write(come_std__FILE_t* self, come_byte_array_t* buf, uint32_t n) {
+    if (!self || !self->fp || !buf) return 0;
+    if (n > buf->count) n = buf->count;
+    return (uint32_t)fwrite(buf->items, 1, n, self->fp);
+}
+
+int32_t come_std__FILE__getc(come_std__FILE_t* self) {
+    if (!self || !self->fp) return -1;
+    return (int32_t)fgetc(self->fp);
+}
+
+void come_std__FILE__putc(come_std__FILE_t* self, int32_t c) {
+    if (self && self->fp) fputc((int)c, self->fp);
+}
+
+come_string_t* come_std__FILE__gets(come_std__FILE_t* self) {
+    if (!self || !self->fp) return NULL;
+    char buf[4096];
+    if (!fgets(buf, sizeof(buf), self->fp)) return NULL;
+    return come_string_new((void*)self, buf);
+}
+
+uint32_t come_std__FILE__puts(come_std__FILE_t* self, come_string_t* s) {
+    if (!self || !self->fp || !s) return 0;
+    int ret = fputs(s->data, self->fp);
+    if (ret < 0) return 0;
+    if (fputc('\n', self->fp) == EOF) return 0;
+    return s->count + 1;
+}
+
+come_string_t* come_std__FILE__fname(come_std__FILE_t* self) {
+    if (!self || !self->fname) return come_string_new((void*)self, "");
+    return self->fname;
+}
+
+void come_std__FILE__ungetc(come_std__FILE_t* self, int32_t c) {
+    if (self && self->fp) ungetc((int)c, self->fp);
+}
+
+void come_std__FILE__seek(come_std__FILE_t* self, long offset, int whence) {
+    if (self && self->fp) fseek(self->fp, offset, whence);
+}
+
+long come_std__FILE__tell(come_std__FILE_t* self) {
+    if (!self || !self->fp) return -1;
+    return ftell(self->fp);
+}
+
+void come_std__FILE__rewind(come_std__FILE_t* self) {
+    if (self && self->fp) rewind(self->fp);
+}
+bool come_std__FILE__isopen(come_std__FILE_t* self) { return self && self->fp; }
+bool come_std__FILE__eof(come_std__FILE_t* self) { return self && self->fp && feof(self->fp); }
+bool come_std__FILE__error(come_std__FILE_t* self) { return self && self->fp && ferror(self->fp); }
+void come_std__FILE__flush(come_std__FILE_t* self) { if (self && self->fp) fflush(self->fp); }
+void come_std__FILE__clearerr(come_std__FILE_t* self) { if (self && self->fp) clearerr(self->fp); }
+void come_std__FILE__setbuf(come_std__FILE_t* self, come_byte_array_t* buf, uint32_t size) {
+    (void)size;
+    if (self && self->fp) setbuf(self->fp, buf ? (char*)buf->items : NULL);
+}
+void come_std__FILE__setvbuf(come_std__FILE_t* self, come_byte_array_t* buf, int mode, uint32_t size) {
+    if (self && self->fp) setvbuf(self->fp, buf ? (char*)buf->items : NULL, mode, size);
+}
+void come_std__FILE__setlinebuf(come_std__FILE_t* self) {
+    if (self && self->fp) setvbuf(self->fp, NULL, _IOLBF, 0);
+}
+
+void come_std__Proc__abort(void* self) { (void)self; abort(); }
+void come_std__Proc__exit(void* self, int status) { (void)self; exit(status); }
+void come_std__Proc__atexit(void* self, void* cb) {
+    (void)self;
+    if (cb) atexit((void (*)(void))cb);
+}
+come_string_t* come_std__Proc__getenv(void* self, come_string_t* name) {
+    (void)self;
+    const char* val = getenv(come_string_to_cstr(name));
+    return val ? come_string_new(NULL, val) : NULL;
+}
+int come_std__Proc__system(void* self, come_string_t* cmd) {
+    (void)self;
+    return system(come_string_to_cstr(cmd));
+}
 
 // Global file ops
-bool remove_file(char* path) { return remove(path) == 0; } // name collision with stdio `remove`? `remove` is C func.
-// If std.co says `bool remove(string path)`, it maps to `remove` symbol if not namespaced?
-// But it's inside `module std`. So `std_remove`?
-// Let's assume `std_remove` or check if `remove` is exported as is.
-// I'll define `std_remove` for now.
+bool come_std__remove(come_string_t* path) {
+    return path && remove(path->data) == 0;
+}
+
+come_std__FILE_t* come_std__tmpfile(void) {
+    FILE* fp = tmpfile();
+    if (!fp) return NULL;
+    come_std__FILE_t* f = mem_talloc_alloc(NULL, sizeof(come_std__FILE_t));
+    if (!f) {
+        fclose(fp);
+        return NULL;
+    }
+    f->fp = fp;
+    f->fd = come_fileno(fp);
+    f->flags = 0;
+    f->fname = NULL;
+    return f;
+}
+
+come_string_t* come_std__tmpname(void) {
+    char buf[L_tmpnam];
+    if (!tmpnam(buf)) return NULL;
+    return come_string_new(NULL, buf);
+}
 
 // ERR_t methods - following the name mangling convention: come_std__ERR_t__method
 int come_std__ERR_t__no(come_std__ERR_t* self) {

@@ -1,0 +1,8 @@
+module main
+
+int main() {
+    var locked
+    locked = 1
+    locked = "one"
+    return 0
+}

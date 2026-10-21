@@ -1,0 +1,547 @@
+module main
+
+import (
+    std,
+    string
+)
+
+const TOTAL_LEVELS = 50
+
+void print_usage() {
+    std.out.printf("Data Structure CLI Challenge\n")
+    std.out.printf("Usage:\n")
+    std.out.printf("  ds_cli_challenge list\n")
+    std.out.printf("  ds_cli_challenge study <level>\n")
+    std.out.printf("  ds_cli_challenge <level> <answer>\n")
+    std.out.printf("  ds_cli_challenge all <50 numeric answers>\n")
+    std.out.printf("Answers are numbers 1..4.\n")
+}
+
+void print_levels() {
+    std.out.printf("Levels  1-10: arrays, sorting, prefix sums, two pointers\n")
+    std.out.printf("Levels 11-20: linked lists, stacks, queues, deques\n")
+    std.out.printf("Levels 21-30: hash tables, heaps, bloom filters, LRU\n")
+    std.out.printf("Levels 31-40: trees, tries, segment trees, union-find\n")
+    std.out.printf("Levels 41-50: graphs, shortest paths, MST, DP\n")
+}
+
+int correct_answer(int id) {
+    switch (id) {
+        case 1: return 1
+        case 2: return 2
+        case 3: return 3
+        case 4: return 2
+        case 5: return 1
+        case 6: return 4
+        case 7: return 3
+        case 8: return 2
+        case 9: return 1
+        case 10: return 3
+        case 11: return 2
+        case 12: return 4
+        case 13: return 1
+        case 14: return 2
+        case 15: return 3
+        case 16: return 1
+        case 17: return 2
+        case 18: return 4
+        case 19: return 3
+        case 20: return 1
+        case 21: return 2
+        case 22: return 3
+        case 23: return 1
+        case 24: return 4
+        case 25: return 2
+        case 26: return 1
+        case 27: return 3
+        case 28: return 4
+        case 29: return 2
+        case 30: return 1
+        case 31: return 3
+        case 32: return 1
+        case 33: return 2
+        case 34: return 4
+        case 35: return 3
+        case 36: return 1
+        case 37: return 2
+        case 38: return 4
+        case 39: return 1
+        case 40: return 3
+        case 41: return 2
+        case 42: return 1
+        case 43: return 4
+        case 44: return 3
+        case 45: return 2
+        case 46: return 1
+        case 47: return 4
+        case 48: return 3
+        case 49: return 2
+        case 50: return 1
+        default: return 0
+    }
+}
+
+void print_question(int id) {
+    std.out.printf("\nLevel %d / 50\n", id)
+    switch (id) {
+        case 1:
+            std.out.printf("Why can an array read arr[i] in O(1)?\n")
+            std.out.printf("  1. Items have equal size and contiguous addresses\n")
+            std.out.printf("  2. The array keeps all values sorted\n")
+            std.out.printf("  3. It stores a hash for each index\n")
+            std.out.printf("  4. It scans from the first element\n")
+        case 2:
+            std.out.printf("A dynamic array doubles capacity when full. What is append complexity over many appends?\n")
+            std.out.printf("  1. Always O(log n)\n")
+            std.out.printf("  2. Amortized O(1)\n")
+            std.out.printf("  3. Always O(n)\n")
+            std.out.printf("  4. O(n log n)\n")
+        case 3:
+            std.out.printf("What must be true before binary search is correct?\n")
+            std.out.printf("  1. The array has no duplicate values\n")
+            std.out.printf("  2. The array length is a power of two\n")
+            std.out.printf("  3. The searched range is sorted by the same order\n")
+            std.out.printf("  4. The data is stored in a linked list\n")
+        case 4:
+            std.out.printf("What does stable sorting preserve?\n")
+            std.out.printf("  1. The original array capacity\n")
+            std.out.printf("  2. The relative order of equal keys\n")
+            std.out.printf("  3. The exact number of comparisons\n")
+            std.out.printf("  4. The memory address of every element\n")
+        case 5:
+            std.out.printf("After building prefix sums, how fast is one fixed range-sum query?\n")
+            std.out.printf("  1. O(1)\n")
+            std.out.printf("  2. O(log n)\n")
+            std.out.printf("  3. O(n)\n")
+            std.out.printf("  4. O(n log n)\n")
+        case 6:
+            std.out.printf("In a sorted array, the classic two-pointer pair-sum scan costs what time?\n")
+            std.out.printf("  1. O(1)\n")
+            std.out.printf("  2. O(log n)\n")
+            std.out.printf("  3. O(n log n)\n")
+            std.out.printf("  4. O(n)\n")
+        case 7:
+            std.out.printf("Why is a circular buffer useful for a queue over an array?\n")
+            std.out.printf("  1. It makes every element sorted\n")
+            std.out.printf("  2. It removes the need for capacity checks\n")
+            std.out.printf("  3. It reuses freed front slots without shifting all items\n")
+            std.out.printf("  4. It turns random access into hashing\n")
+        case 8:
+            std.out.printf("Most positions are default values. Which structure usually represents the data better than a dense array?\n")
+            std.out.printf("  1. A stack\n")
+            std.out.printf("  2. A map from index to stored value\n")
+            std.out.printf("  3. A full binary tree with every value\n")
+            std.out.printf("  4. A sorted copy of all default values\n")
+        case 9:
+            std.out.printf("Deleting an item from the middle of a packed array is usually O(n) because:\n")
+            std.out.printf("  1. Later items must shift left\n")
+            std.out.printf("  2. The CPU cannot compare integers\n")
+            std.out.printf("  3. Arrays cannot store duplicates\n")
+            std.out.printf("  4. The allocator must sort the memory\n")
+        case 10:
+            std.out.printf("What does lower_bound return in a sorted range?\n")
+            std.out.printf("  1. The last element less than the target\n")
+            std.out.printf("  2. Any matching element\n")
+            std.out.printf("  3. The first element not less than the target\n")
+            std.out.printf("  4. The midpoint of the range\n")
+        case 11:
+            std.out.printf("Given a pointer/reference to a node in a singly linked list, inserting after it is:\n")
+            std.out.printf("  1. O(n log n)\n")
+            std.out.printf("  2. O(1)\n")
+            std.out.printf("  3. O(n)\n")
+            std.out.printf("  4. Impossible\n")
+        case 12:
+            std.out.printf("What extra information is usually needed to delete the current node from a singly linked list in O(1)?\n")
+            std.out.printf("  1. The list length\n")
+            std.out.printf("  2. A sorted key\n")
+            std.out.printf("  3. The array index\n")
+            std.out.printf("  4. The previous node or a pointer to the previous link\n")
+        case 13:
+            std.out.printf("Which access rule defines a stack?\n")
+            std.out.printf("  1. Last in, first out\n")
+            std.out.printf("  2. First in, first out\n")
+            std.out.printf("  3. Lowest key first\n")
+            std.out.printf("  4. Random item first\n")
+        case 14:
+            std.out.printf("Which access rule defines a queue?\n")
+            std.out.printf("  1. Last in, first out\n")
+            std.out.printf("  2. First in, first out\n")
+            std.out.printf("  3. Highest priority only\n")
+            std.out.printf("  4. Sorted by hash\n")
+        case 15:
+            std.out.printf("Which structure is a common tool for next-greater-element problems?\n")
+            std.out.printf("  1. A trie\n")
+            std.out.printf("  2. A bloom filter\n")
+            std.out.printf("  3. A monotonic stack\n")
+            std.out.printf("  4. A dense matrix\n")
+        case 16:
+            std.out.printf("Breadth-first search normally uses which worklist?\n")
+            std.out.printf("  1. Queue\n")
+            std.out.printf("  2. Stack\n")
+            std.out.printf("  3. Min-heap only\n")
+            std.out.printf("  4. Hash set only\n")
+        case 17:
+            std.out.printf("Iterative depth-first search usually uses which worklist?\n")
+            std.out.printf("  1. Queue\n")
+            std.out.printf("  2. Stack\n")
+            std.out.printf("  3. Prefix array\n")
+            std.out.printf("  4. Bloom filter\n")
+        case 18:
+            std.out.printf("What does a deque support efficiently?\n")
+            std.out.printf("  1. Only append at the back\n")
+            std.out.printf("  2. Only pop from the front\n")
+            std.out.printf("  3. Only random reads\n")
+            std.out.printf("  4. Push and pop at both ends\n")
+        case 19:
+            std.out.printf("Why can a linked list be slower than an array for sequential scans?\n")
+            std.out.printf("  1. It cannot store integers\n")
+            std.out.printf("  2. It always sorts nodes\n")
+            std.out.printf("  3. Nodes are often scattered, hurting cache locality\n")
+            std.out.printf("  4. It has no next field\n")
+        case 20:
+            std.out.printf("What is the practical value of a sentinel or dummy node?\n")
+            std.out.printf("  1. It reduces special cases at the head or tail\n")
+            std.out.printf("  2. It makes lookups O(log n)\n")
+            std.out.printf("  3. It compresses every node\n")
+            std.out.printf("  4. It removes the need for null checks everywhere\n")
+        case 21:
+            std.out.printf("Average lookup in a well-sized hash table is:\n")
+            std.out.printf("  1. O(log n)\n")
+            std.out.printf("  2. O(1)\n")
+            std.out.printf("  3. O(n log n)\n")
+            std.out.printf("  4. Always O(n)\n")
+        case 22:
+            std.out.printf("Chaining and linear probing are both techniques for:\n")
+            std.out.printf("  1. Sorting an array\n")
+            std.out.printf("  2. Balancing a tree\n")
+            std.out.printf("  3. Resolving hash collisions\n")
+            std.out.printf("  4. Running binary search\n")
+        case 23:
+            std.out.printf("What is hash-table load factor?\n")
+            std.out.printf("  1. Stored item count divided by bucket capacity\n")
+            std.out.printf("  2. The largest key value\n")
+            std.out.printf("  3. The number of hash functions\n")
+            std.out.printf("  4. The memory address of the table\n")
+        case 24:
+            std.out.printf("A good hash function should mainly:\n")
+            std.out.printf("  1. Return only small numbers\n")
+            std.out.printf("  2. Preserve input order\n")
+            std.out.printf("  3. Avoid all multiplication\n")
+            std.out.printf("  4. Spread likely keys evenly across buckets\n")
+        case 25:
+            std.out.printf("In a min-heap, the root stores:\n")
+            std.out.printf("  1. The newest item\n")
+            std.out.printf("  2. The smallest-priority item\n")
+            std.out.printf("  3. The median item\n")
+            std.out.printf("  4. A random item\n")
+        case 26:
+            std.out.printf("Binary heap push and pop usually cost:\n")
+            std.out.printf("  1. O(log n)\n")
+            std.out.printf("  2. O(1) always\n")
+            std.out.printf("  3. O(n)\n")
+            std.out.printf("  4. O(n log n)\n")
+        case 27:
+            std.out.printf("Which ADT is the natural choice for repeatedly taking the next min or max item?\n")
+            std.out.printf("  1. Plain queue\n")
+            std.out.printf("  2. Stack\n")
+            std.out.printf("  3. Priority queue\n")
+            std.out.printf("  4. Dense bitset\n")
+        case 28:
+            std.out.printf("A bloom filter can have:\n")
+            std.out.printf("  1. False negatives only\n")
+            std.out.printf("  2. No errors at all\n")
+            std.out.printf("  3. Both false positives and false negatives\n")
+            std.out.printf("  4. False positives but no false negatives\n")
+        case 29:
+            std.out.printf("A common O(1) LRU cache design combines:\n")
+            std.out.printf("  1. Two sorted arrays\n")
+            std.out.printf("  2. Hash map plus doubly linked list\n")
+            std.out.printf("  3. Trie plus stack\n")
+            std.out.printf("  4. Segment tree plus queue\n")
+        case 30:
+            std.out.printf("Why does a hash table rehash when load gets high?\n")
+            std.out.printf("  1. To reduce collision pressure and keep operations fast\n")
+            std.out.printf("  2. To make keys sorted\n")
+            std.out.printf("  3. To convert keys to strings\n")
+            std.out.printf("  4. To force every lookup to scan all buckets\n")
+        case 31:
+            std.out.printf("In-order traversal of a binary search tree visits keys in:\n")
+            std.out.printf("  1. Insertion order\n")
+            std.out.printf("  2. Random order\n")
+            std.out.printf("  3. Sorted order\n")
+            std.out.printf("  4. Reverse level order only\n")
+        case 32:
+            std.out.printf("A balanced binary search tree gives search/insert/delete in:\n")
+            std.out.printf("  1. O(log n)\n")
+            std.out.printf("  2. O(1) always\n")
+            std.out.printf("  3. O(n log n)\n")
+            std.out.printf("  4. O(n^2)\n")
+        case 33:
+            std.out.printf("AVL and red-black trees maintain:\n")
+            std.out.printf("  1. Hash bucket order\n")
+            std.out.printf("  2. Bounded height through balancing rules\n")
+            std.out.printf("  3. FIFO order\n")
+            std.out.printf("  4. A contiguous array layout only\n")
+        case 34:
+            std.out.printf("Which structure is specialized for prefix queries over strings?\n")
+            std.out.printf("  1. Heap\n")
+            std.out.printf("  2. Queue\n")
+            std.out.printf("  3. Union-find\n")
+            std.out.printf("  4. Trie\n")
+        case 35:
+            std.out.printf("A segment tree commonly supports range query plus point update in:\n")
+            std.out.printf("  1. O(1)\n")
+            std.out.printf("  2. O(n)\n")
+            std.out.printf("  3. O(log n)\n")
+            std.out.printf("  4. O(n^2)\n")
+        case 36:
+            std.out.printf("A Fenwick tree is commonly used for:\n")
+            std.out.printf("  1. Prefix sums with O(log n) updates and queries\n")
+            std.out.printf("  2. Exact string prefix matching only\n")
+            std.out.printf("  3. Hash collision removal\n")
+            std.out.printf("  4. Topological sorting\n")
+        case 37:
+            std.out.printf("Union-find with path compression and rank has operations that are:\n")
+            std.out.printf("  1. O(n) always\n")
+            std.out.printf("  2. Almost constant amortized time\n")
+            std.out.printf("  3. O(n log n) always\n")
+            std.out.printf("  4. Impossible to analyze\n")
+        case 38:
+            std.out.printf("Topological sorting is defined for:\n")
+            std.out.printf("  1. Any undirected graph\n")
+            std.out.printf("  2. Any graph with negative edges\n")
+            std.out.printf("  3. Only complete graphs\n")
+            std.out.printf("  4. Directed acyclic graphs\n")
+        case 39:
+            std.out.printf("A tree with n nodes has how many edges?\n")
+            std.out.printf("  1. n - 1\n")
+            std.out.printf("  2. n\n")
+            std.out.printf("  3. n + 1\n")
+            std.out.printf("  4. n squared\n")
+        case 40:
+            std.out.printf("Which technique is often used for fast repeated LCA queries on a static tree?\n")
+            std.out.printf("  1. Bubble sort\n")
+            std.out.printf("  2. Linear probing\n")
+            std.out.printf("  3. Binary lifting\n")
+            std.out.printf("  4. Bloom filtering\n")
+        case 41:
+            std.out.printf("In an unweighted graph, shortest path by edge count is found by:\n")
+            std.out.printf("  1. Quick sort\n")
+            std.out.printf("  2. BFS\n")
+            std.out.printf("  3. DFS preorder only\n")
+            std.out.printf("  4. Hashing every edge\n")
+        case 42:
+            std.out.printf("Dijkstra's algorithm requires edge weights to be:\n")
+            std.out.printf("  1. Non-negative\n")
+            std.out.printf("  2. All equal to one\n")
+            std.out.printf("  3. Negative\n")
+            std.out.printf("  4. Prime numbers\n")
+        case 43:
+            std.out.printf("Bellman-Ford is useful because it can:\n")
+            std.out.printf("  1. Sort arrays in place only\n")
+            std.out.printf("  2. Build a trie\n")
+            std.out.printf("  3. Require no vertices\n")
+            std.out.printf("  4. Handle negative edges and detect negative cycles\n")
+        case 44:
+            std.out.printf("Kruskal and Prim are algorithms for:\n")
+            std.out.printf("  1. Binary searching\n")
+            std.out.printf("  2. String matching\n")
+            std.out.printf("  3. Minimum spanning tree\n")
+            std.out.printf("  4. Stack evaluation\n")
+        case 45:
+            std.out.printf("For sparse graphs, adjacency lists are often better than matrices because they:\n")
+            std.out.printf("  1. Make every query O(1)\n")
+            std.out.printf("  2. Store only existing edges plus vertex headers\n")
+            std.out.printf("  3. Require V squared memory\n")
+            std.out.printf("  4. Cannot represent directed edges\n")
+        case 46:
+            std.out.printf("An adjacency matrix gives O(1) edge existence checks but costs:\n")
+            std.out.printf("  1. O(V^2) memory\n")
+            std.out.printf("  2. O(E log V) memory\n")
+            std.out.printf("  3. No memory\n")
+            std.out.printf("  4. O(log V) memory\n")
+        case 47:
+            std.out.printf("A common directed-cycle detection method uses:\n")
+            std.out.printf("  1. Prefix sums only\n")
+            std.out.printf("  2. Heap sort only\n")
+            std.out.printf("  3. A bloom filter only\n")
+            std.out.printf("  4. DFS colors or recursion-stack state\n")
+        case 48:
+            std.out.printf("Kahn's topological sort uses:\n")
+            std.out.printf("  1. A min-heap of all edges only\n")
+            std.out.printf("  2. A suffix array\n")
+            std.out.printf("  3. Indegrees and a queue of zero-indegree vertices\n")
+            std.out.printf("  4. Random walks\n")
+        case 49:
+            std.out.printf("Dynamic programming is most appropriate when a problem has:\n")
+            std.out.printf("  1. No repeated work possible\n")
+            std.out.printf("  2. Overlapping subproblems and optimal substructure\n")
+            std.out.printf("  3. Only one input value\n")
+            std.out.printf("  4. No state definition\n")
+        case 50:
+            std.out.printf("Which structure naturally models undo history?\n")
+            std.out.printf("  1. Stack\n")
+            std.out.printf("  2. Queue\n")
+            std.out.printf("  3. Trie\n")
+            std.out.printf("  4. Dense graph matrix\n")
+        default:
+            std.out.printf("Unknown level.\n")
+    }
+}
+
+void print_explanation(int id) {
+    switch (id) {
+        case 1: std.out.printf("Key: array addressing computes base plus index times item size.\n")
+        case 2: std.out.printf("Key: rare resize copies are spread across many cheap appends.\n")
+        case 3: std.out.printf("Key: binary search discards half only when ordering is reliable.\n")
+        case 4: std.out.printf("Key: stability matters when equal keys carry secondary data.\n")
+        case 5: std.out.printf("Key: range sum becomes prefix[right] minus prefix[left].\n")
+        case 6: std.out.printf("Key: each pointer moves inward at most n times total.\n")
+        case 7: std.out.printf("Key: head and tail wrap around inside the fixed capacity.\n")
+        case 8: std.out.printf("Key: store only non-default cells when the space is sparse.\n")
+        case 9: std.out.printf("Key: packed order requires closing the gap after deletion.\n")
+        case 10: std.out.printf("Key: lower_bound is the insertion point before equal or larger items.\n")
+        case 11: std.out.printf("Key: rewiring one next link and the new node is constant work.\n")
+        case 12: std.out.printf("Key: singly linked nodes do not know who points to them.\n")
+        case 13: std.out.printf("Key: push and pop happen at the same end.\n")
+        case 14: std.out.printf("Key: enqueue at back and dequeue at front.\n")
+        case 15: std.out.printf("Key: the stack keeps candidates in useful sorted order.\n")
+        case 16: std.out.printf("Key: a queue processes nodes by increasing distance layer.\n")
+        case 17: std.out.printf("Key: a stack follows one path deeply before backtracking.\n")
+        case 18: std.out.printf("Key: deque means double-ended queue.\n")
+        case 19: std.out.printf("Key: pointer chasing often misses cache lines.\n")
+        case 20: std.out.printf("Key: dummy nodes make empty and one-element cases look ordinary.\n")
+        case 21: std.out.printf("Key: hashing maps a key directly to a small bucket region on average.\n")
+        case 22: std.out.printf("Key: collisions happen when different keys map to the same bucket.\n")
+        case 23: std.out.printf("Key: high load usually means more probes or longer chains.\n")
+        case 24: std.out.printf("Key: even spread avoids hot buckets.\n")
+        case 25: std.out.printf("Key: heap order keeps the best item at the root.\n")
+        case 26: std.out.printf("Key: heap repair moves along the tree height.\n")
+        case 27: std.out.printf("Key: priority queues expose the current best priority item.\n")
+        case 28: std.out.printf("Key: bloom filters can say maybe present, or definitely absent.\n")
+        case 29: std.out.printf("Key: the map finds entries; the list maintains recency order.\n")
+        case 30: std.out.printf("Key: more buckets lower average collision cost.\n")
+        case 31: std.out.printf("Key: left subtree, node, right subtree follows BST ordering.\n")
+        case 32: std.out.printf("Key: balance keeps tree height logarithmic.\n")
+        case 33: std.out.printf("Key: rotations and color or height rules control height.\n")
+        case 34: std.out.printf("Key: trie edges consume characters of a key prefix.\n")
+        case 35: std.out.printf("Key: a range touches logarithmically many segment nodes.\n")
+        case 36: std.out.printf("Key: Fenwick indexes jump by lowbit values.\n")
+        case 37: std.out.printf("Key: compression flattens trees while union rank limits height.\n")
+        case 38: std.out.printf("Key: cycles make a valid topological order impossible.\n")
+        case 39: std.out.printf("Key: connected and acyclic forces exactly n minus one edges.\n")
+        case 40: std.out.printf("Key: binary lifting precomputes 2^k ancestors.\n")
+        case 41: std.out.printf("Key: BFS expands by edge-count distance layers.\n")
+        case 42: std.out.printf("Key: negative edges can invalidate Dijkstra's greedy choice.\n")
+        case 43: std.out.printf("Key: repeated relaxation exposes negative cycles.\n")
+        case 44: std.out.printf("Key: MST connects all vertices with minimum total edge weight.\n")
+        case 45: std.out.printf("Key: sparse graphs have far fewer edges than V squared.\n")
+        case 46: std.out.printf("Key: a matrix reserves one cell for every vertex pair.\n")
+        case 47: std.out.printf("Key: a back edge to an active node indicates a directed cycle.\n")
+        case 48: std.out.printf("Key: removing zero-indegree nodes simulates prerequisite completion.\n")
+        case 49: std.out.printf("Key: DP stores reusable subproblem answers by state.\n")
+        case 50: std.out.printf("Key: undo removes the most recent action first.\n")
+        default: std.out.printf("No explanation.\n")
+    }
+}
+
+void check_level(int level, int answer) {
+    int expected = correct_answer(level)
+    if (expected == 0) {
+        std.out.printf("Invalid level: %d\n", level)
+        return
+    }
+    if (answer < 1) {
+        std.out.printf("Answer must be 1..4.\n")
+        return
+    }
+    if (answer > 4) {
+        std.out.printf("Answer must be 1..4.\n")
+        return
+    }
+    if (answer == expected) {
+        std.out.printf("PASS: level %d cleared.\n", level)
+    } else {
+        std.out.printf("MISS: level %d expected %d, got %d.\n", level, expected, answer)
+    }
+    print_explanation(level)
+}
+
+void run_all(string args[]) {
+    if (args.len() < 52) {
+        std.out.printf("Need 50 answers after 'all'. Example: ds_cli_challenge all 1 2 3 ...\n")
+        return
+    }
+
+    int score = 0
+    for (int i = 1; i <= TOTAL_LEVELS; i++) {
+        int arg_pos = i + 1
+        int got = (int) args[arg_pos].tol()
+        int expected = correct_answer(i)
+        if (got == expected) {
+            score = score + 1
+        } else {
+            std.out.printf("Level %d missed: expected %d, got %d.\n", i, expected, got)
+        }
+    }
+
+    std.out.printf("Final score: %d / %d\n", score, TOTAL_LEVELS)
+}
+
+int main(string args[]) {
+    if (args.len() < 2) {
+        print_usage()
+        return 0
+    }
+
+    string cmd = args[1]
+
+    if (cmd.casecmp("list") == 0) {
+        print_levels()
+        return 0
+    }
+
+    if (cmd.casecmp("study") == 0) {
+        if (args.len() < 3) {
+            std.out.printf("study needs a level number.\n")
+            return 1
+        }
+        int level = (int) args[2].tol()
+        if (level < 1) {
+            std.out.printf("Level must be 1..50.\n")
+            return 1
+        }
+        if (level > TOTAL_LEVELS) {
+            std.out.printf("Level must be 1..50.\n")
+            return 1
+        }
+        print_question(level)
+        print_explanation(level)
+        return 0
+    }
+
+    if (cmd.casecmp("all") == 0) {
+        run_all(args)
+        return 0
+    }
+
+    int level = (int) cmd.tol()
+    if (level < 1) {
+        std.out.printf("Unknown command or level. Use 'list' to see ranges.\n")
+        return 1
+    }
+    if (level > TOTAL_LEVELS) {
+        std.out.printf("Level must be 1..50.\n")
+        return 1
+    }
+
+    print_question(level)
+    if (args.len() < 3) {
+        std.out.printf("Answer with: ds_cli_challenge %d <1-4>\n", level)
+        return 0
+    }
+
+    int answer = (int) args[2].tol()
+    check_level(level, answer)
+    return 0
+}

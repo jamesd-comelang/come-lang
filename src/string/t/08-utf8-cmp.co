@@ -1,0 +1,35 @@
+module main
+
+import (
+    std,
+    string
+)
+
+int main() {
+    string acute = "\xC3\xA1Z"
+    string grave = "\xC3\xA0Z"
+    string acute_tail = "\xC3\xA1Q"
+
+    if (acute.cmp(grave, 1) == 0) {
+        std.out.printf("FAIL: cmp(n) ignored UTF-8 continuation bytes\n")
+        return 1
+    }
+
+    if (acute.casecmp(grave, 1) == 0) {
+        std.out.printf("FAIL: casecmp(n) ignored UTF-8 continuation bytes\n")
+        return 1
+    }
+
+    if (acute.cmp(acute_tail, 1) != 0) {
+        std.out.printf("FAIL: cmp(n) compared beyond first UTF-8 character\n")
+        return 1
+    }
+
+    if (acute.cmp(acute_tail, 2) == 0) {
+        std.out.printf("FAIL: cmp(n) missed second character difference\n")
+        return 1
+    }
+
+    std.out.printf("PASS: UTF-8 cmp n\n")
+    return 0
+}
