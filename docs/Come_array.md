@@ -1,6 +1,6 @@
 # Come Array Type Specification
 
-Arrays in Come are dynamic headered buffers with bounds-aware access and ownership context tracking.
+Arrays in Come are headered buffers with bounds-aware access and ownership context tracking. An array is either fixed-size (`T[N]`) or dynamic (`T[]`).
 
 ```text
 [ uint size_in_bytes | uint element_count | element data... ]
@@ -10,18 +10,12 @@ Arrays in Come are dynamic headered buffers with bounds-aware access and ownersh
 
 ```come
 int arr[5] = {1, 2, 3, 4, 5}
-int nums[] = [10, 20, 30]
+int nums[] = {10, 20, 30}
 int dyn[]
-string names[] = ["Alice", "Bob"]
+string names[] = {"Alice", "Bob"}
 ```
 
-Fixed-size array declarations may be promoted to dynamic arrays when dynamic behavior is required, including:
-
-- passing as a composite value
-- returning from a function
-- resizing
-- ownership transfer
-- storing into another composite object
+Fixed-size arrays are fixed: the length is part of the type and never changes. There is no promotion to dynamic — passing a fixed array, returning it, transferring its ownership, or storing it in another composite keeps it fixed. When the length must change, declare a dynamic array (`T[]`) instead.
 
 ## 2. Element Access
 
@@ -50,7 +44,7 @@ int bad = arr[100]
 
 `a.length()` returns the logical number of elements currently stored.
 
-`a.resize(n)` changes the array length to `n`.
+`a.resize(n)` changes the array length to `n`. Dynamic arrays only — a fixed-size array's length cannot change.
 
 - If `n` is greater than the current length, new elements are zero-initialized.
 - If `n` is less than the current length, excess elements are discarded.
@@ -86,7 +80,7 @@ If explicit storage reservation is later added, it should use a separate method 
 
 | Method | Returns | Description |
 | :--- | :--- | :--- |
-| `a.resize(n)` | `void` | Changes the logical length to `n`. |
+| `a.resize(n)` | `void` | Changes the logical length to `n` (dynamic arrays only). |
 | `a.append(elem)` | `void` | Appends `elem` to the end of the array. |
 | `a.insert(index, elem)` | `void` | Inserts `elem` at `index`. |
 | `a.remove(index)` | `void` | Removes the element at `index`. |
@@ -101,7 +95,7 @@ If explicit storage reservation is later added, it should use a separate method 
 | Method | Returns | Description |
 | :--- | :--- | :--- |
 | `a.slice(start, end)` | `T[]` | Returns a new array from `start` (inclusive) to `end` (exclusive). |
-| `a.dup([depth])` | `T[]` | Returns a copy of the array. |
+| `a.dup(depth)` | `T[]` | Returns a copy of the array (`.dup(0)` shares the buffer; no argument = deep copy). |
 
 Arrays returned by `slice()` and `dup()` are owned by the current local context by default.
 
@@ -111,11 +105,11 @@ Arrays returned by `slice()` and `dup()` are owned by the current local context 
 | :--- | :--- | :--- |
 | `a.owner()` | composite | Returns the current owner context. |
 | `a.chown(new_owner)` | `void` | Transfers ownership to a new owner context. |
-| `a.dup([depth])` | `T[]` | Returns a copy of the array. |
+| `a.dup(depth)` | `T[]` | Returns a copy of the array (`.dup(0)` shares the buffer; no argument = deep copy). |
 
 ## 5. Dynamic Growth
 
-Arrays grow automatically on `append()` and `insert()`.
+Dynamic arrays grow automatically on `append()` and `insert()`. Fixed-size arrays cannot grow.
 
 ```come
 int results[]
@@ -131,7 +125,7 @@ Arrays are composite objects and therefore belong to ownership contexts.
 A newly created array is owned by the current active local context unless explicitly transferred.
 
 ```come
-int values[] = [1, 2, 3]
+int values[] = {1, 2, 3}
 values.chown(cache)
 ```
 
@@ -151,9 +145,9 @@ Array memory is reclaimed automatically when its owner context ends:
 
 ## 8. Summary
 
-- Arrays are dynamic headered buffers.
+- Arrays are headered buffers, fixed-size or dynamic.
 - Indexing is bounds-checked.
-- `resize(n)` changes logical length.
+- `resize(n)` changes a dynamic array's logical length.
 - `append()` and `insert()` grow automatically.
 - New arrays are owned by the current local context by default.
 - Ownership may be promoted with `chown()`.

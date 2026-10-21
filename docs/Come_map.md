@@ -1,143 +1,71 @@
 # Come Map Type Specification
 
-The `map` type is a string-keyed, dynamically typed associative container.
+The `map{K, V}` type is a statically typed, unordered key-value collection.
 
-Each entry stores:
-
-- a string key
-- a value
-- a runtime type tag
+- `K` is the key type. V1 key types: integer types, `bool`, `wchar`, `string` (hashed by contents), and enums.
+- `V` is the value type: one single type per map — a primitive, a `string`, a struct, an array, or another map.
 
 Maps are composite objects and participate in Come ownership contexts.
 
 ## 1. Overview
 
-A `map` is intended for flexible structured data such as:
-
-- configuration
-- decoded text formats
-- metadata
-- loosely shaped nested objects
-
-Example:
+A map associates keys of one fixed type with values of one fixed type, checked at compile time:
 
 ```come
-map config = {
-    "host": "localhost",
-    "port": 8080,
-    "debug": true
-}
+map{string, string} labels = {"host": "localhost", "env": "prod"}
+map{string, int} limits = {"port": 8080, "retries": 3}
 ```
 
-Keys are always `string`.
+Mixing value types in one map is a compile error — use two maps, or a struct when the shape is known.
 
-Values may be any supported map value type.
-
-## 2. Supported Value Types
-
-A map entry stores a runtime tag describing the value currently associated with the key.
-
-Supported value categories:
-
-- `string`
-- integer
-- floating-point
-- `bool`
-- `map`
-- array
-
-Example:
+## 2. Declaration and Initialization
 
 ```come
-map m = {}
-m["name"] = "John"
-m["age"] = 30
-m["score"] = 9.5
-m["active"] = true
-m["meta"] = {}
-m["tags"] = ["a", "b"]
+map{string, int} scores
+map{string, int} m = {"alice": 90, "bob": 85}
 ```
 
-Reassigning a key replaces both the stored value and its runtime type tag:
+Literals use `{key: value, ...}` pairs with `:`. Every key must be of type `K` and every value of type `V`.
+
+## 3. Access Rules
 
 ```come
-m["port"] = "8080"
-m["port"] = 8080
-```
+map{string, int} m = {"name": 0, "age": 30}
 
-## 3. Declaration and Initialization
-
-```come
-map m = {}
-map server = {
-    "host": "localhost",
-    "port": 8080,
-    "tls": true
-}
-```
-
-Trailing commas are allowed.
-
-## 4. Access Rules
-
-Map access is runtime-checked.
-
-The target variable type determines the expected type of the retrieved value.
-
-```come
-map m = { "name": "John", "age": 30 }
-
-string name = m["name"]
 int age = m["age"]
+m["age"] = 31
 ```
 
-If the stored value type matches the target type, the read succeeds.
+Reads and writes are statically typed: `m[key]` has type `V`, and storing anything other than a `V` is a compile error.
 
-If the key is missing or the stored value type does not match the target type:
+Reading a key that does not exist:
 
-- the zero value of the target type is returned
-- `ERR` is set
+- returns the zero value of `V`
+- sets `ERR`
 
-Example:
+## 4. Type Inference with `var`
+
+`var` infers the full map type from the literal, like any other type:
 
 ```come
-string bad = m["age"]
-int missing = m["none"]
+var m = {"a": 1}    // map{string, int}
+int x = m["a"]      // reads are typed V (int here)
 ```
 
-## 5. Type Inference with `var`
+## 5. Key Lookup
 
-`var` cannot infer a map access result directly, because map values are runtime-tagged.
-
-```come
-var x = m["age"]   // compile error
-```
-
-Use an explicit target type:
+Keys may be literals or variables of type `K`; both forms behave the same:
 
 ```come
-int x = m["age"]
-string y = m["name"]
-```
+map{string, int} limits = {"port": 8080, "retries": 3}
 
-This rule applies to both literal keys and variable keys.
-
-## 6. Key Lookup
-
-Keys may be accessed by literal or variable:
-
-```come
-string host = config["host"]
+int p1 = limits["port"]
 
 string key = "port"
-int port = config[key]
+int p2 = limits[key]
 ```
 
-Both forms use the same runtime type-checking rule.
-
-Literal keys do not receive special compile-time typing behavior.
-
-## 7. Methods
+## 6. Methods
 
 ### Query Methods
 
@@ -156,11 +84,7 @@ Literal keys do not receive special compile-time typing behavior.
 - `m.has(key) -> bool`
   Returns `true` if the key exists.
 
-- `m.typeof(key) -> string`
-  Returns the runtime type name of the value stored at `key`.
-  If the key does not exist, returns `""` and sets `ERR`.
-
-- `m.keys() -> string[]`
+- `m.keys() -> K[]`
   Returns an array of all keys.
   The returned array is owned by the current local context by default.
 
@@ -175,72 +99,51 @@ Literal keys do not receive special compile-time typing behavior.
 
 ### Copy and Ownership Methods
 
-- `m.dup([depth]) -> map`
-  Returns a new map owned by the current local context by default.
+- `m.dup(depth) -> map{K, V}`
+  Returns a copy of the map (`.dup(0)` shares the buffers; no argument = deep copy), owned by the current local context by default.
 
 - `m.chown(new_owner)`
   Transfers ownership to a new owner context.
 
-## 8. Iteration
+## 7. Iteration
 
-Use `.keys()` to iterate over a map:
+Use `.keys()` to iterate over a map. Iteration order is unspecified:
 
 ```come
-map m = { "name": "John", "age": 30, "active": true }
+map{string, int} m = {"alice": 90, "bob": 85}
 
 string keys[] = m.keys()
 for (int i = 0; i < keys.length(); i++) {
-    std.out.printf("key: %s, type: %s\n", keys[i], m.typeof(keys[i]))
+    std.out.printf("%s = %d\n", keys[i], m[keys[i]])
 }
 ```
 
-Type-specific processing is done with explicit reads:
+Values read back are statically typed, so no runtime type checks or dispatch are needed.
+
+## 8. Nested Maps
+
+A map's value type may itself be a map or an array:
 
 ```come
-string keys[] = m.keys()
-for (int i = 0; i < keys.length(); i++) {
-    string t = m.typeof(keys[i])
-
-    if (t == "string") {
-        string s = m[keys[i]]
-        std.out.printf("%s = %s\n", keys[i], s)
-    }
-
-    if (t == "int") {
-        int n = m[keys[i]]
-        std.out.printf("%s = %d\n", keys[i], n)
-    }
-}
-```
-
-## 9. Nested Maps
-
-Maps may contain nested maps and arrays:
-
-```come
-map server = {
-    "host": "localhost",
-    "port": 8080,
-    "tls": {
-        "enabled": true,
-        "cert": "/etc/ssl/cert.pem"
-    }
+map{string, map{string, int}} table = {
+    "row1": {"a": 1, "b": 2},
+    "row2": {"a": 3, "b": 4}
 }
 
-map tls = server["tls"]
-string cert = tls["cert"]
+map{string, int} row = table["row1"]
+int a = row["a"]
 ```
 
 Nested composite values follow normal ownership rules.
 
-## 10. Ownership and Lifetime
+## 9. Ownership and Lifetime
 
 A `map` is a composite object and belongs to an ownership context.
 
 A newly created map is owned by the current active local context unless explicitly transferred.
 
 ```come
-map m = { "key": "value" }
+map{string, string} m = {"key": "value"}
 m.chown(cache)
 ```
 
@@ -248,7 +151,7 @@ After transfer, `m` is owned by module `cache`.
 
 Composite values retained by a map become part of the map's owned object graph and are reclaimed when the map's owner context ends.
 
-## 11. Automatic Reclamation
+## 10. Automatic Reclamation
 
 User code does not manually free ordinary map memory.
 
@@ -258,13 +161,12 @@ Map memory is reclaimed automatically when its owner context ends:
 - module-owned maps at module finalization
 - process-owned maps at program termination
 
-## 12. Summary
+## 11. Summary
 
-- `map` is string-keyed and dynamically typed.
-- Each entry stores a runtime type tag.
-- Reads are runtime-checked.
-- Missing keys and type mismatches return the target zero value and set `ERR`.
-- `var` does not infer directly from map access.
+- `map{K, V}` is statically typed and unordered.
+- V1 key types: integer types, `bool`, `wchar`, `string`, enums.
+- Reads are statically typed; missing-key reads return the zero value of `V` and set `ERR`.
+- `var` infers map types from literals.
 - New maps are owned by the current local context by default.
 - Ownership may be promoted with `chown()`.
 - Ordinary map memory is reclaimed automatically.
