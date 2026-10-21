@@ -44,11 +44,8 @@ This is a clean separation between *code* and *runtime authority*. Good.
 
   * Parent frees children
   * `.chown()` explicitly re-parents
-* Promotion from stack/fixed → dynamic is:
-
-  * Deterministic
-  * Compiler-managed
-  * Triggered only by clear events
+* Fixed arrays stay fixed — no promotion to dynamic
+* Buffers die with their owner; `resize(n)` is the only memory primitive
 
 This feels like a **manual-but-safe arena system**, closer to:
 
@@ -73,7 +70,7 @@ Key points:
   * `.owner()`
   * `.chown()`
 
-Promotion rules are explicit and compiler-guaranteed, which avoids the usual “hidden heap allocation” problem found in higher-level languages.
+Memory rules are explicit and compiler-guaranteed, which avoids the usual “hidden heap allocation” problem found in higher-level languages.
 
 ---
 
@@ -113,7 +110,7 @@ This is clean, readable, and predictable.
 
 These stand out as *very well thought-through*:
 
-1. **Promotion rules are explicit**
+1. **Memory rules are explicit**
 
    * Huge improvement over C, Go, and even Rust ergonomics-wise
 

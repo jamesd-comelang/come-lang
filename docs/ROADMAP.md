@@ -40,7 +40,7 @@ semantics stories build on the final memory layer.
 | COIL-109 | Functions as arguments in declarator shape (`int cmp(byte a, byte b)`); no `method` type anywhere | §8.3 | M | — | `sort` / `qsort` / `atexit` call sites compile with inline declarators | ☐ |
 | COIL-110 | String conformance: immutability enforced, `.length()` only (no `.len()`), character-first indexing | §6.5, Come_string | M | COIL-106, COIL-132 | String mutation attempts are compile errors; string_demo passes with `.length()` | ☐ |
 | COIL-111 | `extern "C"` restricted to system modules | §13 | S | — | `extern` in a user module is a compile error | ☐ |
-| COIL-112 | Doc fixes: spec §17 "One per file" → directory-based modules; README pillars updated (drop promotion text) | §3.2, §17 | S | COIL-108 | Docs and spec agree with the shipped behavior | ☐ |
+| COIL-112 | Doc fixes: spec §17 "One per file" → directory-based modules; README pillars updated (drop promotion text) | §3.2, §17 | S | COIL-108 | Docs and spec agree with the shipped behavior | ☑ |
 | COIL-113 | Conformance test harness: one `.co` test per spec section, wired into `tests/run_tests.sh` | all | M | COIL-100–112 | The suite runs green in one command and grows with every story above | ☐ |
 
 **Exit criteria:** all examples compile and run; conformance suite green;

@@ -912,5 +912,5 @@ statements on one line.
 | FFI | `extern "C"` confined to system modules |
 | Struct layout | C-compatible default; `packed` / `align(n)` modifiers |
 | Interfaces | Not in v1 |
-| Modules | One per file; private by default; deterministic lifecycle |
+| Modules | Directory-based; private by default; deterministic lifecycle |
 | Compatibility | C mental model, without C footguns |
