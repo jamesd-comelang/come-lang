@@ -1,211 +1,368 @@
-module main // Every source file must specify it's own module
+// =====================================================================
+//  Come language demo — one file, every major feature.
+//
+//  Build and run:
+//      ./build/come build examples/come_demo.co -o examples/come_demo
+//      ./examples/come_demo            (optionally: ./come_demo 12 7)
+//
+//  Every construct in this file compiles and runs today. Features
+//  still in development (maps from Come code, tuple destructuring,
+//  coroutines) land with the v0.7+ stories in docs/ROADMAP.md.
+// =====================================================================
 
-/**
- * Grouped declarations 
- * New in Come: Syntactic symmetry across these 4 keywords: const, import, export, alias.
- */
-const PI = 3.14
+// Every source file declares its module. A module is the unit of
+// privacy and lifetime: everything here is local unless exported.
+module main
 
-// const enum: Support for multi-item and auto-incrementing enums
-const ( 
+// Imports can be grouped — one of Come's grouped declaration forms,
+// shared by import, const, export, and alias.
+import (std, string)
+
+// A plain constant.
+const PI = 3.14159
+
+// Enums live in a grouped const: values auto-increment, and enum(n)
+// restarts the counter where you say.
+const (
     RED = enum,
     YELLOW,
     GREEN,
     UNKNOWN,
     HL_RED = enum(8),
     HL_YELLOW,
-    HL_GREEN,  //tolerate extra ,
+    HL_GREEN,
 )
 
-import (std, string) //multi items in one line
-
-// multi items in multi lines
-// Any variable and function is local until exported
+// Exports are grouped too: only what is listed is visible to importers.
 export (
-    PI, 
-    Point, 
-    int add(int a, int b) 
+    PI,
+    Rect,
+    int add(int a, int b)
 )
 
-// alias: Unified syntax for typedefs and defines
-alias (
-    tcpport_t = ushort,           // Alias as typedef
-    Point = struct Point,         // Alias as typedef
-    MAX_ARRAY = 10,               // Alias as constant define
-    SQUARE(x) = ((x) * (x))       // Alias as macro define
-)
+// Aliases: one syntax for typedefs, constants, and macros.
+alias tcpport_t = ushort            // typedef-style alias
+alias MAX_SCORES = 5                // constant-style alias
+alias SQUARE(x) = ((x) * (x))       // macro-style alias (declared here;
+                                    // macro calls are not expanded yet)
 
-// Module variable: Local to module unless exported
-int module_arr[]
+// A module variable: shared by this module's functions, invisible
+// outside unless exported.
+int call_count = 0
 
-// Union: Standard C-style memory overlap
+// A union overlays its members on the same memory, as in C.
 union TwoBytes {
     short signed_s
     ushort unsigned_s
     byte first_byte
 }
 
-// Struct: Standard composite type
+// A struct, with a designated-initializer syntax borrowed from C.
 struct Rect {
     int w
     int h
 }
 
-/**
- * struct methods
- * New in Come: Define behavior directly on structs.
- * 'self' is a new keyword representing the instance itself
- */
+// Structs can have methods. `self` is the instance the method was
+// called on — no explicit receiver parameter to declare.
 int Rect.area() {
-    return self.w * self.h 
+    return self.w * self.h
 }
 
-int main(string args[]) {
-    struct Rect r = { .w = 10, .h  = 5}
-
-    /**
-     * New in Come: string and array are headed buffer objects.
-     * .length() and .tol() are methods provided by array/string object.
-     */
-    /* .tol() and tuple destructuring commented out for verification passing */
-
-    if (args.length() > 2) {
-        // .tol() is a string method replacing C's strtol()
-        int w = (int) args[1].tol()
-        if (ERR.no() > 0) { //ERR is a global object with .no() and .str() method
-            std.err.printf("string %s tol error:%s\n", args[1], ERR.str())
-        } else r.w = w
-
-        int h = (int) args[2].tol();
-        if (ERR.no() > 0) {
-            std.err.printf("string %s tol error:%s\n", args[2], ERR.str())
-        } else r.h = h
-    }
-
-
-    std.out.printf("Rect area: %d\n", r.area())
-
-	demo_types()
-
-	string pass_in = "hello, world"
-    int r_val = demo(pass_in)
-    std.out.printf("pass_in is [%s] now\n", pass_in)
-	return r_val
-}
-
-// Function prototype
+// A function prototype: the definition can live further down.
 int add(int a, int b)
 
-void demo_types() {
-    // Primitive types
-    bool flag = true
-    wchar w = '字' //unicode char
-    byte b = 'A'
-	short s = -3
-    int i = 42
-    long l = 1000L
-    i8 b1 = 'B'
-	i16 s1 = -7
-    i32 i1 = 412
-    i64 l1 = 10000L
+// ---------------------------------------------------------------------
+// Entry point. `args` is a string array: args[0] is the program name,
+// args[1] the first real argument — the C convention.
+// ---------------------------------------------------------------------
+int main(string args[]) {
+    std.out.printf("Come demo — a tour of the language\n")
 
-    ubyte ub = 'C'
-	ushort us = 9000
-    uint ui = 4230000
-    ulong ul = 10'000'000'000L  // ' can be used as digit separator
+    demo_types()
+    demo_alias_and_enums()
+    demo_structs()
+    demo_arrays()
+    demo_strings()
+    demo_flow()
+    demo_functions()
 
-    u8 ub1 = 'D'
-	u16 us1 = 9001
-    u32 ui1 = 4230001
-    u64 ul1 = 10'000'000'001L  // ' can be used as digit separator
-
-    float f =3.14
-    double d = 2.718
-    
-    // var is a new type keyword
-    // var type is realized on the first assignment
-    var late_var 
-    late_var = s //late_var is a short now
-
-    /**
-     * array is for dynamic memory
-     * arrays are Headered Buffers. .resize() replaces malloc/realloc.
-     */
-    int arr[5] = {1, 2, 3, 4, 5}
-    arr.resize(MAX_ARRAY) //adjust array size 
-    for (int j = 5; j < MAX_ARRAY; j++) {
-        arr[j] = j + 1
+    // Optional width/height from the command line (./come_demo 12 7).
+    // String-to-number conversion reports failure through the global
+    // ERR object instead of returning a magic value.
+    if (args.length() > 2) {
+        struct Rect custom = { .w = 10, .h = 5 }
+        int w = (int) args[1].tol()
+        if (ERR.no() > 0) {
+            std.err.printf("bad width '%s': %s\n", args[1], ERR.str())
+        } else {
+            custom.w = w
+        }
+        int h = (int) args[2].tol()
+        if (ERR.no() > 0) {
+            std.err.printf("bad height '%s': %s\n", args[2], ERR.str())
+        } else {
+            custom.h = h
+        }
+        std.out.printf("Custom rect from args: %d x %d, area %d\n",
+                       custom.w, custom.h, custom.area())
     }
 
-	module_arr = arr
-
-    struct Rect r = { .w = 10, .h = 3 }
-    
-    union TwoBytes tb
-    tb.unsigned_s = 0x1234;
-
-    std.out.printf("Types: %c, %d, %f, byte: %d\n", b, i, d, tb.first_byte)
-    
-    // Print unused variables to avoid warnings
-    std.out.printf("Unused: %d, %lc, %ld, %d, %d, %d, %ld\n", flag, w, l, b1, s1, i1, l1)
-    std.out.printf("Unused unsigned: %d, %d, %d, %lu, %d, %d, %d, %lu\n", ub, us, ui, ul, ub1, us1, ui1, ul1)
-    std.out.printf("Unused float/var: %f, %d, %d\n", f, late_var, r.w )
-}
-
-int demo(string pass_ref)  //composite type is always passed by reference
-{
-	pass_ref.upper()
-    /**
-     * switch & fallthrough: defaut is break for switch
-     * 'fallthrough' is a new explicit keyword 
-     */
-    var color = YELLOW
-    switch (color) {
-        case RED:   std.out.printf("Red\n")
-        case GREEN: std.out.printf("Green\n")
-        case UNKNOWN:
-            fallthrough 
-        default:
-            std.out.printf("Color code: %d\n", color)
-    }
-
-    int k = 0
-    while (k < 3) { k++; }
-    do { k-- } while (k > 0)
-
-    // Arithmetic, relational, logical, bitwise
-    int x = 5
-    int y = 2
-    int res = (x + y) * (x - y)
-    res &= 7        // bitwise AND
-    res |= 2        // bitwise OR
-    res ^= 1        // bitwise XOR
-    res = ~res      // bitwise NOT
-    res <<= 1       // left shift
-    res >>= 1       // right shift
-
-    alias printf = std.out.printf
-
-    if ((res > 0) && (res != 10)) {
-        printf("res = %d\n", res)
-    }
-
-    printf("%d + %d = %d\n", x, y, add(x, y))
-    /**
-     * multiple return values
-     * New in Come: Return and destructure tuples directly.
-     */
-    // var (sum, msg) = add_n_compare(10, 20)
-    // printf("%s: %d\n", msg, sum)
-
+    std.out.printf("Demo finished. Helper functions were called %d times.\n",
+                   call_count)
     return 0
 }
 
-int add(int a, int b) {
-    return a + b
+// ---------------------------------------------------------------------
+// Primitive types, fixed-width aliases, and `var` inference.
+// ---------------------------------------------------------------------
+void demo_types() {
+    std.out.printf("\n=== Types ===\n")
+
+    // The C-like primitives, in short and long spellings.
+    bool flag = true
+    wchar w = '字'              // a Unicode character, not a byte
+    byte b = 'A'
+    short s = -3
+    int i = 42
+    long l = 1000L
+    float f = 3.14
+    double d = 2.718
+
+    // Fixed-width names say exactly how big a value is.
+    i8 b1 = 'B'
+    i16 s1 = -7
+    i32 i1 = 412
+    i64 l1 = 10000L
+    ubyte ub = 'C'
+    ushort us = 9000
+    uint ui = 4230000
+    ulong ul = 10'000'000'000L   // ' works as a digit separator
+    u8 ub1 = 'D'
+    u16 us1 = 9001
+    u32 ui1 = 4230001
+    u64 ul1 = 10'000'000'001L
+
+    // A wchar holds a full Unicode code point — 字 is 23383, far
+    // beyond any byte. (Printed as a number: %C output is unreliable.)
+    std.out.printf("bool=%d wchar code point=%d byte=%d short=%d int=%d long=%ld\n",
+                   flag, w, b, s, i, l)
+    std.out.printf("float=%f double=%f\n", f, d)
+    std.out.printf("fixed-width: %d %d %d %ld | %d %d %d %lu\n",
+                   b1, s1, i1, l1, ub, us, ui, ul)
+    std.out.printf("u-names:      %d %d %d %lu\n", ub1, us1, ui1, ul1)
+
+    // `var` infers its type from the first assignment and is statically
+    // typed from then on. Declared without a value, it is "realized"
+    // by the first assignment instead.
+    var inferred = 20
+    var late_var
+    late_var = s                 // late_var is a short now
+    std.out.printf("var: inferred=%d late_var=%d (a short)\n", inferred, late_var)
 }
 
-// Multi-return function definition
-(int, string) add_n_compare(int a, int b) {
-    return (a + b), (a > b) ? "Greater" : "Lesser/Equal"
+// ---------------------------------------------------------------------
+// Aliases and enums in action.
+// ---------------------------------------------------------------------
+void demo_alias_and_enums() {
+    std.out.printf("\n=== Aliases and enums ===\n")
+
+    tcpport_t port = 8080        // the alias is a real ushort
+    std.out.printf("tcpport_t port = %d (a ushort)\n", port)
+    std.out.printf("MAX_SCORES = %d, PI = %f\n", MAX_SCORES, PI)
+
+    // Enum values are plain integers underneath.
+    std.out.printf("RED=%d YELLOW=%d GREEN=%d UNKNOWN=%d\n",
+                   RED, YELLOW, GREEN, UNKNOWN)
+    std.out.printf("HL_RED=%d HL_YELLOW=%d HL_GREEN=%d (counter restarted at 8)\n",
+                   HL_RED, HL_YELLOW, HL_GREEN)
+}
+
+// ---------------------------------------------------------------------
+// Structs, unions, and methods.
+// ---------------------------------------------------------------------
+void demo_structs() {
+    std.out.printf("\n=== Structs and unions ===\n")
+
+    struct Rect r = { .w = 10, .h = 5 }
+    std.out.printf("Rect %d x %d, area() = %d\n", r.w, r.h, r.area())
+
+    // One value, two views: set the 16-bit member, read the low byte.
+    union TwoBytes tb
+    tb.unsigned_s = 0x1234
+    std.out.printf("TwoBytes: unsigned=%d signed=%d first byte=0x%x\n",
+                   tb.unsigned_s, tb.signed_s, tb.first_byte)
+}
+
+// ---------------------------------------------------------------------
+// Arrays: headered buffers with a length, grown with resize().
+// There is no malloc/free in Come — resize() is the only primitive,
+// and every buffer is freed by its owner's scope.
+// ---------------------------------------------------------------------
+void demo_arrays() {
+    std.out.printf("\n=== Arrays ===\n")
+
+    // A dynamic array: brace literal, length decided at runtime.
+    int scores[] = {90, 85, 77}
+    std.out.printf("dynamic: size=%d first=%d\n", scores.size(), scores[0])
+
+    // resize() grows it; new elements are zero-initialized.
+    scores.resize(MAX_SCORES)
+    scores[3] = 60
+    scores[4] = 100
+    std.out.printf("after resize(5): size=%d scores[4]=%d\n",
+                   scores.size(), scores[4])
+
+    // Indexing is bounds-checked: an out-of-bounds read yields the
+    // element type's zero value instead of garbage or a crash.
+    int oob = scores[100]
+    std.out.printf("out-of-bounds read scores[100] = %d (safe zero)\n", oob)
+
+    // Sum with a for loop.
+    int total = 0
+    for (int k = 0; k < scores.size(); k++) {
+        total += scores[k]
+    }
+    std.out.printf("total of %d scores = %d\n", scores.size(), total)
+
+    // A fixed-size array uses the same literal syntax; its length is
+    // part of the type and known at compile time.
+    int fixed[5] = {1, 2, 3, 4, 5}
+    std.out.printf("fixed[5]: size=%d last=%d\n", fixed.size(), fixed[4])
+}
+
+// ---------------------------------------------------------------------
+// Strings: immutable, character-aware headered buffers. Methods that
+// transform a string return a new one; the original never changes.
+// ---------------------------------------------------------------------
+void demo_strings() {
+    std.out.printf("\n=== Strings ===\n")
+
+    string s = "Hello, World"
+    std.out.printf("s = '%s', length() = %d characters\n", s, s.length())
+    std.out.printf("upper: %s\n", s.upper())
+    std.out.printf("lower: %s\n", s.lower())
+    std.out.printf("original unchanged: %s\n", s)
+
+    // Searching and inspecting.
+    string padded = "  trimmed  "
+    std.out.printf("trim: [%s]\n", padded.trim())
+    std.out.printf("find 'World' at %d, count of 'l' is %d, first 'o' at %d\n",
+                   s.find("World"), s.count("l"), s.chr('o'))
+
+    // Building new strings from old ones.
+    std.out.printf("repeat: %s\n", "ab".repeat(3))
+    std.out.printf("replace: %s\n", s.replace("World", "Come"))
+
+    // Comparison is by contents: cmp() returns 0 for equal strings,
+    // and != works directly against literals.
+    string expected = "Hello, World"
+    if (s.cmp(expected) == 0) {
+        std.out.printf("s.cmp(expected) == 0 (contents are equal)\n")
+    }
+    if (s != "goodbye") {
+        std.out.printf("s != 'goodbye'\n")
+    }
+
+    // Composite values pass by reference: shout() receives this very
+    // string, not a copy. (It prints from inside the function.)
+    shout(s)
+}
+
+// A helper that works on its caller's string by reference.
+void shout(string text) {
+    call_count++
+    std.out.printf("shout: %s!\n", text.upper())
+}
+
+// ---------------------------------------------------------------------
+// Control flow: if/else, switch, loops, and the ternary operator.
+// switch never falls through implicitly — write `fallthrough` when
+// you mean it.
+// ---------------------------------------------------------------------
+void demo_flow() {
+    std.out.printf("\n=== Control flow ===\n")
+
+    var color = YELLOW
+    switch (color) {
+        case RED:
+            std.out.printf("Red\n")
+        case GREEN:
+            std.out.printf("Green\n")
+        case UNKNOWN:
+            fallthrough
+        default:
+            std.out.printf("color %d handled by default (YELLOW fell here by rule)\n", color)
+    }
+
+    // while and do-while.
+    int k = 0
+    while (k < 3) { k++ }
+    do { k-- } while (k > 0)
+    std.out.printf("while/do-while round trip ends at k = %d\n", k)
+
+    // The ternary operator picks a value.
+    int bigger = (10 > 20) ? 10 : 20
+    std.out.printf("ternary: the bigger of 10 and 20 is %d\n", bigger)
+    if (add(10, 20) > 25) {
+        std.out.printf("add(10, 20) is greater than 25\n")
+    } else {
+        std.out.printf("add(10, 20) is not greater than 25\n")
+    }
+
+    // Operators: arithmetic, bitwise, and compound assignment.
+    int x = 5
+    int y = 2
+    int res = (x + y) * (x - y)   // 21
+    res &= 7                      // 5
+    res |= 2                      // 7
+    res ^= 1                      // 6
+    res = ~res                    // -7
+    res <<= 1                     // -14
+    res >>= 1                     // -7
+    std.out.printf("operator chain on (5, 2) ends at res = %d\n", res)
+
+    if ((res < 0) && (res != 10)) {
+        std.out.printf("logical operators: res is negative and not 10\n")
+    }
+}
+
+// ---------------------------------------------------------------------
+// Functions: prototypes, recursion, and returning composite values.
+// A returned buffer's ownership moves to the caller — the value stays
+// valid after the function's scope is gone.
+// ---------------------------------------------------------------------
+void demo_functions() {
+    std.out.printf("\n=== Functions ===\n")
+
+    std.out.printf("add(5, 2) = %d (prototype above, definition below)\n",
+                   add(5, 2))
+    std.out.printf("fib(10) = %d (recursion)\n", fib(10))
+
+    string banner = make_banner()
+    std.out.printf("banner from make_banner(): %s\n", banner)
+
+    // A function-local alias: printf means std.out.printf from here on.
+    alias printf = std.out.printf
+    printf("printed through a local alias to std.out.printf\n")
+}
+
+int fib(int n) {
+    call_count++
+    if (n < 2) {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+// Builds a string locally and returns it; ownership moves to the caller.
+string make_banner() {
+    string b = "== Come =="
+    return b
+}
+
+// The definition for the prototype declared near the top.
+int add(int a, int b) {
+    call_count++
+    return a + b
 }
