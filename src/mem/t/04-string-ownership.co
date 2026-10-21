@@ -1,0 +1,46 @@
+module mem_test
+import std
+
+// Returns a string created in this function's scope. Ownership moves
+// to the caller, who must receive the full, intact value.
+//
+// Known limitation (pre-existing, also present before COIL-132):
+// returning a *derived* string — a method result such as
+// name.repeat(3) — crashes the caller. That compiler bug is tracked
+// separately; this test covers the paths that work today.
+string pick() {
+    string s = "hello"
+    return s
+}
+
+int main() {
+    string g = pick()
+    if (g.cmp("hello") != 0) {
+        std.out.printf("FAIL: returned string contents wrong\n")
+        return 1
+    }
+    if (g.len() != 5) {
+        std.out.printf("FAIL: returned string length, expected 5, got %u\n", g.len())
+        return 1
+    }
+
+    // Derived strings: every transform allocates a new buffer owned by
+    // this scope. Across many iterations the results must stay exact —
+    // a broken allocator corrupts them quickly.
+    for (int i = 0; i < 100; i++) {
+        string base = "Ab"
+        string loud = base.repeat(3)
+        if (loud.cmp("AbAbAb") != 0) {
+            std.out.printf("FAIL: repeat result wrong at iter %d\n", i)
+            return 1
+        }
+        string low = loud.lower()
+        if (low.cmp("ababab") != 0) {
+            std.out.printf("FAIL: lower result wrong at iter %d\n", i)
+            return 1
+        }
+    }
+
+    std.out.printf("PASS: 04-string-ownership\n")
+    return 0
+}

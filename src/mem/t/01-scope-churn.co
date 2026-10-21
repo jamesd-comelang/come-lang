@@ -1,0 +1,38 @@
+module mem_test
+import std
+
+int main() {
+    // Control data owned by main's scope: must survive all churn below.
+    int control[] = [7, 8, 9]
+
+    // Repeatedly allocate inside a block scope. Each iteration's arrays
+    // and strings die with the block; if scope memory were not reclaimed
+    // (or were reclaimed wrongly), values corrupt or the run blows up.
+    for (int iter = 0; iter < 200; iter++) {
+        int buf[]
+        buf.resize(64)
+        for (int i = 0; i < 64; i++) {
+            buf[i] = iter * 1000 + i
+        }
+        for (int i = 0; i < 64; i++) {
+            if (buf[i] != iter * 1000 + i) {
+                std.out.printf("FAIL: churn value mismatch at iter %d index %d\n", iter, i)
+                return 1
+            }
+        }
+
+        string s = "iteration"
+        if (s.len() != 9) {
+            std.out.printf("FAIL: churn string length mismatch at iter %d\n", iter)
+            return 1
+        }
+    }
+
+    if (control[0] != 7 || control[1] != 8 || control[2] != 9) {
+        std.out.printf("FAIL: control data corrupted by scope churn\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 01-scope-churn\n")
+    return 0
+}

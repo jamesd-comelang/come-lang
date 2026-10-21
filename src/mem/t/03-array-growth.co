@@ -1,0 +1,51 @@
+module mem_test
+import std
+
+int main() {
+    // Grow a dynamic array in steps. Every growth reallocates the
+    // buffer; the existing elements must be preserved each time.
+    int arr[]
+    int target = 10
+    while (target <= 100000) {
+        arr.resize(target)
+        for (int i = 0; i < target; i++) {
+            arr[i] = i * 3 + 1
+        }
+        for (int i = 0; i < target; i++) {
+            if (arr[i] != i * 3 + 1) {
+                std.out.printf("FAIL: growth to %d lost data at index %d\n", target, i)
+                return 1
+            }
+        }
+        target = target * 10
+    }
+
+    // Shrink: the surviving prefix must be preserved.
+    arr.resize(10)
+    if (arr.size() != 10) {
+        std.out.printf("FAIL: size after shrink, expected 10, got %d\n", arr.size())
+        return 1
+    }
+    for (int i = 0; i < 10; i++) {
+        if (arr[i] != i * 3 + 1) {
+            std.out.printf("FAIL: shrink lost prefix at index %d\n", i)
+            return 1
+        }
+    }
+
+    // Resize to zero leaves a valid, reusable empty array.
+    arr.resize(0)
+    if (arr.size() != 0) {
+        std.out.printf("FAIL: size after resize(0), expected 0, got %d\n", arr.size())
+        return 1
+    }
+    arr.resize(4)
+    arr[3] = 99
+    if (arr[3] != 99) {
+        std.out.printf("FAIL: array not reusable after resize(0)\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 03-array-growth\n")
+    return 0
+}

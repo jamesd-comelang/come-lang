@@ -1,0 +1,48 @@
+module mem_test
+import std
+
+int main() {
+    // Outer scope data with a recognizable pattern.
+    int outer[]
+    outer.resize(50)
+    for (int i = 0; i < 50; i++) {
+        outer[i] = 1000 + i
+    }
+    string outer_s = "outer"
+
+    // Nested block scopes allocate and free their own data. Freeing an
+    // inner scope must never disturb the outer scope's memory.
+    for (int level = 0; level < 20; level++) {
+        int inner[]
+        inner.resize(50)
+        for (int i = 0; i < 50; i++) {
+            inner[i] = 2000 + i
+        }
+        string inner_s = "inner"
+        if (inner_s.len() != 5) {
+            std.out.printf("FAIL: inner string wrong at level %d\n", level)
+            return 1
+        }
+        for (int i = 0; i < 50; i++) {
+            if (inner[i] != 2000 + i) {
+                std.out.printf("FAIL: inner value mismatch at level %d index %d\n", level, i)
+                return 1
+            }
+        }
+    }
+
+    // After all inner scopes are gone, outer data must be intact.
+    for (int i = 0; i < 50; i++) {
+        if (outer[i] != 1000 + i) {
+            std.out.printf("FAIL: outer value corrupted at index %d\n", i)
+            return 1
+        }
+    }
+    if (outer_s.len() != 5) {
+        std.out.printf("FAIL: outer string corrupted\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 02-nested-scopes\n")
+    return 0
+}
