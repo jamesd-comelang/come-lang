@@ -6,7 +6,7 @@ Built from the v2 spec (`Come_spec.md`) and the type/stdlib docs
 when its acceptance line holds and a test covers it.
 
 Stories are numbered **COIL-100** upward, globally across releases
-(next free number: **COIL-133**).
+(next free number: **COIL-134**).
 
 Story titles state the **value delivered** — who gains what — in one
 read. Implementation detail belongs in the Spec and Acceptance columns,
@@ -43,6 +43,7 @@ semantics stories build on the final memory layer.
 | COIL-108 | A module can grow across files in its directory with no import changes | §3.2, §3.5 | L | — | A 2-file module compiles and runs with correct init/exit order; both-layouts-present is an error | ☐ |
 | COIL-109 | Callbacks and comparators are passed without inventing new type syntax | §8.3 | M | — | `sort` / `qsort` / `atexit` call sites compile with inline declarators | ☐ |
 | COIL-110 | String length means characters, and strings never change under your feet | §6.5, Come_string | M | COIL-106, COIL-132 | String mutation attempts are compile errors; string_demo passes with `.length()` | ☐ |
+| COIL-133 | A function can return a string it built | §7, §6.5 | M | COIL-132 | Returning a derived string (e.g. `return name.repeat(3)`) hands the caller the intact value instead of segfaulting (pre-existing bug, reproduced on the pre-COIL-132 build); `src/mem/t/04-string-ownership.co` extended to cover it | ☐ |
 | COIL-111 | Raw C stays inside system modules; user code never touches it | §13 | S | — | `extern` in a user module is a compile error | ☐ |
 | COIL-112 | The docs never describe a language different from the one shipped | §3.2, §17 | S | COIL-108 | Docs and spec agree with the shipped behavior | ☑ |
 | COIL-113 | Every promise in the spec is backed by a test that runs in one command | all | M | COIL-100–112 | The suite runs green in one command and grows with every story above | ☐ |
