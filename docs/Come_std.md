@@ -99,7 +99,7 @@ if (!f.open("data.txt", "r")) {
 | `long write(byte buf[], long n)` | Write n bytes from buf. Returns bytes written. |
 | `int getc(void)` | Read one wchar (EOF as -1). |
 | `void putc(wchar c)` | Write one wchar. |
-| `string gets()` | Read line (incl. newline) as string. |
+| `string gets()` | Read line (incl. newline) as string. Empty string at EOF — never null. |
 | `long puts(string s)` | Write string + newline. Returns chars written. |
 | `string fname()` | Return the current file name. |
 | `void ungetc(wchar c)` | Push back wchar. |
@@ -121,7 +121,7 @@ if (!f.open("data.txt", "r")) {
 | `bool error()` | Error flag. |
 | `void flush()` | Flush buffers. |
 | `void clearerr()` | Clear EOF/error flags. |
-| `void setbuf(byte buf[], long size)` | Set buffer (unbuffered if NULL). |
+| `void setbuf(byte buf[], long size)` | Set buffer (unbuffered if `buf` is empty). |
 | `void setvbuf(byte buf[], int mode, long size)` | Set buffering (modes: _IOFBF, _IOLBF, _IONBF). |
 | `void setlinebuf()` | Line-buffered mode. |
 
@@ -153,15 +153,19 @@ Use global `ERR` object for system errors (replaces `errno`/`strerror`).
 |------------------|-------------|
 | `int ERR.no()` | Get last error code. |
 | `string ERR.str()` | Get error string. |
+| `bool ERR.set()` | True when an error is recorded (`ERR.no() != 0`). |
+| `void ERR.fatal(string msg)` | Halt the program immediately, in every build. For states the program cannot continue from — never compiled out. |
 
 Example (replaces `perror`):
 
 ```come
-if (ERR.no() != 0) {
+if (ERR.set()) {
     std.err.puts("Open failed: ");
     std.err.puts(ERR.str());
 }
 ```
+
+Guidance: `ERR` is for expected failures the program should handle; `ERR.fatal` is only for the truly unrecoverable. There is no C-style `assert`.
 
 ## 5. Process & Environment (`proc` Object)
 The `std.proc` object provides methods to control the current process and interact with the host environment.
@@ -170,7 +174,7 @@ The `std.proc` object provides methods to control the current process and intera
 | :--- | :--- |
 | **`void std.proc.abort()`** | [cite_start]Terminates execution abnormally[cite: 14]. |
 | **`void std.proc.exit(int status)`** | [cite_start]Terminates program with status code[cite: 14, 16]. |
-| **`void std.proc.atexit(method cb)`** | [cite_start]Registers a callback for program exit[cite: 19]. |
+| **`void std.proc.atexit(void cb(void))`** | [cite_start]Registers a callback for program exit[cite: 19]. |
 | **`string std.proc.getenv(string name)`** | [cite_start]Retrieves an environment variable[cite: 4, 12]. |
 | **`int std.proc.system(string cmd)`** | [cite_start]Executes an external system command[cite: 12, 14]. |
 
@@ -187,7 +191,7 @@ The `std.proc` object provides methods to control the current process and intera
 | `string tmpname()` | Generate unique temp filename. |
 | **`int rand()`** | [cite_start]Generates a pseudo-random number[cite: 16]. |
 | **`void srand(uint seed)`** | [cite_start]Sets the `rand()` seed[cite: 16]. |
-| **`qsort(byte arr[], method cmp)`** | [cite_start]Sorts an array using Quick Sort. |
+| **`qsort(byte arr[], int cmp(byte a, byte b))`** | [cite_start]Sorts an array using Quick Sort. |
 
 Example:
 
@@ -267,11 +271,13 @@ The `ERR` object provides access to system error codes and messages, replacing C
 |---|---|
 | `ERR.no()` | Returns the last system error code (int). 0 means no error. |
 | `ERR.str()` | Returns the error message string for the current error code. |
+| `ERR.set()` | Returns true when an error is recorded (`ERR.no() != 0`). |
+| `ERR.fatal(string msg)` | Halts the program immediately, in every build. For states the program cannot continue from — never compiled out. |
 
 Example:
 
 ```come
-if (ERR.no() != 0) {
+if (ERR.set()) {
     std.err.printf("Error: %s\n", ERR.str())
 }
 ```

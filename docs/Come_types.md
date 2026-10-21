@@ -20,7 +20,7 @@ Come provides a set of fixed-width primitive types.
 | `ulong` | `u64` | 8 | Unsigned 64-bit integer. |
 | `float` | `f32` | 4 | IEEE 754 Single-precision (32-bit) float. |
 | `double` | `f64` | 8 | IEEE 754 Double-precision (64-bit) float. |
-| `void` | N/A | 0 | Indicates no return value or a generic pointer. |
+| `void` | N/A | 0 | Indicates no return value. |
 
 ### Numeric Literals
 Numeric literals can use single quotes `'` as digit separators to improve readability.
@@ -31,16 +31,16 @@ long big_num = 10'000'000'000L  // ' used as digit separator
 
 ## Composite Types
 
-Composite types are structures built from other types. 
-Their memory lifetime is managed by **explicit ownership**, tied to the parent composite variable or the containing module.
+Composite types are structures built from other types.
+Their memory lifetime is managed by **explicit ownership**: every buffer has an owner (a scope or a module), and buffers die deterministically with their owner. There is no manual allocation or freeing — `resize(n)` is the single primitive that changes a dynamic buffer's size.
 
-| Type      | Declaration Syntax    | Initialization Syntax                           | Description                                                        |
-|-----------|------------------------|--------------------------------------------------|--------------------------------------------------------------------|
-| `string` | `string name;`         | `string name = "John"`                           | Immutable, UTF-8 encoded sequence of characters.                   |
-| `struct/union` | `MyStruct data;`       | `data = MyStruct{ field: value };`               | Custom aggregated data structure.                                  |
-| `array`  | `T name[];`            | `int numbers[] = [10, 20, 30]`                   | Always dynamic. Fixed-size declarations are promoted to dynamic on assignment, resize, or ownership transfer. |
-| `map`    | `map map_name{};`      | `map students = { "name" : "John", "age" : 16 }` | Unordered key-value collection using `{}` for initialization.       |
-| `module` | *N/A*                  | *N/A*                                            | The top-level execution scope and lifetime container.               |
+| Type | Declaration Syntax | Initialization Syntax | Description |
+|------|--------------------|-----------------------|-------------|
+| `string` | `string name;` | `string name = "John"` | Immutable, UTF-8 encoded sequence of characters. Character-first: `s[i]` is a `wchar`, `.length()` counts characters, `.size()` counts bytes. |
+| `struct` / `union` | `Point p;` | `struct Point p = { .x = 5, .y = 10 }` | Custom aggregated data structure. Default layout is C-compatible; `packed struct` / `align(n) struct` adjust it. |
+| `array` | `int arr[10];` (fixed)<br>`int dyn[];` (dynamic) | `int numbers[] = {1, 2, 3}` | Fixed-size arrays are fixed; dynamic arrays grow/shrink via `resize(n)` only. Indexing is zero-based and bounds-checked. |
+| `map` | `map{string, int} m;` | `map{string, int} m = {"a": 1, "b": 2}` | Unordered key-value collection. V1 key types: integer types, `bool`, `wchar`, `string` (hashed by contents), enums. |
+| `module` | *N/A* | *N/A* | The top-level execution scope and lifetime container. |
 
 
 ## Built-in Methods for Composite Types
@@ -52,8 +52,11 @@ All composite variables automatically possess the following methods. These metho
 | `type()` | `variable.type()` | `string` | Returns the **name of the composite variable's type** as a lowercase string (e.g., `"string"`, `"map"`, `"struct"`). |
 | `length()` | `variable.length()` | `int` | Returns the **logical count** of elements/chars/pairs contained within the variable. |
 | `size()` | `variable.size()` | `long` | Returns the total memory size of the object, in **bytes**, including headers and contained data. |
-| `owner()` | `variable.owner()` | `composite variable` / `module` Returns the **composite variable** or **module** that currently owns the object. |
-| `chown()` | `variable.chown(new_owner_var)` | `void` | Explicitly transfers the object and its memory subtree to the `new_owner_var` (a composite variable or a module name).  |
+| `owner()` | `variable.owner()` | `composite variable` / `module` | Returns the **composite variable** or **module** that currently owns the object. |
+| `chown()` | `variable.chown(new_owner)` | `void` | Explicitly transfers the object and its memory subtree to `new_owner` (a composite variable or a module name). |
+| `dup()` | `variable.dup(depth)` | same type | Copies the object; `depth` counts freshly-copied levels: `.dup(0)` = new reference to the same buffer and owner; `.dup()` with no argument = full deep copy. |
+
+Type-specific methods (array `.resize()`, string transforms, `link` channel ops, …) are documented with their types, not in this table.
 
 ## Dynamic Type Inference `var`
 
@@ -112,8 +115,8 @@ alias (u8 u16 u32 u64) = (ubyte ushort uint ulong)
 | Code | Realization | Error Check |
 | :--- | :--- | :--- |
 | `var x` <br> `x = 3.14` | `x` becomes `double` (`f64`) | `x = 10` (Allowed) <br> `x = "ten"` (Error) |
-| `var y = [1, 2]` | `y` becomes `int array[]` | `y = [3, 4, 5]` (Allowed) <br> `y = ["a", "b"]` (Error) |
-| `var z` <br> `z = { "a": 1 }` | `z` becomes `map{key:value}` | `z = {}` (Allowed) <br> `z = "map"` (Error) |
+| `var y = {1, 2}` | `y` becomes `int[]` | `y = {3, 4, 5}` (Allowed) <br> `y = {"a", "b"}` (Error) |
+| `var z` <br> `z = {"a": 1}` | `z` becomes `map{string, int}` | `z = {}` (Allowed) <br> `z = "map"` (Error) |
 
 This behavior ensures that while declaration is flexible, Come remains a strongly and statically typed language throughout compilation.
 

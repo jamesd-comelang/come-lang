@@ -11,7 +11,7 @@ int main(string args[])
 
     // 1. Basic Info
     print("Size (bytes): %u\n", s.size())
-    print("Len (chars): %u\n", s.len())
+    print("Len (chars): %u\n", s.length())
     print("Is ASCII: %t\n", s.isascii())
 
     // 2. Comparison

@@ -3,14 +3,14 @@
 This table defines the standard string methods available on the Come `string` object, designed to be instantly recognizable by C programmers while incorporating modern features like object-method style and UTF-8 awareness.
 
 ## Memory Model
-Methods that create new strings (like `upper()`, `repeat()`, `replace()`) allocate the new string using the **parent string** as the memory context. This ensures hierarchical memory management: freeing the parent string automatically frees all derived temporary strings.
+Methods that create new strings (like `upper()`, `repeat()`, `replace()`) allocate the new string in the **current scope's** memory context. The string dies deterministically with its owner — there is no manual freeing.
 
-Any object in Come has a default method `a.chown(b)`, which changes the memory context of `a` to `b`'s context. If a derived string needs to outlive its parent, use `new_str.chown(new_parent)` to move it.
+Every string supports `s.chown(new_owner)`, which re-parents the string to a longer-lived owner. If a derived string needs to outlive its scope, use `new_str.chown(new_owner)` to move it.
 
 | Come Method | Description | C Equivalent | Go Equivalent |
 | :--- | :--- | :--- | :--- |
 | **a.size()** | Returns the number of **bytes** in the string. | *None* | `len(a)` |
-| **a.len()** | Returns the number of **characters**  in the string. | `strlen(a)` | `utf8.RuneCountInString(a)` |
+| **a.length()** | Returns the number of **characters** in the string. | `strlen(a)` | `utf8.RuneCountInString(a)` |
 | **a.cmp(b[, n])** | Compares string `a` and `b` lexicographically. If `n` is provided, compares up to the first `n` UTF-8 characters; otherwise compares the entire strings. Returns 0 if equal, < 0 if `a < b`, > 0 if `a > b`. | `strcmp(a, b)` / `strncmp(a, b, n)` | `strings.Compare(a, b)` (full string), slice `a[:n]` for partial comparison |
 | **a.casecmp(b[, n])** | Case-insensitively compares string `a` and `b`. If `n` is provided, compares up to the first `n` UTF-8 characters. Returns 0 if equal ignoring case, < 0 if `a < b`, > 0 if `a > b`. | `strcasecmp(a, b)` / `strncasecmp(a, b, n)` | `strings.EqualFold(a, b)` (for equality), use slice for first `n` characters |
 | **a.chr(c)** | Finds the first occurrence of **character** `c` in the string. Returns index or $-1$. | `strchr(a, c)` | `strings.IndexByte(a, c)` |
