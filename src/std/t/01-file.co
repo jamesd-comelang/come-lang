@@ -1,0 +1,116 @@
+module std_test
+import std
+
+// COIL-114: file I/O behaves exactly as documented in
+// Come_std.md section 2 (FILE) and section 4 (module-level
+// operations). Every method row is exercised end to end.
+
+int helper(string path) {
+    FILE g
+    if (!g.open(path, "w")) { return 1 }
+    g.puts("from helper")
+    return 0
+}
+
+int main() {
+    string path = std.tmpname()
+
+    // Write side: open, printf, puts, write, putc, flush, tell,
+    // fname, fileno, isopen, close.
+    FILE f
+    if (f.isopen()) { std.out.printf("FAIL: new FILE must not be open\n"); return 1 }
+    if (f.fileno() != -1) { std.out.printf("FAIL: unopened fileno must be -1\n"); return 1 }
+    if (!f.open(path, "w")) { std.out.printf("FAIL: open w\n"); return 1 }
+    if (!f.isopen()) { std.out.printf("FAIL: isopen\n"); return 1 }
+    f.printf("Count: %d\n", 42)
+    f.puts("second line")
+    f.putc('X')
+    f.putc('\n')
+    byte buf[] = {104, 105, 10}
+    long w = f.write(buf, 3)
+    if (w != 3) { std.out.printf("FAIL: write %ld\n", w); return 1 }
+    f.flush()
+    if (f.tell() <= 0) { std.out.printf("FAIL: tell\n"); return 1 }
+    if (f.fname().length() == 0) { std.out.printf("FAIL: fname empty\n"); return 1 }
+    if (f.fileno() < 0) { std.out.printf("FAIL: fileno\n"); return 1 }
+    if (f.error()) { std.out.printf("FAIL: error flag on healthy stream\n"); return 1 }
+    f.close()
+    if (f.isopen()) { std.out.printf("FAIL: still open after close\n"); return 1 }
+
+    // Read side: gets, getc, ungetc, rewind, seek, read, eof,
+    // clearerr. Content is "Count: 42\nsecond line\nX\nhi\n".
+    if (!f.open(path, "r")) { std.out.printf("FAIL: open r\n"); return 1 }
+    string l1 = f.gets()
+    if (l1.length() != 10) { std.out.printf("FAIL: gets len %d\n", l1.length()); return 1 }
+    wchar c = f.getc()
+    if (c != 's') { std.out.printf("FAIL: getc %d\n", c); return 1 }
+    f.ungetc(c)
+    if (f.getc() != 's') { std.out.printf("FAIL: ungetc\n"); return 1 }
+    f.rewind()
+    if (f.tell() != 0) { std.out.printf("FAIL: rewind tell\n"); return 1 }
+    int v = 0
+    int n = f.scanf("Count: %d", &v)
+    if (n != 1 || v != 42) { std.out.printf("FAIL: scanf n=%d v=%d\n", n, v); return 1 }
+    string rest1 = f.gets()
+    string rest2 = f.gets()
+    string rest3 = f.gets()
+    string rest4 = f.gets()
+    string rest5 = f.gets()
+    if (rest5.length() != 0) { std.out.printf("FAIL: gets at EOF must be empty\n"); return 1 }
+    if (!f.eof()) { std.out.printf("FAIL: eof flag\n"); return 1 }
+    f.clearerr()
+    if (f.eof()) { std.out.printf("FAIL: clearerr\n"); return 1 }
+    f.seek(0, 0)
+    byte rb[] = {0, 0, 0, 0}
+    rb.resize(4)
+    long rd = f.read(rb, 4)
+    if (rd != 4 || rb[0] != 'C' || rb[1] != 'o') { std.out.printf("FAIL: read %ld\n", rd); return 1 }
+    // Buffering controls run without error.
+    f.setlinebuf()
+    f.close()
+
+    // Auto-close: helper never closes its FILE; scope exit must.
+    string path2 = std.tmpname()
+    if (helper(path2) != 0) { std.out.printf("FAIL: helper\n"); return 1 }
+    FILE g2
+    if (!g2.open(path2, "r")) { std.out.printf("FAIL: reopen after auto-close\n"); return 1 }
+    string hl = g2.gets()
+    if (hl.length() != 12) { std.out.printf("FAIL: auto-closed content len %d\n", hl.length()); return 1 }
+    g2.close()
+
+    // fdopen + reopen.
+    FILE nf
+    if (!nf.open(path, "r")) { std.out.printf("FAIL: open for fdopen\n"); return 1 }
+    FILE d
+    if (!d.fdopen(nf.fileno(), "r")) { std.out.printf("FAIL: fdopen\n"); return 1 }
+    if (!nf.reopen(path2, "r")) { std.out.printf("FAIL: reopen\n"); return 1 }
+    string rl = nf.gets()
+    if (rl.length() != 12) { std.out.printf("FAIL: reopen content %d\n", rl.length()); return 1 }
+    nf.close()
+
+    // Failed open: false return + ERR set with a readable string.
+    FILE bad
+    bool ok = bad.open("/nonexistent-dir-xyz/nope.txt", "r")
+    if (ok) { std.out.printf("FAIL: bad open succeeded\n"); return 1 }
+    if (!ERR.set()) { std.out.printf("FAIL: bad open must set ERR\n"); return 1 }
+    if (ERR.str().length() == 0) { std.out.printf("FAIL: ERR.str() empty\n"); return 1 }
+
+    // Module-level operations: tmpfile, tmpname, remove, rand.
+    FILE t = std.tmpfile()
+    if (!t.isopen()) { std.out.printf("FAIL: tmpfile not open\n"); return 1 }
+    t.puts("tmp data")
+    t.rewind()
+    string tl = t.gets()
+    if (tl.length() != 9) { std.out.printf("FAIL: tmpfile gets %d\n", tl.length()); return 1 }
+    t.close()
+    string tn = std.tmpname()
+    if (tn.length() == 0) { std.out.printf("FAIL: tmpname empty\n"); return 1 }
+    if (!std.remove(path)) { std.out.printf("FAIL: remove\n"); return 1 }
+    if (!std.remove(path2)) { std.out.printf("FAIL: remove 2\n"); return 1 }
+    std.srand(7)
+    if (std.rand() < 0) { std.out.printf("FAIL: rand\n"); return 1 }
+
+    std.out.flush()
+    std.out.printf("PASS: 01-file\n")
+    return 0
+}

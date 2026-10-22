@@ -132,14 +132,15 @@ static ASTNode* parse_primary() {
     // Unary ops like !, ~, * are handled here?
     // Snippet 159 showed NOT, TILDE, STAR handling at TOP of parse_primary!
     // I must preserve that.
-    if (t->type == TOKEN_NOT || t->type == TOKEN_TILDE || t->type == TOKEN_STAR || t->type == TOKEN_MINUS) {
-        TokenType op_type = t->type; 
+    if (t->type == TOKEN_NOT || t->type == TOKEN_TILDE || t->type == TOKEN_STAR || t->type == TOKEN_MINUS || t->type == TOKEN_AND) {
+        TokenType op_type = t->type;
         advance();
         ASTNode* operand = parse_primary(); // Recursive for **x or - -x
         ASTNode* unary = ast_new(AST_UNARY_OP);
         if (op_type == TOKEN_NOT) strcpy(unary->text, "!");
         else if (op_type == TOKEN_TILDE) strcpy(unary->text, "~");
         else if (op_type == TOKEN_STAR) strcpy(unary->text, "*");
+        else if (op_type == TOKEN_AND) strcpy(unary->text, "&");
         else if (op_type == TOKEN_MINUS) strcpy(unary->text, "-");
         unary->children[unary->child_count++] = operand;
         // Unary ops usually bind tight, but postfix binds tighter.

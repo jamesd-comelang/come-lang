@@ -550,5 +550,55 @@ int main() {
         return 1;
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-105 ERR test passed!\033[0m\n");
+
+    // COIL-114: FILE is the std module's object type. Method
+    // calls dispatch to come_std__FILE__*, a FILE variable is a
+    // come_std__FILE_t, scope exit emits an auto-close, and an
+    // unknown FILE method is a compile error.
+    {
+        const char* src114 =
+            "module m114\nimport std\n\n"
+            "int main() {\n"
+            "    FILE f\n"
+            "    if (f.open(\"x.txt\", \"w\")) {\n"
+            "        f.puts(\"hi\")\n"
+            "    }\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil114.co", src114)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-114: FILE program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of114 = fopen("build/tests/coil114.co.c", "r");
+        if (!of114) { printf("COIL-114: output file missing\n"); return 1; }
+        static char buf114[262144];
+        size_t blen114 = fread(buf114, 1, sizeof(buf114) - 1, of114);
+        fclose(of114);
+        buf114[blen114] = 0;
+        if (!strstr(buf114, "come_std__FILE_t f = {0};")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-114: FILE declaration must use the std runtime type\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf114, "come_std__FILE__open(&f")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-114: FILE method must dispatch to the std runtime\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf114, "come_std__FILE__close(&f);")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-114: scope exit must emit the FILE auto-close\033[0m\n");
+            return 1;
+        }
+        const char* bad114 =
+            "module m114b\nimport std\n\n"
+            "int main() {\n"
+            "    FILE f\n"
+            "    f.frobnicate()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil114bad.co", bad114)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-114: unknown FILE method must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-114 FILE codegen test passed!\033[0m\n");
     return 0;
 }

@@ -625,6 +625,77 @@ static void emit_string_expr(FILE* f, ASTNode* e) {
     }
 }
 
+// Emit a FILE method call (COIL-114, Come_std.md section 2):
+// recv_c is the C lvalue of the FILE object; its address goes to
+// the runtime. String parameters are emitted as string objects
+// (the runtime reads their bytes). Returns 1 when the method is a
+// FILE method, 0 otherwise.
+static int emit_file_method_call(FILE* f, const char* recv_c, ASTNode* node) {
+    static const char* methods[] = {
+        "init", "exit", "open", "close", "fdopen", "reopen", "fileno",
+        "printf", "scanf", "vprintf", "vscanf",
+        "read", "write", "getc", "putc", "gets", "puts", "fname", "ungetc",
+        "seek", "tell", "rewind",
+        "isopen", "eof", "error", "flush", "clearerr",
+        "setbuf", "setvbuf", "setlinebuf", NULL
+    };
+    const char* m = node->text;
+    int found = 0;
+    for (int i = 0; methods[i]; i++) if (strcmp(m, methods[i]) == 0) { found = 1; break; }
+    if (!found) return 0;
+    fprintf(f, "come_std__FILE__%s(&%s", m, recv_c);
+    for (int i = 1; i < node->child_count; i++) {
+        fprintf(f, ", ");
+        int str_arg =
+            (strcmp(m, "open") == 0 || strcmp(m, "reopen") == 0) ||
+            (strcmp(m, "fdopen") == 0 && i == 2) ||
+            (i == 1 && (strcmp(m, "printf") == 0 || strcmp(m, "scanf") == 0 ||
+                        strcmp(m, "vprintf") == 0 || strcmp(m, "vscanf") == 0 ||
+                        strcmp(m, "puts") == 0));
+        if (str_arg) emit_string_expr(f, node->children[i]);
+        else generate_expression(f, node->children[i]);
+    }
+    fprintf(f, ")");
+    return 1;
+}
+
+// Auto-close for FILE variables (Come_std.md: .exit() runs
+// automatically at scope end). emit_file_closes_for emits close
+// calls, in reverse declaration order, for the FILE variables
+// among a block's first `upto` children. generate_block_children
+// is the block generator used wherever a braced block is emitted:
+// it closes a block's FILE variables before any return among its
+// statements and again at the block's end, so no path out of the
+// block leaves a stream it opened still open.
+static void emit_file_closes_for(FILE* f, ASTNode* block, int upto, int indent) {
+    int std_imported = 0;
+    for (int i = 0; i < current_import_count; i++)
+        if (strcmp(current_imports[i], "std") == 0) { std_imported = 1; break; }
+    if (!std_imported || !block) return;
+    if (upto > block->child_count) upto = block->child_count;
+    for (int i = upto - 1; i >= 0; i--) {
+        ASTNode* ch = block->children[i];
+        if (ch && ch->type == AST_VAR_DECL && ch->child_count > 1 &&
+            ch->children[1] && strcmp(ch->children[1]->text, "FILE") == 0) {
+            emit_indent(f, indent);
+            fprintf(f, "come_std__FILE__close(&%s);\n", ch->text);
+        }
+    }
+}
+
+static void generate_node(FILE* f, ASTNode* node, int indent);
+static void generate_block_children(FILE* f, ASTNode* block, int indent) {
+    for (int i = 0; i < block->child_count; i++) {
+        ASTNode* ch = block->children[i];
+        if (ch && ch->type == AST_RETURN) emit_file_closes_for(f, block, i, indent);
+        generate_node(f, ch, indent);
+    }
+    // At the block's end (unless the last statement is a return:
+    // the closes already ran before it).
+    if (block->child_count == 0 || block->children[block->child_count - 1]->type != AST_RETURN)
+        emit_file_closes_for(f, block, block->child_count, indent);
+}
+
 // Emit one map store statement (ends with a newline). Int values are
 // boxed in a cell owned by the current context; string values are
 // stored as the string object itself.
@@ -813,6 +884,23 @@ static void generate_expression(FILE* f, ASTNode* node) {
         // Detect std.out.printf / std.err.printf
         else if (receiver->type == AST_MEMBER_ACCESS &&
                  strcmp(receiver->children[0]->text, "std") == 0) {
+
+             // FILE methods on the pre-instantiated streams
+             // (COIL-114): std.in / std.out / std.err are FILE
+             // objects. puts/printf on out/err keep the fast paths
+             // below; everything else goes to the runtime.
+             if (strcmp(receiver->text, "in") == 0 || strcmp(receiver->text, "out") == 0 || strcmp(receiver->text, "err") == 0) {
+                 int fast = strcmp(receiver->text, "in") != 0 &&
+                            (strcmp(method, "puts") == 0 || strcmp(method, "printf") == 0);
+                 if (!fast) {
+                     char recv_c[64];
+                     snprintf(recv_c, sizeof(recv_c), "std_%s", receiver->text);
+                     if (emit_file_method_call(f, recv_c, node)) return;
+                     codegen_error("FILE has no method '%s' (Come_std.md section 2)", method);
+                     fprintf(f, "0");
+                     return;
+                 }
+             }
 
              // std.out.puts / std.err.puts (COIL-105: the spec's ERR
              // example writes with std.err.puts; neither existed)
@@ -1181,6 +1269,20 @@ static void generate_expression(FILE* f, ASTNode* node) {
                     const char* rt = get_local_variable_type(receiver->text);
                     if (rt && strcmp(rt, "string") == 0) plain_string = 1;
                 }
+                else if (receiver->type == AST_METHOD_CALL) {
+                    // A call that returns a plain string: string
+                    // methods and the FILE string producers
+                    // (gets/fname, COIL-114).
+                    const char* mn = receiver->text;
+                    if (strcmp(mn, "upper") == 0 || strcmp(mn, "lower") == 0 ||
+                        strcmp(mn, "repeat") == 0 || strcmp(mn, "replace") == 0 ||
+                        strcmp(mn, "trim") == 0 || strcmp(mn, "ltrim") == 0 ||
+                        strcmp(mn, "rtrim") == 0 || strcmp(mn, "substr") == 0 ||
+                        strcmp(mn, "join") == 0 || strcmp(mn, "gets") == 0 ||
+                        strcmp(mn, "fname") == 0 || strcmp(mn, "str") == 0) {
+                        plain_string = 1;
+                    }
+                }
                 strcpy(c_func, plain_string ? "come_string_len" : "come_string_list_len");
             }
             else if (strcmp(method, "tol") == 0) strcpy(c_func, "come_string_tol");
@@ -1203,9 +1305,19 @@ static void generate_expression(FILE* f, ASTNode* node) {
              else snprintf(c_func, sizeof(c_func), "come_array_%s", method);
         }
         else {
+             // FILE receiver (COIL-114): FILE is the std module's
+             // object type, not a user struct.
+             if (receiver->type == AST_IDENTIFIER) {
+                 const char* rt = get_local_variable_type(receiver->text);
+                 if (rt && (strcmp(rt, "FILE") == 0 || strcmp(rt, "struct FILE") == 0)) {
+                     if (emit_file_method_call(f, receiver->text, node)) return;
+                     codegen_error("FILE has no method '%s' (Come_std.md section 2)", method);
+                     fprintf(f, "0");
+                     return;
+                 }
+             }
              // User defined struct method?
              // Try to resolve receiver variable type
-             ASTNode* receiver = node->children[0];
              char struct_name[64] = "";
              if (receiver->type == AST_IDENTIFIER) {
                  const char* type = get_local_variable_type(receiver->text);
@@ -1320,8 +1432,14 @@ static void generate_expression(FILE* f, ASTNode* node) {
              
              if (!first_arg) fprintf(f, ", ");
              
+             // std module functions take string objects (COIL-114):
+             // materialize literals for them, as for ERR.fatal.
+             if (skip_receiver && receiver->type == AST_IDENTIFIER &&
+                 strcmp(receiver->text, "std") == 0 && strcmp(c_func, "printf") != 0 &&
+                 arg->type == AST_STRING_LITERAL) {
+                    emit_string_expr(f, arg);
              // Wrapper logic for string methods
-             if ((strcmp(method, "cmp") == 0 || strcmp(method, "casecmp") == 0) && arg->type == AST_STRING_LITERAL) {
+             } else if ((strcmp(method, "cmp") == 0 || strcmp(method, "casecmp") == 0) && arg->type == AST_STRING_LITERAL) {
                     fprintf(f, "come_string_new(NULL, ");
                     generate_expression(f, arg);
                     fprintf(f, ")");
@@ -1700,9 +1818,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, " {\n");
 
             
-            for (int i = 0; i < body->child_count; i++) {
-                generate_node(f, body->children[i], indent + 4);
-            }
+            generate_block_children(f, body, indent + 4);
             if (is_main) {
                 emit_indent(f, indent + 4);
                 fprintf(f, "return 0;\n");
@@ -1818,6 +1934,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                             emit_map_put(f, node->text, mvt, pair->children[0], pair->children[1]);
                         }
                     }
+                }
+            } else if (strcmp(type_node->text, "FILE") == 0) {
+                // FILE object (COIL-114): the std runtime type.
+                // Zero-initialized (unopened) or from an initializer
+                // expression such as std.tmpfile().
+                if (init_expr && !(init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0)) {
+                    fprintf(f, "come_std__FILE_t %s = ", node->text);
+                    generate_expression(f, init_expr);
+                    fprintf(f, ";\n");
+                } else {
+                    fprintf(f, "come_std__FILE_t %s = {0};\n", node->text);
                 }
             } else if (strcmp(type_node->text, "bool") == 0) {
                 fprintf(f, "bool %s = ", node->text);
@@ -2011,9 +2138,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
         
         case AST_BLOCK: {
-            for (int i = 0; i < node->child_count; i++) {
-                generate_node(f, node->children[i], indent);
-            }
+            generate_block_children(f, node, indent);
             break;
         }
 
@@ -2458,6 +2583,47 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         // We need the type for ERR object too
         fprintf(f, "typedef struct come_std__ERR_t come_std__ERR_t;\n");
         fprintf(f, "extern come_std__ERR_t come_std__ERR;\n");
+        // FILE object type and runtime (COIL-114, Come_std.md)
+        fprintf(f, "#include <stdarg.h>\n");
+        fprintf(f, "#include \"come_std.h\"\n");
+        fprintf(f, "extern come_std__FILE_t std_in;\n");
+        fprintf(f, "extern come_std__FILE_t std_out;\n");
+        fprintf(f, "extern come_std__FILE_t std_err;\n");
+        fprintf(f, "void come_std__FILE__init(come_std__FILE_t*);\n");
+        fprintf(f, "void come_std__FILE__exit(come_std__FILE_t*);\n");
+        fprintf(f, "bool come_std__FILE__open(come_std__FILE_t*, come_string_t*, come_string_t*);\n");
+        fprintf(f, "void come_std__FILE__close(come_std__FILE_t*);\n");
+        fprintf(f, "bool come_std__FILE__fdopen(come_std__FILE_t*, int, come_string_t*);\n");
+        fprintf(f, "bool come_std__FILE__reopen(come_std__FILE_t*, come_string_t*, come_string_t*);\n");
+        fprintf(f, "int come_std__FILE__fileno(come_std__FILE_t*);\n");
+        fprintf(f, "int come_std__FILE__printf(come_std__FILE_t*, come_string_t*, ...);\n");
+        fprintf(f, "int come_std__FILE__scanf(come_std__FILE_t*, come_string_t*, ...);\n");
+        fprintf(f, "int come_std__FILE__vprintf(come_std__FILE_t*, come_string_t*, va_list);\n");
+        fprintf(f, "int come_std__FILE__vscanf(come_std__FILE_t*, come_string_t*, va_list);\n");
+        fprintf(f, "long come_std__FILE__read(come_std__FILE_t*, come_byte_array_t*, long);\n");
+        fprintf(f, "long come_std__FILE__write(come_std__FILE_t*, come_byte_array_t*, long);\n");
+        fprintf(f, "int32_t come_std__FILE__getc(come_std__FILE_t*);\n");
+        fprintf(f, "void come_std__FILE__putc(come_std__FILE_t*, int32_t);\n");
+        fprintf(f, "come_string_t* come_std__FILE__gets(come_std__FILE_t*);\n");
+        fprintf(f, "long come_std__FILE__puts(come_std__FILE_t*, come_string_t*);\n");
+        fprintf(f, "come_string_t* come_std__FILE__fname(come_std__FILE_t*);\n");
+        fprintf(f, "void come_std__FILE__ungetc(come_std__FILE_t*, int32_t);\n");
+        fprintf(f, "void come_std__FILE__seek(come_std__FILE_t*, long, int);\n");
+        fprintf(f, "long come_std__FILE__tell(come_std__FILE_t*);\n");
+        fprintf(f, "void come_std__FILE__rewind(come_std__FILE_t*);\n");
+        fprintf(f, "bool come_std__FILE__isopen(come_std__FILE_t*);\n");
+        fprintf(f, "bool come_std__FILE__eof(come_std__FILE_t*);\n");
+        fprintf(f, "bool come_std__FILE__error(come_std__FILE_t*);\n");
+        fprintf(f, "void come_std__FILE__flush(come_std__FILE_t*);\n");
+        fprintf(f, "void come_std__FILE__clearerr(come_std__FILE_t*);\n");
+        fprintf(f, "void come_std__FILE__setbuf(come_std__FILE_t*, come_byte_array_t*, long);\n");
+        fprintf(f, "void come_std__FILE__setvbuf(come_std__FILE_t*, come_byte_array_t*, int, long);\n");
+        fprintf(f, "void come_std__FILE__setlinebuf(come_std__FILE_t*);\n");
+        fprintf(f, "bool come_std__remove(come_string_t*);\n");
+        fprintf(f, "come_std__FILE_t come_std__tmpfile(void);\n");
+        fprintf(f, "come_string_t* come_std__tmpname(void);\n");
+        fprintf(f, "int come_std__rand(void);\n");
+        fprintf(f, "void come_std__srand(unsigned int);\n");
     }
     // Macros for method dispatch
     fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);

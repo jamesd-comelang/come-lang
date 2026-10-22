@@ -37,12 +37,12 @@ export (
     int FILE.vprintf(string fmt, ...), // ... is va_list for vxxx function
     int FILE.vscanf(string fmt, ...),
     
-    uint FILE.read(byte[] buf, uint n),
-    uint FILE.write(byte[] buf, uint n),
+    long FILE.read(byte[] buf, long n),
+    long FILE.write(byte[] buf, long n),
     wchar FILE.getc(),
     void FILE.putc(wchar c),
     string FILE.gets(),
-    uint FILE.puts(string s),
+    long FILE.puts(string s),
     string FILE.fname(),
     void FILE.ungetc(wchar c),
     
