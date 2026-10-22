@@ -1,0 +1,47 @@
+// =====================================================================
+//  ownership_demo — memory and ownership (spec section 7).
+//
+//      ./build/come build examples/ownership_demo.co -o examples/ownership_demo
+//      ./examples/ownership_demo
+//
+//  Every buffer has an owner and dies with it: no free(), no
+//  leaks, no dangling pointers. resize(n) is the one memory
+//  primitive; dup() copies, dup(0) shares, chown() re-parents.
+// =====================================================================
+
+module main
+import std
+
+int main() {
+    // resize(n) is the only allocation primitive. Growing
+    // zero-fills; there is no malloc and no free.
+    int data[]
+    data.resize(3)
+    data[0] = 10
+    data[1] = 20
+    data[2] = 30
+    std.out.printf("resized to %d elements, %d bytes\n", data.length(), data.bytesize())
+
+    // dup() makes an independent copy: change either, the other
+    // does not move.
+    int copy[] = data.dup()
+    copy[0] = 99
+    std.out.printf("copy changed, original still %d\n", data[0])
+
+    // dup(0) is a reference copy: both names share one buffer.
+    int ref[] = data.dup(0)
+    ref[0] = 77
+    std.out.printf("alias changed, original now %d\n", data[0])
+
+    // A string built inside a block would die with the block;
+    // chown() hands it to a longer-lived owner so it survives.
+    string kept = "placeholder"
+    {
+        string built = "built in a block"
+        kept = built.dup()
+    } // built dies here; the copy in kept lives on
+    std.out.printf("kept after the block: %s\n", kept)
+
+    std.out.printf("an array's type() is '%s'\n", data.type())
+    return 0
+}

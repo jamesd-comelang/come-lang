@@ -1,0 +1,52 @@
+// =====================================================================
+//  array_demo — arrays and their toolbox (Come_array.md).
+//
+//      ./build/come build examples/array_demo.co -o examples/array_demo
+//      ./examples/array_demo
+//
+//  Dynamic arrays grow with append/insert; the toolbox searches,
+//  slices, sorts and copies. Indexing is bounds-checked: a bad
+//  index reads as the zero value and sets ERR instead of
+//  corrupting memory.
+// =====================================================================
+
+module main
+import std
+
+int ascending(int a, int b) { return a - b }
+
+int main() {
+    int scores[] = {70, 95, 60}
+    scores.append(85)          // {70, 95, 60, 85}
+    scores.insert(0, 50)       // {50, 70, 95, 60, 85}
+    scores.remove(3)           // {50, 70, 95, 85}
+
+    std.out.printf("count: %d\n", scores.length())
+    std.out.printf("has 95: %t, index of 95: %d\n", scores.contains(95), scores.index(95))
+
+    scores.sort(ascending)
+    std.out.printf("sorted:")
+    for (int i = 0; i < scores.length(); i++) {
+        std.out.printf(" %d", scores[i])
+    }
+    std.out.printf("\n")
+
+    int top[] = scores.slice(2, 4)   // the two highest
+    std.out.printf("top two: %d and %d\n", top[0], top[1])
+
+    // A copy is independent; dup(0) shares the same buffer.
+    int copy[] = scores.dup()
+    copy[0] = -1
+    std.out.printf("original first element is still %d\n", scores[0])
+
+    // Bounds-checked access: zero value + ERR, no crash.
+    ERR.clear()
+    int bad = scores[100]
+    std.out.printf("scores[100] reads %d, ERR: %s\n", bad, ERR.str())
+
+    // Strings live in arrays too, with the same toolbox.
+    string names[] = {"pear", "apple", "fig"}
+    names.append("plum")
+    std.out.printf("names has plum at index %d\n", names.index("plum"))
+    return 0
+}

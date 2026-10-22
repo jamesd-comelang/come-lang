@@ -30,3 +30,13 @@ gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/t
 bash tests/run_module_project.sh
 bash tests/run_extern_test.sh
 bash tests/run_proc_test.sh
+
+# Examples are documentation that must run (COIL-119): every
+# example at the top level of examples/ builds and exits 0.
+# (examples/draft/ is parked and intentionally excluded.)
+for ex in examples/*.co; do
+    name=$(basename "$ex" .co)
+    ./build/come build "$ex" -o "build/tests/example_$name" > /dev/null
+    "./build/tests/example_$name" > /dev/null
+    echo "example $name: OK"
+done

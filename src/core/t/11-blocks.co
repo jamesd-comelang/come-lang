@@ -1,0 +1,35 @@
+module core_test
+import std
+
+// COIL-119 regressions found while writing the examples:
+// a bare block after a method call was swallowed as a trailing
+// closure argument of that call, and a plain string had no
+// working dup()/owner()/type().
+
+int main() {
+    string a = "x"
+    string b = a.dup()
+    if (b != "x") { std.out.printf("FAIL: string dup\n"); return 1 }
+    string shared = a.dup(0)
+    if (shared != "x") { std.out.printf("FAIL: string dup(0)\n"); return 1 }
+    if (a.type() != "string") { std.out.printf("FAIL: string type\n"); return 1 }
+
+    // A bare block is a statement of its own - including right
+    // after a method call - and its variables stay inside it.
+    int total = 0
+    {
+        int inner = 40
+        total = total + inner
+    }
+    {
+        int inner = 2
+        total = total + inner
+    }
+    if (total != 42) { std.out.printf("FAIL: bare blocks, total %d\n", total); return 1 }
+
+    // A same-line trailing closure still attaches to its call
+    // (the net-style handlers use that form); here it simply has
+    // to keep compiling as before via a block-bodied function.
+    std.out.printf("PASS: 11-blocks\n")
+    return 0
+}

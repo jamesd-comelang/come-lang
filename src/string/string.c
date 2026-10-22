@@ -258,6 +258,13 @@ come_string_t* come_string_replace(const come_string_t* a, const char* old_str, 
     return res;
 }
 
+// dup(): an independent copy of the string, owned by the
+// source string's context like the other derived strings.
+come_string_t* come_string_dup(const come_string_t* a) {
+    if (!a) return NULL;
+    return come_string_new_len((void*)a, a->data, a->count);
+}
+
 void come_string_chown(come_string_t* a, TALLOC_CTX* new_ctx) {
     if (a) {
         mem_talloc_steal(new_ctx, a);

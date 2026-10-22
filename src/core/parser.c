@@ -299,10 +299,15 @@ static ASTNode* parse_primary() {
                         if (!match(TOKEN_COMMA)) break;
                     }
                     expect(TOKEN_RPAREN);
-                    
-                    // Trailing closure
-                    if (current()->type == TOKEN_LBRACE) {
-                        call->children[call->child_count++] = parse_block();    
+
+                    // Trailing closure: only when the block
+                    // opens on the same line as the call's close
+                    // paren. A '{' on a later line starts a new
+                    // statement (a bare block), not a closure
+                    // argument to this call.
+                    if (current()->type == TOKEN_LBRACE &&
+                        current()->line == tokens.tokens[pos - 1].line) {
+                        call->children[call->child_count++] = parse_block();
                     }
                     node = call;
                 } else {

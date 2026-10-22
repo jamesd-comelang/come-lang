@@ -84,6 +84,7 @@ come_string_t* come_string_regex_replace(const come_string_t* a, const char* pat
 // Memory Management
 // Memory Management
 void come_string_chown(come_string_t* a, TALLOC_CTX* new_ctx);
+come_string_t* come_string_dup(const come_string_t* a);
 
 // Formatting
 // format string is standard C format

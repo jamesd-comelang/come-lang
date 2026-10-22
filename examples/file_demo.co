@@ -1,0 +1,57 @@
+// =====================================================================
+//  file_demo — the std module: FILE I/O, ERR, and the process.
+//
+//      ./build/come build examples/file_demo.co -o examples/file_demo
+//      ./examples/file_demo
+//
+//  FILE is an object: open it, use it, and it closes itself when
+//  it goes out of scope. Failures are reported through ERR, never
+//  through nulls or crashes.
+// =====================================================================
+
+module main
+import std
+
+int main() {
+    string path = std.tmpname()
+
+    // Write a small report. No close() call is needed: the FILE
+    // closes automatically at the end of the block.
+    {
+        FILE f
+        if (!f.open(path, "w")) {
+            std.err.printf("cannot open %s: %s\n", path, ERR.str())
+            return 1
+        }
+        f.printf("sales report\n")
+        f.printf("units: %d\n", 42)
+        f.puts("status: shipped")
+    } // <- f closes here
+
+    // Read it back, line by line. gets() returns an empty string
+    // at end of file, never null.
+    FILE in
+    if (!in.open(path, "r")) {
+        std.err.printf("cannot read %s: %s\n", path, ERR.str())
+        return 1
+    }
+    string line = in.gets()
+    while (line.length() > 0) {
+        std.out.printf("> %s", line)
+        line = in.gets()
+    }
+    in.close()
+    std.remove(path)
+
+    // ERR in action: a failed open sets a readable message.
+    FILE missing
+    if (!missing.open("/no/such/file.txt", "r")) {
+        std.out.printf("expected failure, ERR says: %s\n", ERR.str())
+    }
+
+    // The process itself: environment in, exit callbacks out.
+    string home = std.proc.getenv("HOME")
+    std.out.printf("HOME has %d characters\n", home.length())
+    std.out.printf("file_demo done\n")
+    return 0
+}

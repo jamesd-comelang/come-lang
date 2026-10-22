@@ -1387,11 +1387,13 @@ static void generate_expression(FILE* f, ASTNode* node) {
                           // Check methods that return strings
                            // Check methods/functions that return strings (NOT len/size/count which return uint)
                            const char* name = arg->text;
-                           // A typed map's type() returns a string (COIL-103)
+                           // type() returns a string on maps,
+                           // arrays and strings alike (COIL-103/116/119)
                            if (strcmp(name, "type") == 0 && arg->child_count > 0 &&
                                arg->children[0]->type == AST_IDENTIFIER) {
                                const char* rt = get_local_variable_type(arg->children[0]->text);
-                               if (rt && strncmp(rt, "map{", 4) == 0) {
+                               if (rt && (strncmp(rt, "map{", 4) == 0 || strchr(rt, '[') != NULL ||
+                                          strcmp(rt, "string") == 0)) {
                                    is_str = 1;
                                }
                            }
@@ -1602,6 +1604,42 @@ static void generate_expression(FILE* f, ASTNode* node) {
                    get_local_variable_type(receiver->text) &&
                    strcmp(get_local_variable_type(receiver->text), "string") == 0))) {
              emit_cstr_string_method(f, node, method);
+             return;
+        }
+        // The universal methods on a plain string (spec 7):
+        // dup, owner, type. (Arrays and maps claim theirs in
+        // their own branches above.)
+        else if ((strcmp(method, "dup") == 0 || strcmp(method, "owner") == 0 || strcmp(method, "type") == 0) &&
+                 (receiver->type == AST_STRING_LITERAL ||
+                  receiver->type == AST_METHOD_CALL ||
+                  receiver->type == AST_ARRAY_ACCESS ||
+                  (receiver->type == AST_IDENTIFIER &&
+                   get_local_variable_type(receiver->text) &&
+                   strcmp(get_local_variable_type(receiver->text), "string") == 0))) {
+             if (strcmp(method, "owner") == 0) {
+                 fprintf(f, "COME_CTX");
+             } else if (strcmp(method, "type") == 0) {
+                 fprintf(f, "come_string_new(COME_CTX, \"string\")");
+             } else if (node->child_count > 1 && node->children[1]->type == AST_NUMBER &&
+                        atoi(node->children[1]->text) == 0) {
+                 emit_string_obj(f, receiver);   // dup(0) shares
+             } else if (node->child_count > 1 && node->children[1]->type == AST_NUMBER) {
+                 fprintf(f, "come_string_dup(");
+                 emit_string_obj(f, receiver);
+                 fprintf(f, ")");
+             } else if (node->child_count > 1) {
+                 fprintf(f, "((");
+                 generate_expression(f, node->children[1]);
+                 fprintf(f, ") == 0 ? ");
+                 emit_string_obj(f, receiver);
+                 fprintf(f, " : come_string_dup(");
+                 emit_string_obj(f, receiver);
+                 fprintf(f, "))");
+             } else {
+                 fprintf(f, "come_string_dup(");
+                 emit_string_obj(f, receiver);
+                 fprintf(f, ")");
+             }
              return;
         }
         // Detect String methods (including len/length which are shared)
@@ -2560,7 +2598,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
         
         case AST_BLOCK: {
-            generate_block_children(f, node, indent);
+            // A bare block is its own C scope: without braces,
+            // two sibling blocks could not reuse a name.
+            emit_indent(f, indent);
+            fprintf(f, "{\n");
+            generate_block_children(f, node, indent + 1);
+            emit_indent(f, indent);
+            fprintf(f, "}\n");
             break;
         }
 

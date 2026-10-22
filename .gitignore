@@ -5,3 +5,7 @@ build/
 /examples/come_demo
 /examples/hello
 /examples/string_demo
+/examples/array_demo
+/examples/file_demo
+/examples/map_demo
+/examples/ownership_demo

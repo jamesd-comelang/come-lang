@@ -720,5 +720,42 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-117 string codegen test passed!\033[0m\n");
+
+    // COIL-119: a bare block after a method call is a statement,
+    // not a trailing closure of that call; string dup reaches the
+    // string runtime.
+    {
+        const char* src119 =
+            "module m119\nimport std\n\n"
+            "int main() {\n"
+            "    string a = \"x\"\n"
+            "    string b = a.dup()\n"
+            "    std.out.printf(\"%s\\n\", b)\n"
+            "    {\n"
+            "        int inner = 1\n"
+            "        std.out.printf(\"%d\\n\", inner)\n"
+            "    }\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil119.co", src119)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-119: bare-block program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of119 = fopen("build/tests/coil119.co.c", "r");
+        if (!of119) { printf("COIL-119: output file missing\n"); return 1; }
+        static char buf119[262144];
+        size_t blen119 = fread(buf119, 1, sizeof(buf119) - 1, of119);
+        fclose(of119);
+        buf119[blen119] = 0;
+        if (!strstr(buf119, "come_string_dup(a)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-119: string dup must reach the string runtime\033[0m\n");
+            return 1;
+        }
+        if (strstr(buf119, "__cb")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-119: a bare block must not become a trailing closure\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-119 examples codegen test passed!\033[0m\n");
     return 0;
 }

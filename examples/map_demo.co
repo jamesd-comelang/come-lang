@@ -1,0 +1,41 @@
+// =====================================================================
+//  map_demo — typed maps (Come_map.md).
+//
+//      ./build/come build examples/map_demo.co -o examples/map_demo
+//      ./examples/map_demo
+//
+//  A map's key and value types are part of its type: mixing them
+//  up is a compile error. Reading a missing key gives the value
+//  type's zero value and sets ERR — never a crash.
+// =====================================================================
+
+module main
+import std
+
+int main() {
+    map{string, int} ages = {"ann": 30, "bob": 25}
+    ages["cy"] = 41
+
+    std.out.printf("ann is %d\n", ages["ann"])
+    std.out.printf("we know %d people\n", ages.length())
+    std.out.printf("has bob: %t, has dan: %t\n", ages.has("bob"), ages.has("dan"))
+
+    // Missing key: zero value + ERR with a readable message.
+    ERR.clear()
+    int dan = ages["dan"]
+    std.out.printf("dan reads %d, ERR: %s\n", dan, ERR.str())
+
+    string keys[] = ages.keys()
+    std.out.printf("keys:")
+    for (int i = 0; i < keys.length(); i++) {
+        std.out.printf(" %s", keys[i])
+    }
+    std.out.printf("\n")
+
+    ages.delete("bob")
+    std.out.printf("after delete, has bob: %t\n", ages.has("bob"))
+
+    map{string, string} capitals = {"france": "paris", "japan": "tokyo"}
+    std.out.printf("the capital of japan is %s\n", capitals["japan"])
+    return 0
+}
