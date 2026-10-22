@@ -61,3 +61,31 @@ if [ "$out" != "$expected" ]; then
     exit 1
 fi
 echo "coro wait e2e: OK"
+
+# COIL-125: a deadlocked program is reported, not left
+# hanging (spec 9.3). The run must exit 1 with 'deadlock'
+# on stderr, quickly.
+./build/come build tests/coro_deadlock.co -o build/tests/coro_deadlock || exit 1
+timeout 10 ./build/tests/coro_deadlock >build/tests/deadlock.out 2>build/tests/deadlock.err
+rc=$?
+if [ $rc -ne 1 ]; then
+    echo "FAIL: deadlock program exit code $rc (want 1)"
+    exit 1
+fi
+if ! grep -q "deadlock" build/tests/deadlock.err; then
+    echo "FAIL: deadlock not reported on stderr"
+    cat build/tests/deadlock.err
+    exit 1
+fi
+echo "coro deadlock e2e: OK"
+
+# COIL-125: main returning ends the program even with a
+# coroutine that would run forever (spec 9.3).
+./build/come build tests/coro_main_return.co -o build/tests/coro_main_return || exit 1
+out=$(timeout 10 ./build/tests/coro_main_return)
+rc=$?
+if [ $rc -ne 0 ] || [ "$out" != "main leaving" ]; then
+    echo "FAIL: main-return exit rc=$rc out='$out'"
+    exit 1
+fi
+echo "coro main-return e2e: OK"

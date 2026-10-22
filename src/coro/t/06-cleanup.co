@@ -1,0 +1,47 @@
+module coro_test
+import std
+
+// COIL-125: finished coroutines leave nothing behind - their
+// links close (readers see end-of-data), their slots and
+// contexts are recycled, and main carries on (spec 9.3).
+
+coroutine brief(link s, int v) {
+    int buf[]
+    buf.resize(1)
+    buf[0] = v
+    s.write(buf)
+}
+
+int main() {
+    // Many short coroutines, one after another: each spawn
+    // must find a free slot and the read must deliver.
+    int i = 0
+    while (i < 100) {
+        (a, b) = colink()
+        spawn brief(a, i)
+        int got[] = b.read()
+        if (got.length() != 1 || got[0] != i) {
+            std.out.printf("FAIL: round %d\n", i)
+            return 1
+        }
+        i = i + 1
+    }
+
+    // A finished coroutine closed its end: a read on a link
+    // whose worker already ended returns empty, not a wait.
+    (c, d) = colink()
+    spawn brief(c, 7)
+    int first[] = d.read()
+    if (first.length() != 1 || first[0] != 7) {
+        std.out.printf("FAIL: first payload\n")
+        return 1
+    }
+    int second[] = d.read()
+    if (second.length() != 0) {
+        std.out.printf("FAIL: post-close read not empty\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 06-cleanup\n")
+    return 0
+}

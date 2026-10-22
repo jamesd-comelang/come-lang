@@ -25,6 +25,11 @@ static void check_worker(void* p);
 static int check_seen_ok;
 static void link_worker(void* p);
 static void late_writer(void* p);
+static int spin_counts[10];
+static void spin_worker(void* p) {
+    int idx = *(int*)p;
+    for (int i = 0; i < 3; i++) { spin_counts[idx]++; come_coro_yield(); }
+}
 typedef struct { come_link_t* s; } link_job_t;
 static char link_seen[32];
 
@@ -167,6 +172,26 @@ int main(void) {
         if (come_link_wait(set2, 2) != wd) { printf("FAIL: wait blocking identity\n"); return 1; }
         come_string_t* late = (come_string_t*)come_link_read(wd, fake_ctx);
         if (!late || strcmp(late->data, "late") != 0) { printf("FAIL: wait blocking data\n"); return 1; }
+    }
+
+    // COIL-125: when coroutines end, nothing is left hanging -
+    // the alive count returns to its baseline once the
+    // workers have run out (their contexts are reaped).
+    {
+        int base = come_coro_alive();
+        for (int i = 0; i < 10; i++) {
+            spin_counts[i] = 0;
+            come_coro_t* w = come_coro_create(spin_worker, &fake_ctx);
+            int* a = (int*)come_coro_args(w, sizeof(int));
+            if (a) *a = i;
+            come_coro_start(w);
+        }
+        if (come_coro_alive() != base + 10) { printf("FAIL: alive with workers = %d\n", come_coro_alive()); return 1; }
+        for (int i = 0; i < 40 && come_coro_alive() > base; i++) come_coro_yield();
+        if (come_coro_alive() != base) { printf("FAIL: alive after workers = %d\n", come_coro_alive()); return 1; }
+        for (int i = 0; i < 10; i++) {
+            if (spin_counts[i] != 3) { printf("FAIL: spin count %d = %d\n", i, spin_counts[i]); return 1; }
+        }
     }
 
     printf("COIL-120/121 coro runtime test passed!\n");

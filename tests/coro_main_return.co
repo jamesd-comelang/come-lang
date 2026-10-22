@@ -1,0 +1,20 @@
+module main
+import std
+
+// COIL-125 fixture: when main returns, the program ends -
+// the remaining coroutines are stopped, even one that
+// would yield forever (spec 9.3).
+
+coroutine forever(link s) {
+    while (true) {
+        yield
+    }
+}
+
+int main() {
+    (a, b) = colink()
+    spawn forever(a)
+    yield
+    std.out.printf("main leaving\n")
+    return 0
+}
