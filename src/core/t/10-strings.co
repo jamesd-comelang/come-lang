@@ -1,0 +1,71 @@
+module core_test
+import std
+
+// COIL-110: character-first strings (spec 6.5). .length() counts
+// characters, .bytesize() counts bytes, s[i] is a wchar, and
+// strings are immutable (the mutation rejections are compile
+// errors asserted by the C suite).
+
+int main() {
+    string s = "a字b"
+    if (s.length() != 3) {
+        std.out.printf("FAIL: length of a 3-char string must be 3, got %d\n", s.length())
+        return 1
+    }
+    if (s.bytesize() != 5) {
+        std.out.printf("FAIL: bytesize of a 3-char (5-byte) string must be 5, got %d\n", s.bytesize())
+        return 1
+    }
+
+    string plain = "hello"
+    if (plain.length() != 5 || plain.bytesize() != 5) {
+        std.out.printf("FAIL: ASCII length and bytesize agree at 5\n")
+        return 1
+    }
+
+    string empty = ""
+    if (empty.length() != 0 || empty.bytesize() != 0) {
+        std.out.printf("FAIL: empty string is 0 chars and 0 bytes\n")
+        return 1
+    }
+
+    // s[i] decodes the character at the index.
+    wchar c0 = s[0]
+    wchar c1 = s[1]
+    wchar c2 = s[2]
+    if (c0 != 'a' || c1 != 23383 || c2 != 'b') {
+        std.out.printf("FAIL: s[i] must decode characters (got %d, %d, %d)\n", c0, c1, c2)
+        return 1
+    }
+
+    // A four-byte character is one character.
+    string emoji = "x🙂y"
+    if (emoji.length() != 3 || emoji.bytesize() != 6) {
+        std.out.printf("FAIL: 4-byte char counts once (len %d, bytes %d)\n", emoji.length(), emoji.bytesize())
+        return 1
+    }
+    wchar e1 = emoji[1]
+    if (e1 != 128578) {
+        std.out.printf("FAIL: emoji code point must be 128578, got %d\n", e1)
+        return 1
+    }
+
+    // Methods return new strings; the original never changes.
+    string up = plain.upper()
+    if (up.cmp("HELLO") != 0 || plain.cmp("hello") != 0) {
+        std.out.printf("FAIL: upper() must return a new string and leave the original\n")
+        return 1
+    }
+
+    // Out-of-bounds character access: 0 + ERR (see also 06-oob).
+    ERR.clear()
+    wchar none = s[99]
+    int e = ERR.no()
+    if (none != 0 || e == 0) {
+        std.out.printf("FAIL: OOB character must be 0 with ERR set\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 10-strings\n")
+    return 0
+}

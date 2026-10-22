@@ -59,6 +59,7 @@ come_string_t* come_string_rtrim(const come_string_t* a, const char* cutset);
 // Element Access
 come_string_t* come_string_at(const come_string_t* a, size_t index);
 come_string_t* come_string_at_e(const come_string_t* a, size_t index);
+int32_t come_string_wchar_at_e(const come_string_t* a, long index);
 
 // Splitting/Joining
 // Note: These return arrays/lists, we'll define a simple list structure or use char** for now

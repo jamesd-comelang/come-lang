@@ -65,20 +65,19 @@ int main() {
         return 1
     }
 
-    // String indexing: in-bounds gives the character; OOB gives an
-    // empty string + ERR. (s[i] yields a 1-char string today; the
-    // wchar form is COIL-110.)
+    // String indexing: s[i] is a wchar (COIL-110); in-bounds gives
+    // the character, OOB gives 0 + ERR.
     string s = "abc"
-    string ch = s[1]
-    if (ch.cmp("b") != 0) {
+    wchar ch = s[1]
+    if (ch != 'b') {
         std.out.printf("FAIL: s[1] must be 'b'\n")
         return 1
     }
     ERR.clear()
-    string none = s[99]
+    wchar none = s[99]
     int e6 = ERR.no()
-    if (none.length() != 0 || e6 == 0) {
-        std.out.printf("FAIL: string OOB must give empty string and ERR\n")
+    if (none != 0 || e6 == 0) {
+        std.out.printf("FAIL: string OOB must give 0 and ERR\n")
         return 1
     }
 

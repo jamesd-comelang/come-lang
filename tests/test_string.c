@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
+#include <errno.h>
 #include "come_string.h"
 #include "mem/talloc.h"
 
@@ -165,6 +166,31 @@ void test_regex() {
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mRegex tests passed\033[0m\n");
 }
 
+// COIL-110: come_string_wchar_at_e decodes the character at a
+// character index; come_string_len counts characters, not bytes.
+void test_wchar_at() {
+    TALLOC_CTX* ctx = mem_talloc_new_ctx(NULL);
+    // a(1B) U+5B57(3B) b(1B) U+1F642(4B): 4 chars, 9 bytes
+    come_string_t* s = come_string_new(ctx, "a\xe5\xad\x97" "b\xf0\x9f\x99\x82");
+    assert(come_string_len(s) == 4);
+    assert(come_string_size(s) == 9);
+    assert(come_string_wchar_at_e(s, 0) == 'a');
+    assert(come_string_wchar_at_e(s, 1) == 0x5B57);
+    assert(come_string_wchar_at_e(s, 2) == 'b');
+    assert(come_string_wchar_at_e(s, 3) == 0x1F642);
+    errno = 0;
+    assert(come_string_wchar_at_e(s, 4) == 0);
+    assert(errno == ERANGE);
+    errno = 0;
+    assert(come_string_wchar_at_e(s, -1) == 0);
+    assert(errno == ERANGE);
+    errno = 0;
+    assert(come_string_wchar_at_e(NULL, 0) == 0);
+    assert(errno == ERANGE);
+    mem_talloc_free(ctx);
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mWchar-at (COIL-110) tests passed\033[0m\n");
+}
+
 int main() {
     test_basic();
     test_search();
@@ -173,5 +199,6 @@ int main() {
     test_trim();
     test_split_join();
     test_regex();
+    test_wchar_at();
     return 0;
 }

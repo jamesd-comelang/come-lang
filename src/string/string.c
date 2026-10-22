@@ -639,6 +639,36 @@ come_byte_array_t* come_string_to_byte_array(const come_string_t* a) {
     return ba;
 }
 
+// Character access as a wchar (COIL-110, spec 6.5): s[i] is the
+// i-th character decoded to its Unicode scalar value. An
+// out-of-bounds index (including negative) sets ERR
+// (errno = ERANGE) and yields 0, the zero wchar.
+int32_t come_string_wchar_at_e(const come_string_t* a, long index) {
+    if (!a || index < 0) {
+        errno = ERANGE;
+        return 0;
+    }
+    const unsigned char* p = (const unsigned char*)a->data;
+    long current = 0;
+    while (*p) {
+        uint32_t cp;
+        int extra;
+        if (*p < 0x80) { cp = *p; extra = 0; }
+        else if ((*p & 0xE0) == 0xC0) { cp = *p & 0x1F; extra = 1; }
+        else if ((*p & 0xF0) == 0xE0) { cp = *p & 0x0F; extra = 2; }
+        else if ((*p & 0xF8) == 0xF0) { cp = *p & 0x07; extra = 3; }
+        else { cp = *p; extra = 0; } // invalid lead byte: yield it raw
+        const unsigned char* q = p + 1;
+        for (int i = 0; i < extra && (*q & 0xC0) == 0x80; i++, q++)
+            cp = (cp << 6) | (*q & 0x3F);
+        if (current == index) return (int32_t)cp;
+        p = q;
+        current++;
+    }
+    errno = ERANGE;
+    return 0;
+}
+
 // Element Access with ERR reporting (COIL-106): like come_string_at,
 // but an out-of-bounds index sets ERR (errno = ERANGE) and yields
 // the zero value for a string - an empty string - instead of NULL.

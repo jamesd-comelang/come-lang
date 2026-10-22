@@ -227,6 +227,47 @@ int main() {
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
 
+    // COIL-110: character-first strings (spec 6.5). A plain
+    // string's .length() must generate the character-counting
+    // come_string_len, s[i] the wchar accessor, and mutation
+    // attempts must be compile errors.
+    {
+        const char* ok110 =
+            "module main\nimport std\n\nint main() {\n"
+            "    string s = \"abc\"\n"
+            "    int n = s.length()\n"
+            "    wchar c = s[1]\n"
+            "    return n + c\n}\n";
+        if (!gen_ok("build/tests/coil110_ok.co", ok110)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-110: string length/index program must generate\033[0m\n");
+            return 1;
+        }
+        static char buf110[262144];
+        FILE* of110 = fopen("build/tests/coil110_ok.co.c", "r");
+        size_t bl110 = fread(buf110, 1, sizeof(buf110) - 1, of110);
+        fclose(of110);
+        buf110[bl110] = 0;
+        if (!strstr(buf110, "come_string_len(") || !strstr(buf110, "come_string_wchar_at_e(")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-110: char-length / wchar-index calls missing in generated C\033[0m\n");
+            return 1;
+        }
+        const char* bad110a =
+            "module main\nimport std\n\nint main() {\n"
+            "    string s = \"abc\"\n    s[0] = 'x'\n    return 0\n}\n";
+        if (!gen_fail("build/tests/coil110_a.co", bad110a)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-110: s[i] = ... must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad110b =
+            "module main\nimport std\n\nint main() {\n"
+            "    string s = \"abc\"\n    s.resize(2)\n    return 0\n}\n";
+        if (!gen_fail("build/tests/coil110_b.co", bad110b)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-110: string resize() must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-110 string conformance test passed!\033[0m\n");
+
     // COIL-109: functions as arguments (spec 8.3). The declarator
     // parameter must generate a C function pointer, the call must
     // pass the mangled function name, and signature mismatches,

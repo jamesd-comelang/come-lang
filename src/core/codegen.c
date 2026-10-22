@@ -535,6 +535,15 @@ static void check_assign_store(ASTNode* assign) {
     ASTNode* rhs = assign->children[1];
     if (expr_is_fn_value(rhs))
         codegen_error("functions can only be passed as arguments (spec 8.3): '%s' cannot be stored", rhs->text);
+    // Strings are immutable (spec 6.5, COIL-110): s[i] = ... is an
+    // error - s[i] is a character value, not a memory slot.
+    if (lhs->type == AST_ARRAY_ACCESS && lhs->child_count >= 1 &&
+        lhs->children[0]->type == AST_IDENTIFIER) {
+        const char* bt = get_local_variable_type(lhs->children[0]->text);
+        if (bt && strcmp(bt, "string") == 0)
+            codegen_error("strings are immutable: '%s[i] = ...' is not allowed (spec 6.5) - build a new string instead",
+                          lhs->children[0]->text);
+    }
     if (lhs->type == AST_IDENTIFIER) {
         const char* lt = get_local_variable_type(lhs->text);
         if (lt) check_numeric_store(lt, rhs, lhs->text);
@@ -659,10 +668,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
         char mkt[160], mvt[160];
         const char* bt = (base->type == AST_IDENTIFIER) ? get_local_variable_type(base->text) : NULL;
         if ((bt && strcmp(bt, "string") == 0) || base->type == AST_STRING_LITERAL) {
-            // String indexing (COIL-106): the runtime helper reports
-            // out-of-bounds via ERR and yields an empty string. (Not
-            // COME_ARR_GET - its _Generic cannot take strings.)
-            fprintf(f, "come_string_at_e(");
+            // String indexing (COIL-110, spec 6.5): s[i] is the i-th
+            // character as a wchar. The runtime helper reports
+            // out-of-bounds via ERR and yields 0. (Not COME_ARR_GET -
+            // its _Generic cannot take strings.)
+            fprintf(f, "come_string_wchar_at_e(");
             emit_string_expr(f, base);
             fprintf(f, ", ");
             generate_expression(f, node->children[1]);
@@ -932,9 +942,6 @@ static void generate_expression(FILE* f, ASTNode* node) {
                               char mkt[160], mvt[160];
                               if (at && strcmp(at, "string[]") == 0) {
                                   is_str = 1;
-                              } else if (at && strcmp(at, "string") == 0) {
-                                  // s[i] yields a 1-char string (COIL-106)
-                                  is_str = 1;
                               } else if (at && map_type_parts(at, mkt, sizeof(mkt), mvt, sizeof(mvt)) && strcmp(mvt, "string") == 0) {
                                   is_str = 1;
                               } else if (strcmp(arr->text, "parts")==0 || strcmp(arr->text, "groups")==0 || strcmp(arr->text, "regex_parts")==0 || strcmp(arr->text, "args")==0) {
@@ -1147,7 +1154,18 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 }
             }
                  
-            if (strcmp(method, "length") == 0) strcpy(c_func, "come_string_list_len"); 
+            if (strcmp(method, "length") == 0) {
+                // A plain string's length counts CHARACTERS (spec
+                // 6.5, COIL-110) - come_string_len walks the UTF-8.
+                // A string LIST's length is its element count.
+                int plain_string = 0;
+                if (receiver->type == AST_STRING_LITERAL) plain_string = 1;
+                else if (receiver->type == AST_IDENTIFIER) {
+                    const char* rt = get_local_variable_type(receiver->text);
+                    if (rt && strcmp(rt, "string") == 0) plain_string = 1;
+                }
+                strcpy(c_func, plain_string ? "come_string_len" : "come_string_list_len");
+            }
             else if (strcmp(method, "tol") == 0) strcpy(c_func, "come_string_tol");
             else snprintf(c_func, sizeof(c_func), "come_string_%s", method);
         }
@@ -1155,6 +1173,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
         else if (strcmp(method, "bytesize") == 0 || strcmp(method, "resize") == 0 || strcmp(method, "free") == 0 || strcmp(method, "slice") == 0) {
              if (strcmp(method, "resize") == 0 && receiver->type == AST_IDENTIFIER) {
                  const char* rt = get_local_variable_type(receiver->text);
+                 if (rt && strcmp(rt, "string") == 0) {
+                     codegen_error("strings are immutable: resize() does not apply to '%s' (spec 6.5)", receiver->text);
+                 }
                  if (type_is_fixed_array(rt)) {
                      codegen_error("cannot resize fixed array '%s' (%s): resize() is dynamic-only - declare a dynamic array (T[]) when the length must change", receiver->text, rt);
                  }
