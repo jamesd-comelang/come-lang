@@ -47,7 +47,7 @@ semantics stories build on the final memory layer.
 | COIL-134 | A buffer's byte count comes from a name that says bytes | §6.5, §7, Come_array, Come_string | S | — | `.size()` is gone: strings and arrays report bytes via `.bytesize()` (content bytes for strings, count × element size for arrays) and counts via `.length()`; every call site in tests, examples, and docs renamed; all suites pass | ☑ |
 | COIL-111 | Raw C stays inside system modules; user code never touches it | §13 | S | — | `extern` in a user module is a compile error | ☑ |
 | COIL-112 | The docs never describe a language different from the one shipped | §3.2, §17 | S | COIL-108 | Docs and spec agree with the shipped behavior | ☑ |
-| COIL-113 | Every promise in the spec is backed by a test that runs in one command | all | M | COIL-100–112 | The suite runs green in one command and grows with every story above | ☐ |
+| COIL-113 | Every promise in the spec is backed by a test that runs in one command | all | M | COIL-100–112 | The suite runs green in one command and grows with every story above | ☑ |
 
 **Exit criteria:** all examples compile and run; conformance suite green;
 `packaging/build_deb.sh` produces a v0.7.0 deb.

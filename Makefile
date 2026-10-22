@@ -38,23 +38,24 @@ examples: $(TARGET)
 run-examples: examples
 	@$(MAKE) -C $(EXAMPLES_DIR) run
 
-# Run tests
-## Build all test binaries (C tests in tests/)
-tests: 
-	@echo "Building tests via script..."
-
-# $(BUILD_DIR)/tests/%: $(TESTS_DIR)/%.c
-# 	@mkdir -p $(BUILD_DIR)/tests
-# 	$(CC) $(CFLAGS) $< -o $@
-
-test: tests test-e2e test-come
-	@echo "Running unit tests..."
+# The conformance suite (COIL-113): `make test` is the one command
+# that runs everything -
+#   1. the C unit suites and the end-to-end project tests
+#      (tests/run_tests.sh: C suites, directory-module project,
+#      extern project), which fail loudly via set -e;
+#   2. every Come-language test under src/**/t/ (test-come below),
+#      auto-discovered, so a new story's tests join the suite just
+#      by being added to a t/ directory or to run_tests.sh;
+#   3. the examples, built and run as smoke tests.
+test: $(TARGET) examples test-come
+	@echo "Running C unit suites and end-to-end tests..."
 	@chmod +x $(TESTS_DIR)/run_tests.sh
 	@$(TESTS_DIR)/run_tests.sh
-
-test-e2e: $(TARGET)
-	@echo "Running end-to-end tests..."
-	@python3 $(TESTS_DIR)/test_runner.py
+	@echo "Running examples as smoke tests..."
+	@./examples/hello > /dev/null
+	@./examples/come_demo > /dev/null
+	@./examples/string_demo > /dev/null
+	@echo "Conformance suite: all green."
 
 # Run COME language tests (*.co files in t/ directories)
 test-come: $(TARGET)

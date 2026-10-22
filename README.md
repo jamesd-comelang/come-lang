@@ -16,6 +16,20 @@ The design consistently favors:
 
 ---
 
+## Testing
+
+One command runs the whole conformance suite:
+
+```sh
+make test
+```
+
+It builds the compiler and examples, runs the C unit suites and
+the end-to-end project tests (`tests/run_tests.sh`), compiles and
+runs every Come-language test under `src/**/t/` (auto-discovered —
+a new test joins the suite just by being added there), and runs
+the examples as smoke tests. Anything failing stops the run.
+
 ## Core pillars
 
 ### 1. Modules = isolation + lifecycle
