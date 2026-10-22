@@ -256,7 +256,19 @@ static void compile_file(const char *source_path, const char *forced_o_path) {
     time_t t_c = get_mtime(c_file);
     time_t t_o = get_mtime(o_file);
 
-    int need_transpile = (t_src > t_c);
+    // The compiler itself is an input to the cache: cached C written by
+    // an older compiler build must be regenerated, even when the source
+    // is unchanged - otherwise a compiler upgrade (e.g. a renamed method
+    // dispatch) leaves stale generated C that no clean rebuild fixes.
+    time_t t_exe = 0;
+    char self_path[PATH_MAX];
+    ssize_t self_len = readlink("/proc/self/exe", self_path, sizeof(self_path) - 1);
+    if (self_len != -1) {
+        self_path[self_len] = 0;
+        t_exe = get_mtime(self_path);
+    }
+
+    int need_transpile = (t_src > t_c) || (t_exe > t_c);
     int need_compile = (need_transpile || t_c > t_o || t_src > t_o);
     
     if (get_mtime(o_file) == 0) need_compile = 1;

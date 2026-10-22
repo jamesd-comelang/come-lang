@@ -99,6 +99,7 @@ clean:
 	@rm -rf packaging/come-pkg
 	@rm -f packaging/*.deb
 	@rm -rf src/std/.ccache src/std/build src/string/.ccache src/string/build
+	@rm -rf .ccache
 
 # Create distribution package (local)
 dist-local: all
