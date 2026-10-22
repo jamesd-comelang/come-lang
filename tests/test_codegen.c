@@ -1042,5 +1042,53 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-124 wait codegen test passed!\033[0m\n");
+
+    // COIL-126: a first assignment to a fresh name declares
+    // it with the inferred type (the spec's examples assign
+    // reply = b.read() with no declaration). A value whose
+    // type cannot be inferred is a compile error asking for
+    // an explicit declaration.
+    {
+        const char* src126 =
+            "module m126\nimport std\n\n"
+            "coroutine echo(link s) {\n"
+            "    msg = s.read()\n"
+            "    s.write(msg)\n"
+            "}\n\n"
+            "int main() {\n"
+            "    (a, b) = colink()\n"
+            "    spawn echo(a)\n"
+            "    b.write(\"x\")\n"
+            "    reply = b.read()\n"
+            "    n = 42\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil126.co", src126)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-126: inferred-assignment program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of126 = fopen("build/tests/coil126.co.c", "r");
+        if (!of126) { printf("COIL-126: output file missing\n"); return 1; }
+        static char buf126[262144];
+        size_t blen126 = fread(buf126, 1, sizeof(buf126) - 1, of126);
+        fclose(of126);
+        buf126[blen126] = 0;
+        if (!strstr(buf126, "come_string_t* reply =") || !strstr(buf126, "int n = 42")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-126: first assignments must emit inferred declarations\033[0m\n");
+            return 1;
+        }
+        const char* bad126 =
+            "module m126b\nimport std\n\n"
+            "int compute() { return 7; }\n\n"
+            "int main() {\n"
+            "    x = compute()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil126bad.co", bad126)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-126: an uninferable first assignment must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-126 inferred-assignment codegen test passed!\033[0m\n");
     return 0;
 }

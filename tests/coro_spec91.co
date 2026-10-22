@@ -1,0 +1,30 @@
+module main
+import std
+
+// COIL-126 fixture: the spec 9.1 example, run as written.
+// The example block below is the spec's own code (the module
+// header, process(), the request value, and the final check
+// are the scaffolding any complete program needs).
+
+string process(string req) {
+    return sprintf("echo: %s", req)
+}
+
+coroutine worker(link s) {
+    req = s.read()
+    s.write(process(req))
+}
+
+int main() {
+    string request = "ping"
+    (a, b) = colink()
+    spawn worker(a)     // a's ownership moves into the coroutine
+    b.write(request)    // main -> worker
+    reply = b.read()    // worker -> main
+    if (reply != "echo: ping") {
+        std.out.printf("FAIL: reply '%s'\n", reply)
+        return 1
+    }
+    std.out.printf("spec 9.1 ok: %s\n", reply)
+    return 0
+}

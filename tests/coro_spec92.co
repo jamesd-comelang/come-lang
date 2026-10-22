@@ -1,0 +1,36 @@
+module main
+import std
+
+// COIL-126 fixture: the spec 9.2 waiting-on-several-links
+// example, run as written. worker1/worker2/handle are the
+// names the spec's example assumes.
+
+coroutine worker1(link s) {
+    s.write("one")
+}
+
+coroutine worker2(link s) {
+    yield
+    yield
+    s.write("two")
+}
+
+void handle(string reply) {
+    std.out.printf("handled: %s\n", reply)
+}
+
+int main() {
+    (a, b) = colink()
+    (c, d) = colink()
+    spawn worker1(a)
+    spawn worker2(c)
+
+    while (true) {
+        link ready = wait(b, d)  // pauses until either worker replies
+        reply = ready.read()
+        if (reply.length() == 0) { break }  // empty = that worker closed
+        handle(reply)
+    }
+    std.out.printf("coordinator done\n")
+    return 0
+}

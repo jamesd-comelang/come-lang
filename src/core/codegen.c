@@ -189,8 +189,68 @@ static const char* infer_const_type(ASTNode* node) {
     }
     if (is_long_long) return "long long";
     if (is_long) return "long";
-    
+
     return "int";
+}
+
+// The Come type a first assignment declares its name with
+// (COIL-126): the spec's examples assign to fresh names -
+// `reply = b.read()` - and section 10.1 locks a name's type
+// at its first assignment, like `var`. Returns NULL when the
+// value's type cannot be inferred; the caller errors and
+// asks for an explicit declaration. A link read infers
+// string, the common payload; other payloads are declared
+// explicitly (int xs[] = s.read()).
+static const char* infer_assign_type(ASTNode* rhs) {
+    if (!rhs) return NULL;
+    switch (rhs->type) {
+        case AST_STRING_LITERAL: return "string";
+        case AST_BOOL_LITERAL: return "bool";
+        case AST_NUMBER:
+            return (strchr(rhs->text, '.') || strchr(rhs->text, 'e') ||
+                    strchr(rhs->text, 'E')) ? "double" : "int";
+        case AST_IDENTIFIER:
+            return get_local_variable_type(rhs->text);
+        case AST_METHOD_CALL:
+            if (strcmp(rhs->text, "read") == 0 && rhs->child_count >= 1 &&
+                rhs->children[0]->type == AST_IDENTIFIER) {
+                const char* rt = get_local_variable_type(rhs->children[0]->text);
+                if (rt && strcmp(rt, "link") == 0) return "string";
+            }
+            return NULL;
+        case AST_CALL:
+            if (strcmp(rhs->text, "wait") == 0) return "link";
+            return NULL;
+        default:
+            return NULL;
+    }
+}
+
+// Emit `name = rhs` as a declaration of the inferred type.
+static void emit_inferred_decl(FILE* f, const char* type, const char* name, ASTNode* rhs) {
+    if (strcmp(type, "string") == 0) {
+        fprintf(f, "come_string_t* %s = ", name);
+        if (rhs->type == AST_STRING_LITERAL) {
+            fprintf(f, "come_string_new(COME_CTX, ");
+            generate_expression(f, rhs);
+            fprintf(f, ")");
+        } else {
+            generate_expression(f, rhs);
+        }
+        fprintf(f, ";\n");
+    } else if (strcmp(type, "link") == 0) {
+        fprintf(f, "come_link_t* %s = ", name);
+        generate_expression(f, rhs);
+        fprintf(f, ";\n");
+    } else if (strcmp(type, "bool") == 0 || strcmp(type, "int") == 0 ||
+               strcmp(type, "double") == 0 || strcmp(type, "float") == 0 ||
+               strcmp(type, "long") == 0) {
+        fprintf(f, "%s %s = ", type, name);
+        generate_expression(f, rhs);
+        fprintf(f, ";\n");
+    } else {
+        codegen_error("cannot infer a declaration for type '%s'; declare the variable explicitly", type);
+    }
 }
 
 
@@ -2995,6 +3055,26 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 
         case AST_ASSIGN: {
             emit_line_directive(f, node);  // Emit #line for assignment
+            // First assignment to an undeclared name declares
+            // it with the inferred type (COIL-126; spec 9.1,
+            // 9.2 and 10.1). The type locks at this assignment;
+            // later assignments are ordinary stores.
+            if (strcmp(node->text, "=") == 0 && node->child_count >= 2 &&
+                node->children[0]->type == AST_IDENTIFIER &&
+                !get_local_variable_type(node->children[0]->text) &&
+                !is_module_var(node->children[0]->text)) {
+                const char* inferred = infer_assign_type(node->children[1]);
+                if (!inferred) {
+                    codegen_error("cannot infer the type of '%s' from its first assignment; declare it with a type first", node->children[0]->text);
+                    break;
+                }
+                ASTNode* tn = ast_new(AST_IDENTIFIER);
+                strcpy(tn->text, inferred);
+                register_local_type(node->children[0]->text, tn);
+                emit_indent(f, indent);
+                emit_inferred_decl(f, inferred, node->children[0]->text, node->children[1]);
+                break;
+            }
             emit_indent(f, indent);
             check_assign_store(node); // COIL-107
             // Typed map index write: m[key] = value (COIL-102)
@@ -3015,6 +3095,20 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 }
             }
             if (!map_write) {
+            // A string literal assigned to a string variable
+            // materializes, exactly as in a declaration;
+            // emitting the raw C literal would type-mismatch
+            // (COIL-126).
+            if (node->children[0]->type == AST_IDENTIFIER &&
+                node->children[1]->type == AST_STRING_LITERAL) {
+                const char* lt = get_local_variable_type(node->children[0]->text);
+                if (lt && strcmp(lt, "string") == 0) {
+                    fprintf(f, "%s = come_string_new(COME_CTX, ", node->children[0]->text);
+                    generate_expression(f, node->children[1]);
+                    fprintf(f, ");\n");
+                    break;
+                }
+            }
             if (node->children[0]->type == AST_IDENTIFIER && node->children[1]->type == AST_IDENTIFIER) {
                 const char* lt = get_local_variable_type(node->children[0]->text);
                 const char* rt = get_local_variable_type(node->children[1]->text);

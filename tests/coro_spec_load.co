@@ -1,0 +1,57 @@
+module main
+import std
+
+// COIL-126 fixture: the spec's request/reply pattern under
+// load. One echo worker serves 1000 rounds; every round
+// moves a fresh string's ownership main -> channel ->
+// worker -> channel -> main. Then 300 short workers are
+// spawned and finish, recycling slots and contexts. If
+// ownership bookkeeping leaked or corrupted a buffer, a
+// reply would come back wrong or the run would not finish.
+
+coroutine echo(link s) {
+    while (true) {
+        req = s.read()
+        if (req.length() == 0) { break }
+        s.write(req)
+    }
+}
+
+coroutine once(link s, int v) {
+    int buf[]
+    buf.resize(1)
+    buf[0] = v
+    s.write(buf)
+}
+
+int main() {
+    (a, b) = colink()
+    spawn echo(a)
+    int i = 0
+    while (i < 1000) {
+        string want = sprintf("round-%d", i)
+        b.write(want)
+        string got = b.read()
+        if (got.cmp(want) != 0) {
+            std.out.printf("FAIL: round %d got '%s'\n", i, got)
+            return 1
+        }
+        i = i + 1
+    }
+    b.close()
+    std.out.printf("echo rounds ok\n")
+
+    int j = 0
+    while (j < 300) {
+        (c, d) = colink()
+        spawn once(c, j)
+        int vals[] = d.read()
+        if (vals.length() != 1 || vals[0] != j) {
+            std.out.printf("FAIL: spawn round %d\n", j)
+            return 1
+        }
+        j = j + 1
+    }
+    std.out.printf("spec load ok\n")
+    return 0
+}

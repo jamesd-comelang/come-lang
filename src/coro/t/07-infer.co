@@ -1,0 +1,38 @@
+module coro_test
+import std
+
+// COIL-126: a first assignment to a fresh name declares it
+// with the inferred type (spec 9.1/9.2 examples, 10.1). The
+// type locks there; later assignments are plain stores.
+
+coroutine echo(link s) {
+    msg = s.read()
+    s.write(msg)
+}
+
+int main() {
+    n = 41
+    n = n + 1
+    if (n != 42) { std.out.printf("FAIL: int inference %d\n", n); return 1 }
+
+    word = "hello"
+    if (word.length() != 5) { std.out.printf("FAIL: string inference\n"); return 1 }
+    word = "hi"
+    if (word.length() != 2) { std.out.printf("FAIL: string reassign\n"); return 1 }
+
+    pi = 3.25
+    if (pi < 3.0 || pi > 3.5) { std.out.printf("FAIL: double inference\n"); return 1 }
+
+    flag = true
+    if (!flag) { std.out.printf("FAIL: bool inference\n"); return 1 }
+
+    // The spec 9.1 shape: a link read infers string.
+    (a, b) = colink()
+    spawn echo(a)
+    b.write("round")
+    reply = b.read()
+    if (reply != "round") { std.out.printf("FAIL: read inference '%s'\n", reply); return 1 }
+
+    std.out.printf("PASS: 07-infer\n")
+    return 0
+}

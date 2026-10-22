@@ -89,3 +89,33 @@ if [ $rc -ne 0 ] || [ "$out" != "main leaving" ]; then
     exit 1
 fi
 echo "coro main-return e2e: OK"
+
+# COIL-126: the spec's own section 9 examples, run as
+# written, plus the request/reply pattern under load.
+./build/come build tests/coro_spec91.co -o build/tests/coro_spec91 || exit 1
+out=$(./build/tests/coro_spec91) || { echo "FAIL: spec 9.1 example"; exit 1; }
+if [ "$out" != "spec 9.1 ok: echo: ping" ]; then
+    echo "FAIL: spec 9.1 output '$out'"
+    exit 1
+fi
+echo "coro spec 9.1 e2e: OK"
+
+./build/come build tests/coro_spec92.co -o build/tests/coro_spec92 || exit 1
+out=$(./build/tests/coro_spec92)
+expected=$(printf 'handled: one\ncoordinator done')
+if [ "$out" != "$expected" ]; then
+    echo "FAIL: spec 9.2 output mismatch"
+    echo "$out"
+    exit 1
+fi
+echo "coro spec 9.2 e2e: OK"
+
+./build/come build tests/coro_spec_load.co -o build/tests/coro_spec_load || exit 1
+out=$(timeout 20 ./build/tests/coro_spec_load) || { echo "FAIL: spec load run"; exit 1; }
+expected=$(printf 'echo rounds ok\nspec load ok')
+if [ "$out" != "$expected" ]; then
+    echo "FAIL: spec load output mismatch"
+    echo "$out"
+    exit 1
+fi
+echo "coro spec load e2e: OK"

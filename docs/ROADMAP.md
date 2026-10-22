@@ -81,7 +81,7 @@ implements it (0 files reference `coroutine` / `spawn` / `colink`).
 | COIL-123 | Coroutines hand data to each other with ownership attached | §9.2, §6.7 | L | COIL-120, COIL-122 | Ping-pong example passes; write-after-close sets `ERR` | ☑ |
 | COIL-124 | A single wait can listen to many channels at once | §9.2 | M | COIL-123 | Multi-producer example passes | ☑ |
 | COIL-125 | Coroutines clean up after themselves; a deadlock reports instead of hanging | §9.3 | M | COIL-123 | Deadlocked program reports an error instead of hanging | ☑ |
-| COIL-126 | The spec's coroutine examples run as written, even under load | §9 | M | COIL-121–125 | Examples pass; no leaks under the ownership tests | ☐ |
+| COIL-126 | The spec's coroutine examples run as written, even under load | §9 | M | COIL-121–125 | Examples pass; no leaks under the ownership tests | ☑ |
 
 **Exit criteria:** §9 examples from the spec compile and run as written;
 test suite green.

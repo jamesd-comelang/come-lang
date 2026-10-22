@@ -207,11 +207,20 @@ static void coro_trampoline(int id) {
 
 come_coro_t* come_coro_create(come_coro_fn fn, TALLOC_CTX** home_slot) {
     if (!g_inited) come_coro_init();
-    if (g_coro_count >= COME_CORO_MAX) {
-        fprintf(stderr, "coroutine: too many coroutines (max %d)\n", COME_CORO_MAX);
-        return NULL;
+    // Recycle a reaped coroutine's slot before growing the
+    // table: a program may spawn far more coroutines over its
+    // life than the table holds at once (COIL-126 load test).
+    int id = -1;
+    for (int i = 1; i < g_coro_count; i++) {
+        if (g_coros[i].state == CS_FREE) { id = i; break; }
     }
-    int id = g_coro_count++;
+    if (id < 0) {
+        if (g_coro_count >= COME_CORO_MAX) {
+            fprintf(stderr, "coroutine: too many coroutines (max %d)\n", COME_CORO_MAX);
+            exit(1);
+        }
+        id = g_coro_count++;
+    }
     come_coro_t* co = &g_coros[id];
     memset(co, 0, sizeof(*co));
     co->state = CS_NEW;
@@ -226,8 +235,7 @@ come_coro_t* come_coro_create(come_coro_fn fn, TALLOC_CTX** home_slot) {
     co->stack = (char*)malloc(COME_CORO_STACK_SIZE);
     if (!co->stack) {
         fprintf(stderr, "coroutine: out of memory\n");
-        co->state = CS_FREE;
-        return NULL;
+        exit(1);
     }
     getcontext(&co->uc);
     co->uc.uc_stack.ss_sp = co->stack;
