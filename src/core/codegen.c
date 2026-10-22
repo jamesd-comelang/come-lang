@@ -885,6 +885,45 @@ static void generate_expression(FILE* f, ASTNode* node) {
         else if (receiver->type == AST_MEMBER_ACCESS &&
                  strcmp(receiver->children[0]->text, "std") == 0) {
 
+             // std.proc: process & environment (COIL-115,
+             // Come_std.md section 5).
+             if (strcmp(receiver->text, "proc") == 0) {
+                 if (strcmp(method, "abort") == 0) {
+                     fprintf(f, "come_std__Proc__abort(NULL)");
+                 } else if (strcmp(method, "exit") == 0) {
+                     fprintf(f, "come_std__Proc__exit(NULL, ");
+                     if (node->child_count > 1) generate_expression(f, node->children[1]);
+                     else fprintf(f, "0");
+                     fprintf(f, ")");
+                 } else if (strcmp(method, "atexit") == 0) {
+                     ASTNode* cb = node->child_count > 1 ? node->children[1] : NULL;
+                     if (!cb || cb->type != AST_IDENTIFIER) {
+                         codegen_error("std.proc.atexit expects a function name (spec 8.3)");
+                         fprintf(f, "0");
+                         return;
+                     }
+                     const char* lt = get_local_variable_type(cb->text);
+                     fprintf(f, "come_std__Proc__atexit(NULL, ");
+                     if (lt && is_fn_type(lt)) {
+                         generate_expression(f, cb);   // fn parameter passed through
+                     } else if (find_module_fn_sig(cb->text)) {
+                         fprintf(f, "come_%s__%s", current_module, cb->text);
+                     } else {
+                         codegen_error("std.proc.atexit: '%s' is not a function of this module", cb->text);
+                     }
+                     fprintf(f, ")");
+                 } else if (strcmp(method, "getenv") == 0 || strcmp(method, "system") == 0) {
+                     fprintf(f, "come_std__Proc__%s(NULL, ", method);
+                     if (node->child_count > 1) emit_string_expr(f, node->children[1]);
+                     else fprintf(f, "NULL");
+                     fprintf(f, ")");
+                 } else {
+                     codegen_error("std.proc has no method '%s' (Come_std.md section 5)", method);
+                     fprintf(f, "0");
+                 }
+                 return;
+             }
+
              // FILE methods on the pre-instantiated streams
              // (COIL-114): std.in / std.out / std.err are FILE
              // objects. puts/printf on out/err keep the fast paths
@@ -2624,6 +2663,11 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "come_string_t* come_std__tmpname(void);\n");
         fprintf(f, "int come_std__rand(void);\n");
         fprintf(f, "void come_std__srand(unsigned int);\n");
+        fprintf(f, "void come_std__Proc__abort(void*);\n");
+        fprintf(f, "void come_std__Proc__exit(void*, int);\n");
+        fprintf(f, "void come_std__Proc__atexit(void*, void (*)(void));\n");
+        fprintf(f, "come_string_t* come_std__Proc__getenv(void*, come_string_t*);\n");
+        fprintf(f, "int come_std__Proc__system(void*, come_string_t*);\n");
     }
     // Macros for method dispatch
     fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);

@@ -68,7 +68,7 @@ export (
     // Proc Methods
     void Proc.abort(),
     void Proc.exit(int status),
-    void Proc.atexit(void* cb),
+    void Proc.atexit(void cb(void)),
     string Proc.getenv(string name),
     int Proc.system(string cmd),
 

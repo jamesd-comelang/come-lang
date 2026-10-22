@@ -1,0 +1,16 @@
+module main
+import std
+
+// COIL-115 probe for tests/run_proc_test.sh (not part of the
+// src/**/t sweep): std.proc.exit must run the atexit callbacks
+// and terminate with the given status, skipping the rest of main.
+
+void bye() { std.out.puts("bye-cb") }
+
+int main() {
+    std.proc.atexit(bye)
+    std.out.puts("before-exit")
+    std.proc.exit(3)
+    std.out.puts("UNREACHABLE")
+    return 0
+}

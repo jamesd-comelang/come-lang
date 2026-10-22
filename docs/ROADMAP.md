@@ -59,7 +59,7 @@ Theme: `Come_std.md` and the per-type method tables are fully implemented.
 | Story | Title | Spec | Size | Depends | Acceptance | Done |
 |-------|-------|------|------|---------|------------|------|
 | COIL-114 | File I/O behaves exactly as documented, edge cases included | Come_std | L | v0.7.0 | Every row of the Come_std tables has a working call + test | ☑ |
-| COIL-115 | Programs shut down cleanly: exit callbacks run, environment is readable | Come_std | M | COIL-109 | atexit callbacks run in reverse order at exit | ☐ |
+| COIL-115 | Programs shut down cleanly: exit callbacks run, environment is readable | Come_std | M | COIL-109 | atexit callbacks run in reverse order at exit | ☑ |
 | COIL-116 | Arrays come with the full documented toolbox: search, slice, sort | Come_array §4 | M | v0.7.0 | All Come_array.md methods tested | ☐ |
 | COIL-117 | Strings come with the full documented toolbox: split, join, trim, format | Come_string | L | COIL-110 | All Come_string.md methods tested | ☐ |
 | COIL-118 | Every runtime error arrives with a readable message | §12 | S | COIL-114–117 | No `ERR` code surfaces with an empty message | ☐ |

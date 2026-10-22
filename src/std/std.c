@@ -468,12 +468,33 @@ void come_std__FILE__setlinebuf(come_std__FILE_t* self) {
     if (self && self->fp) setlinebuf(self->fp);
 }
 
-// Proc stubs - COIL-115 completes this table (atexit especially).
+// Proc (Come_std.md section 5, COIL-115). The Proc object is a
+// singleton, so the self pointer is unused. atexit defers to the
+// C library: handlers registered later run earlier (reverse
+// order), both on a normal return from main and on proc.exit.
 void come_std__Proc__abort(void* self) { (void)self; abort(); }
 void come_std__Proc__exit(void* self, int status) { (void)self; exit(status); }
-void come_std__Proc__atexit(void* self, void* cb) { (void)self; (void)cb; }
-char* come_std__Proc__getenv(void* self, char* name) { (void)self; return getenv(name); }
-int come_std__Proc__system(void* self, char* cmd) { (void)self; return system(cmd); }
+void come_std__Proc__atexit(void* self, void (*cb)(void)) {
+    (void)self;
+    if (cb) atexit(cb);
+}
+come_string_t* come_std__Proc__getenv(void* self, come_string_t* name) {
+    (void)self;
+    if (!name) return come_string_new(NULL, "");
+    const char* v = getenv(come_string_to_cstr(name));
+    if (!v) {
+        // Missing variable: empty string (never null) + ENOENT,
+        // so ERR.set() reports it like other missing things.
+        errno = ENOENT;
+        return come_string_new(NULL, "");
+    }
+    return come_string_new(NULL, v);
+}
+int come_std__Proc__system(void* self, come_string_t* cmd) {
+    (void)self;
+    if (!cmd) return -1;
+    return system(come_string_to_cstr(cmd));
+}
 
 // Module-level file operations (Come_std.md section 4)
 bool come_std__remove(come_string_t* path) {

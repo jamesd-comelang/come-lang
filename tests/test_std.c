@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include "come_string.h"
 #include "come_array.h"
 #include "come_std.h"
@@ -67,7 +68,18 @@ static int call_vscanf(come_std__FILE_t* fp, come_string_t* fmt, ...) {
     return r;
 }
 
+void come_std__Proc__abort(void*);
+void come_std__Proc__exit(void*, int);
+void come_std__Proc__atexit(void*, void (*)(void));
+come_string_t* come_std__Proc__getenv(void*, come_string_t*);
+int come_std__Proc__system(void*, come_string_t*);
+
 static come_string_t* S(const char* s) { return come_string_new(NULL, s); }
+
+// COIL-115: callbacks used by the fork-based atexit test below.
+static const char* g_order_path = "/tmp/come_test_atexit_115.txt";
+static void cb_write_1(void) { FILE* u = fopen(g_order_path, "a"); if (u) { fputc('1', u); fclose(u); } }
+static void cb_write_2(void) { FILE* u = fopen(g_order_path, "a"); if (u) { fputc('2', u); fclose(u); } }
 
 int main() {
     come_std__init_local();
@@ -177,6 +189,36 @@ int main() {
     errno = 0;
     come_std__FILE_t gone = {0};
     CHECK(!come_std__FILE__open(&gone, S(path), S("r")), "removed file no longer opens");
+
+    // COIL-115: proc & environment (Come_std.md section 5)
+    setenv("COME_T115", "yes", 1);
+    come_string_t* gv = come_std__Proc__getenv(NULL, S("COME_T115"));
+    CHECK(gv && strcmp(gv->data, "yes") == 0, "getenv reads a set variable");
+    errno = 0;
+    come_string_t* gm = come_std__Proc__getenv(NULL, S("COME_T115_MISSING"));
+    CHECK(gm && gm->count == 0, "getenv of a missing variable is an empty string");
+    CHECK(errno == ENOENT, "getenv of a missing variable sets ENOENT");
+    CHECK(come_std__Proc__system(NULL, S("true")) == 0, "system(true) is 0");
+    CHECK(come_std__Proc__system(NULL, S("false")) != 0, "system(false) is non-zero");
+
+    // atexit callbacks run in reverse order, and proc.exit
+    // terminates with its status: observed from a child process.
+    remove(g_order_path);
+    pid_t pid = fork();
+    if (pid == 0) {
+        come_std__Proc__atexit(NULL, cb_write_1);
+        come_std__Proc__atexit(NULL, cb_write_2);
+        come_std__Proc__exit(NULL, 5);
+        _exit(9);   // unreachable if proc.exit works
+    }
+    int status = 0;
+    CHECK(waitpid(pid, &status, 0) == pid, "waitpid for atexit child");
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 5, "proc.exit(5) terminates with status 5");
+    FILE* of = fopen(g_order_path, "r");
+    char order[8] = {0};
+    if (of) { size_t n = fread(order, 1, sizeof(order) - 1, of); order[n] = 0; fclose(of); }
+    CHECK(strcmp(order, "21") == 0, "atexit callbacks run in reverse registration order");
+    remove(g_order_path);
 
     free(buf); free(sbuf); free(rb);
     if (failures) { printf("test_std: %d FAILURES\n", failures); return 1; }

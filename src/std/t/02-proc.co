@@ -1,0 +1,30 @@
+module std_test
+import std
+
+// COIL-115: process & environment (Come_std.md section 5).
+// getenv and system are checked here; the atexit callbacks print
+// after main returns, and tests/run_proc_test.sh verifies they
+// ran in reverse registration order (cb-second before cb-first).
+
+void first() { std.out.puts("cb-first") }
+void second() { std.out.puts("cb-second") }
+
+int main() {
+    string home = std.proc.getenv("HOME")
+    if (home.length() == 0) { std.out.printf("FAIL: getenv HOME empty\n"); return 1 }
+
+    ERR.clear()
+    string missing = std.proc.getenv("COME_NO_SUCH_VAR_115")
+    if (missing.length() != 0) { std.out.printf("FAIL: missing env var must give an empty string\n"); return 1 }
+    if (!ERR.set()) { std.out.printf("FAIL: missing env var must set ERR\n"); return 1 }
+
+    int rc = std.proc.system("true")
+    if (rc != 0) { std.out.printf("FAIL: system(true) rc=%d\n", rc); return 1 }
+    int rc2 = std.proc.system("false")
+    if (rc2 == 0) { std.out.printf("FAIL: system(false) must be non-zero\n"); return 1 }
+
+    std.proc.atexit(first)
+    std.proc.atexit(second)
+    std.out.puts("main-done")
+    return 0
+}

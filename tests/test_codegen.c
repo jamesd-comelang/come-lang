@@ -600,5 +600,48 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-114 FILE codegen test passed!\033[0m\n");
+
+    // COIL-115: std.proc dispatches to the Proc runtime; atexit
+    // receives the callback by its mangled module name; unknown
+    // proc methods are compile errors.
+    {
+        const char* src115 =
+            "module m115\nimport std\n\n"
+            "void cleanup() {\n}\n"
+            "int main() {\n"
+            "    std.proc.atexit(cleanup)\n"
+            "    string h = std.proc.getenv(\"HOME\")\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil115.co", src115)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-115: std.proc program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of115 = fopen("build/tests/coil115.co.c", "r");
+        if (!of115) { printf("COIL-115: output file missing\n"); return 1; }
+        static char buf115[262144];
+        size_t blen115 = fread(buf115, 1, sizeof(buf115) - 1, of115);
+        fclose(of115);
+        buf115[blen115] = 0;
+        if (!strstr(buf115, "come_std__Proc__atexit(NULL, come_m115__cleanup)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-115: atexit must receive the mangled callback\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf115, "come_std__Proc__getenv(NULL, come_string_new(")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-115: getenv must receive a string object\033[0m\n");
+            return 1;
+        }
+        const char* bad115 =
+            "module m115b\nimport std\n\n"
+            "int main() {\n"
+            "    std.proc.frobnicate()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil115bad.co", bad115)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-115: unknown std.proc method must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-115 proc codegen test passed!\033[0m\n");
     return 0;
 }
