@@ -1,0 +1,65 @@
+module coro_test
+import std
+
+// COIL-121: a spawned coroutine runs to completion - many at
+// once, in batches, and nested (a coroutine spawning its own).
+
+coroutine leaf(int id, int base) {
+    int v = id + base
+    yield
+    if (v != id + base) {
+        std.out.printf("FAIL: leaf %d lost its args\n", id)
+    }
+}
+
+coroutine parent(int id) {
+    spawn leaf(id * 10 + 1, 100)
+    spawn leaf(id * 10 + 2, 200)
+    int acc = 0
+    int i = 0
+    while (i < 3) {
+        acc = acc + id
+        yield
+        i = i + 1
+    }
+    if (acc != id * 3) {
+        std.out.printf("FAIL: parent %d acc %d\n", id, acc)
+    }
+}
+
+coroutine worker(int id, int turns) {
+    int acc = 0
+    int i = 0
+    while (i < turns) {
+        acc = acc + id
+        yield
+        i = i + 1
+    }
+    if (acc != id * turns) {
+        std.out.printf("FAIL: worker %d acc %d\n", id, acc)
+    }
+}
+
+int main() {
+    // A batch of 40, each verifying its own final state.
+    int b = 0
+    while (b < 40) {
+        spawn worker(b + 1, 3)
+        b = b + 1
+    }
+    int k = 0
+    while (k < 12) {
+        yield
+        k = k + 1
+    }
+    // Nested spawns, after the first batch has completed.
+    spawn parent(1)
+    spawn parent(2)
+    k = 0
+    while (k < 12) {
+        yield
+        k = k + 1
+    }
+    std.out.printf("PASS: 02-spawn\n")
+    return 0
+}

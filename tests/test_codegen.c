@@ -819,5 +819,47 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-120 coroutine codegen test passed!\033[0m\n");
+
+    // COIL-121: spawn works from inside a coroutine too (nested
+    // spawn), and every spawn site emits the full
+    // create/args/start sequence.
+    {
+        const char* src121 =
+            "module m121\nimport std\n\n"
+            "coroutine leaf(int id) {\n"
+            "    yield\n"
+            "}\n"
+            "coroutine parent(int id) {\n"
+            "    spawn leaf(id)\n"
+            "    yield\n"
+            "}\n"
+            "int main() {\n"
+            "    spawn parent(1)\n"
+            "    yield\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil121.co", src121)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-121: nested spawn program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of121 = fopen("build/tests/coil121.co.c", "r");
+        if (!of121) { printf("COIL-121: output file missing\n"); return 1; }
+        static char buf121[262144];
+        size_t blen121 = fread(buf121, 1, sizeof(buf121) - 1, of121);
+        fclose(of121);
+        buf121[blen121] = 0;
+        int creates = 0;
+        const char* scan = buf121;
+        while ((scan = strstr(scan, "come_coro_create(")) != NULL) { creates++; scan++; }
+        if (creates != 2) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-121: expected 2 spawn sites, found %d\033[0m\n", creates);
+            return 1;
+        }
+        if (!strstr(buf121, "come_coro_start(co)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-121: spawn must start the coroutine\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-121 spawn codegen test passed!\033[0m\n");
     return 0;
 }

@@ -16,6 +16,9 @@ static TALLOC_CTX* fake_ctx = NULL;
 static void* seen_ctx[3];
 static int seen_count[3];
 
+static void child_worker(void* p);
+static void parent_worker(void* p);
+
 typedef struct { int id; char tag; int turns; } job_t;
 
 static void worker(void* p) {
@@ -75,6 +78,35 @@ int main(void) {
     // A yield with nothing else to run is a no-op.
     come_coro_yield();
 
-    printf("COIL-120 coro runtime test passed!\n");
+    // COIL-121: a coroutine spawning a coroutine - the whole
+    // tree runs to completion.
+    trace_len = 0; trace[0] = 0;
+    come_coro_t* cp = come_coro_create(parent_worker, &fake_ctx);
+    if (!cp) { printf("FAIL: create parent\n"); return 1; }
+    come_coro_start(cp);
+    for (int i = 0; i < 6 && come_coro_alive() > 0; i++) {
+        come_coro_yield();
+    }
+    if (come_coro_alive() != 0) { printf("FAIL: tree alive = %d\n", come_coro_alive()); return 1; }
+    if (strcmp(trace, "pcP") != 0) {
+        printf("FAIL: tree trace = %s, want pcP\n", trace);
+        return 1;
+    }
+
+    printf("COIL-120/121 coro runtime test passed!\n");
     return 0;
+}
+
+static void child_worker(void* p) {
+    (void)p;
+    note('c');
+}
+
+static void parent_worker(void* p) {
+    (void)p;
+    note('p');
+    come_coro_t* cc = come_coro_create(child_worker, &fake_ctx);
+    if (cc) come_coro_start(cc);
+    come_coro_yield();
+    note('P');
 }

@@ -1,0 +1,44 @@
+module main
+import std
+
+// COIL-121 fixture: spawn is the one way concurrent work
+// starts, and spawned coroutines run to completion - including
+// coroutines spawned by other coroutines. The expected stdout
+// in tests/run_coro_test.sh is the deterministic completion
+// order of the whole tree.
+
+coroutine leaf(int id) {
+    std.out.printf("leaf %d\n", id)
+}
+
+coroutine parent(int id) {
+    std.out.printf("parent %d start\n", id)
+    spawn leaf(id * 10 + 1)
+    spawn leaf(id * 10 + 2)
+    yield
+    std.out.printf("parent %d end\n", id)
+}
+
+coroutine worker(int id, int turns) {
+    int acc = 0
+    int i = 0
+    while (i < turns) {
+        acc = acc + id
+        yield
+        i = i + 1
+    }
+    std.out.printf("worker %d acc %d\n", id, acc)
+}
+
+int main() {
+    spawn parent(1)
+    spawn parent(2)
+    spawn worker(7, 3)
+    int k = 0
+    while (k < 12) {
+        yield
+        k = k + 1
+    }
+    std.out.printf("all done\n")
+    return 0
+}
