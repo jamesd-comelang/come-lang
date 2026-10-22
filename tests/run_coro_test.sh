@@ -46,3 +46,18 @@ if [ "$out" != "$expected" ]; then
     exit 1
 fi
 echo "coro pingpong e2e: OK"
+
+# COIL-124: one wait listens to many channels; a finished
+# producer reports through an empty read and leaves the set.
+./build/come build tests/coro_wait.co -o build/tests/coro_wait || exit 1
+out=$(./build/tests/coro_wait)
+expected=$(printf 'message: fast\nfast worker closed\nquitter closed\nmessage: slow\nwait done')
+if [ "$out" != "$expected" ]; then
+    echo "FAIL: coro wait output mismatch"
+    echo "--- got ---"
+    echo "$out"
+    echo "--- want ---"
+    echo "$expected"
+    exit 1
+fi
+echo "coro wait e2e: OK"

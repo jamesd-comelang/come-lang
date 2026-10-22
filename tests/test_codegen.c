@@ -991,5 +991,56 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-123 link codegen test passed!\033[0m\n");
+
+    // COIL-124: wait(...) builds the end set and calls the
+    // runtime; it needs at least one link, and its arguments
+    // must be links.
+    {
+        const char* src124 =
+            "module m124\nimport std\n\n"
+            "int main() {\n"
+            "    (a, b) = colink()\n"
+            "    (c, d) = colink()\n"
+            "    link ready = wait(b, d)\n"
+            "    string v = ready.read()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil124.co", src124)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-124: wait program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of124 = fopen("build/tests/coil124.co.c", "r");
+        if (!of124) { printf("COIL-124: output file missing\n"); return 1; }
+        static char buf124[262144];
+        size_t blen124 = fread(buf124, 1, sizeof(buf124) - 1, of124);
+        fclose(of124);
+        buf124[blen124] = 0;
+        if (!strstr(buf124, "come_link_wait(__wait_ends, 2)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-124: wait must reach the runtime with its end set\033[0m\n");
+            return 1;
+        }
+        const char* bad124a =
+            "module m124b\nimport std\n\n"
+            "int main() {\n"
+            "    link ready = wait()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil124bad.co", bad124a)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-124: wait with no links must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad124b =
+            "module m124c\nimport std\n\n"
+            "int main() {\n"
+            "    int n = 5\n"
+            "    link ready = wait(n)\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil124bad2.co", bad124b)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-124: wait on a non-link must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-124 wait codegen test passed!\033[0m\n");
     return 0;
 }

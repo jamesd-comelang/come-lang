@@ -1,0 +1,60 @@
+module coro_test
+import std
+
+// COIL-124: wait() pauses until any of its links is readable
+// (or its peer closed) and returns that link.
+
+coroutine writer(link s, string msg, int yields) {
+    int i = 0
+    while (i < yields) {
+        yield
+        i = i + 1
+    }
+    s.write(msg)
+}
+
+coroutine silent(link s) {
+    yield
+}
+
+int main() {
+    (a, b) = colink()
+    (c, d) = colink()
+
+    // Already-readable: wait returns at once with that link.
+    // (Writing on a is what makes b readable.)
+    a.write("early")
+    link r0 = wait(b, d)
+    if (r0 != b) { std.out.printf("FAIL: immediate wait identity\n"); return 1 }
+    string v0 = r0.read()
+    if (v0 != "early") { std.out.printf("FAIL: immediate wait data\n"); return 1 }
+
+    // Blocking: the second producer answers first.
+    spawn writer(a, "from-a", 3)
+    spawn writer(c, "from-c", 1)
+    link r1 = wait(b, d)
+    if (r1 != d) { std.out.printf("FAIL: blocking wait identity\n"); return 1 }
+    string v1 = r1.read()
+    if (v1 != "from-c") { std.out.printf("FAIL: blocking wait data '%s'\n", v1); return 1 }
+    // d's writer has finished: d stays readable and its next
+    // read reports the close (empty). Only then does it leave
+    // the wait set.
+    link r2 = wait(b, d)
+    if (r2 != d) { std.out.printf("FAIL: close wait identity\n"); return 1 }
+    string v2 = r2.read()
+    if (v2.length() != 0) { std.out.printf("FAIL: close read not empty\n"); return 1 }
+    link r3 = wait(b)
+    if (r3 != b) { std.out.printf("FAIL: second wait identity\n"); return 1 }
+    string v3 = r3.read()
+    if (v3 != "from-a") { std.out.printf("FAIL: second wait data '%s'\n", v3); return 1 }
+
+    // A peer that closes wakes the wait; the read is empty.
+    (e, f) = colink()
+    spawn silent(e)
+    link r4 = wait(f)
+    string v4 = r4.read()
+    if (v4.length() != 0) { std.out.printf("FAIL: silent close read not empty\n"); return 1 }
+
+    std.out.printf("PASS: 05-wait\n")
+    return 0
+}

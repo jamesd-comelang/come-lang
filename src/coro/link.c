@@ -36,6 +36,7 @@ typedef struct come_chan {
     come_msg_t* qtail[2];
     int end_closed[2];
     come_coro_t* waiter[2]; // coroutine blocked reading side i
+    come_coro_t* any_waiter[2]; // coroutine blocked in wait() on side i
     struct come_link ends[2];
     TALLOC_CTX* ctx;
     struct come_chan* next_all;
@@ -114,6 +115,7 @@ int come_link_write(come_link_t* end, void* buf) {
     else c->qhead[peer] = m;
     c->qtail[peer] = m;
     if (c->waiter[peer]) come_coro_wake(c->waiter[peer]);
+    if (c->any_waiter[peer]) come_coro_wake(c->any_waiter[peer]);
     return 1;
 }
 
@@ -150,10 +152,35 @@ void come_link_close(come_link_t* end) {
     c->end_closed[end->side] = 1;
     int peer = 1 - end->side;
     if (c->waiter[peer]) come_coro_wake(c->waiter[peer]);
+    if (c->any_waiter[peer]) come_coro_wake(c->any_waiter[peer]);
 }
 
 int come_link_ready(come_link_t* end) {
     if (!end) return 1;
     come_chan_t* c = end->chan;
     return c->qhead[end->side] != NULL || c->end_closed[1 - end->side];
+}
+
+come_link_t* come_link_wait(come_link_t** ends, int n) {
+    if (n <= 0) return NULL;
+    for (;;) {
+        for (int i = 0; i < n; i++) {
+            if (come_link_ready(ends[i])) return ends[i];
+        }
+        // Nothing ready: register on every channel, then
+        // block. A write or a close on any of them wakes us;
+        // the loop then re-scans from the top (spec 9.2: if a
+        // link is already readable, wait returns immediately -
+        // the scan above is that fast path).
+        come_coro_t* me = come_coro_current();
+        for (int i = 0; i < n; i++) {
+            ends[i]->chan->any_waiter[ends[i]->side] = me;
+        }
+        come_coro_block();
+        for (int i = 0; i < n; i++) {
+            if (ends[i]->chan->any_waiter[ends[i]->side] == me) {
+                ends[i]->chan->any_waiter[ends[i]->side] = NULL;
+            }
+        }
+    }
 }

@@ -37,4 +37,8 @@ void come_link_adopt(come_link_t* end, come_coro_t* co);
 // closed. Used by wait() (spec 9.2).
 int come_link_ready(come_link_t* end);
 
+// Pause until any of the n ends is readable or its peer has
+// closed, and return that end (one the caller already owns).
+come_link_t* come_link_wait(come_link_t** ends, int n);
+
 #endif

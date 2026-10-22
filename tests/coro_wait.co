@@ -1,0 +1,54 @@
+module main
+import std
+
+// COIL-124 fixture: one wait listens to many channels. Three
+// producers run at different speeds. The coordinator waits on
+// the fast pair first - a link whose peer finished stays
+// readable (its read returns empty), so once a finish is
+// reported the coordinator moves on to a smaller wait set,
+// the pattern spec 9.2 describes.
+
+coroutine slow(link s) {
+    yield
+    yield
+    s.write("slow")
+}
+
+coroutine fast(link s) {
+    s.write("fast")
+}
+
+coroutine quitter(link s) {
+    yield
+}
+
+int main() {
+    (a, b) = colink()
+    (c, d) = colink()
+    (e, f) = colink()
+    spawn slow(a)
+    spawn fast(c)
+    spawn quitter(e)
+
+    // Fast's message, then fast's finish (an empty read).
+    link r1 = wait(d, f)
+    string v1 = r1.read()
+    std.out.printf("message: %s\n", v1)
+    link r2 = wait(d, f)
+    string v2 = r2.read()
+    if (r2 == d && v2.length() == 0) {
+        std.out.printf("fast worker closed\n")
+    }
+    // The quitter's finish, on its link alone now.
+    link r3 = wait(f)
+    string v3 = r3.read()
+    if (r3 == f && v3.length() == 0) {
+        std.out.printf("quitter closed\n")
+    }
+    // Finally the slow producer's message.
+    link r4 = wait(b)
+    string v4 = r4.read()
+    std.out.printf("message: %s\n", v4)
+    std.out.printf("wait done\n")
+    return 0
+}

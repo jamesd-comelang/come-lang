@@ -24,6 +24,7 @@ static void parent_worker(void* p);
 static void check_worker(void* p);
 static int check_seen_ok;
 static void link_worker(void* p);
+static void late_writer(void* p);
 typedef struct { come_link_t* s; } link_job_t;
 static char link_seen[32];
 
@@ -145,8 +146,37 @@ int main(void) {
         if (!eof || eof->count != 0) { printf("FAIL: link EOF\n"); return 1; }
     }
 
+    // COIL-124: wait returns the ready end at once when data is
+    // already queued, and blocks until a writer arrives
+    // otherwise.
+    {
+        come_link_t *wa, *wb, *wc, *wd;
+        come_colink(&wa, &wb);
+        come_colink(&wc, &wd);
+        come_link_write(wa, come_string_new(fake_ctx, "early"));
+        come_link_t* set1[2] = { wb, wd };
+        if (come_link_wait(set1, 2) != wb) { printf("FAIL: wait immediate identity\n"); return 1; }
+        come_string_t* early = (come_string_t*)come_link_read(wb, fake_ctx);
+        if (!early || strcmp(early->data, "early") != 0) { printf("FAIL: wait immediate data\n"); return 1; }
+        come_coro_t* ww = come_coro_create(late_writer, &fake_ctx);
+        link_job_t* lj2 = (link_job_t*)come_coro_args(ww, sizeof(link_job_t));
+        if (lj2) lj2->s = wc;
+        come_link_adopt(wc, ww);
+        come_coro_start(ww);
+        come_link_t* set2[2] = { wb, wd };
+        if (come_link_wait(set2, 2) != wd) { printf("FAIL: wait blocking identity\n"); return 1; }
+        come_string_t* late = (come_string_t*)come_link_read(wd, fake_ctx);
+        if (!late || strcmp(late->data, "late") != 0) { printf("FAIL: wait blocking data\n"); return 1; }
+    }
+
     printf("COIL-120/121 coro runtime test passed!\n");
     return 0;
+}
+
+static void late_writer(void* p) {
+    come_link_t* s = ((link_job_t*)p)->s;
+    come_coro_yield();
+    come_link_write(s, come_string_new(fake_ctx, "late"));
 }
 
 static void link_worker(void* p) {

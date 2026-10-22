@@ -2050,6 +2050,29 @@ static void generate_expression(FILE* f, ASTNode* node) {
         if (strcmp(node->text, "colink") == 0 && !find_module_fn_sig(node->text)) {
             codegen_error("colink() creates two links at once: use (a, b) = colink() (spec 9.2)");
         }
+        if (strcmp(node->text, "wait") == 0 && !find_module_fn_sig(node->text)) {
+            // wait(link, ...) (COIL-124, spec 9.2): pause until
+            // one of the links is readable; returns that link.
+            if (node->child_count == 0) {
+                codegen_error("wait needs at least one link (spec 9.2)");
+            }
+            for (int i = 0; i < node->child_count; i++) {
+                ASTNode* a = node->children[i];
+                if (a->type == AST_IDENTIFIER) {
+                    const char* t = get_local_variable_type(a->text);
+                    if (!t || strcmp(t, "link") != 0) {
+                        codegen_error("wait arguments must be links");
+                    }
+                }
+            }
+            fprintf(f, "({ come_link_t* __wait_ends[] = {");
+            for (int i = 0; i < node->child_count; i++) {
+                if (i) fprintf(f, ", ");
+                generate_expression(f, node->children[i]);
+            }
+            fprintf(f, "}; come_link_wait(__wait_ends, %d); })", node->child_count);
+            return;
+        }
         // sprintf / sscanf are the string module's free functions
         // (COIL-117, Come_string.md). A user function of the same
         // name in this module shadows them.
