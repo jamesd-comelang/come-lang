@@ -1,0 +1,18 @@
+module greeter
+import std
+
+// The hooks live in the group's SECOND file alphabetically on
+// purpose: the group's init/exit chain (emitted by the primary
+// file) must still find and run them.
+
+void init() {
+    std.out.printf("greeter init\n")
+}
+
+void exit() {
+    std.out.printf("greeter exit\n")
+}
+
+void hello() {
+    std.out.printf("hello from greeter\n")
+}

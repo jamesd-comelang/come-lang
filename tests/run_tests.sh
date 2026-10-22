@@ -1,4 +1,7 @@
 #!/bin/bash
+# Any failing build or test aborts the run: a stale binary must
+# never masquerade as a pass.
+set -e
 mkdir -p build/tests
 gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_lexer.c src/core/lexer.c -o build/tests/test_lexer
 ./build/tests/test_lexer
@@ -18,3 +21,4 @@ gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_mem.c src/mem/memory.c 
 gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_oob.c src/array/array.c src/string/string.c src/mem/memory.c src/core/utils.c -o build/tests/test_oob
 ./build/tests/test_oob
 
+bash tests/run_module_project.sh

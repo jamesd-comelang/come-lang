@@ -8,6 +8,28 @@
 
 int g_verbose = 0;  // defined in come_compiler.c for the real driver; the test provides its own
 
+// Write src to path, parse and generate. gen_ok returns 1 when
+// generation succeeds, gen_fail when it fails (parse or codegen).
+static int gen_common(const char* path, const char* src) {
+    FILE* cf = fopen(path, "w");
+    if (!cf) return 0;
+    fputs(src, cf);
+    fclose(cf);
+    ASTNode* ast = NULL;
+    if (parse_file(path, &ast) != 0 || !ast) return 0;
+    char out_c[512];
+    snprintf(out_c, sizeof(out_c), "%s.c", path);
+    int rc = generate_c_from_ast(ast, out_c, path, 0);
+    ast_free(ast);
+    return rc == 0;
+}
+static int gen_ok(const char* path, const char* src) {
+    return gen_common(path, src);
+}
+static int gen_fail(const char* path, const char* src) {
+    return !gen_common(path, src);
+}
+
 int main() {
     ASTNode* root = NULL;
     // parse_file currently returns a hardcoded AST, so the input file doesn't matter much
@@ -204,6 +226,71 @@ int main() {
         return 1;
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
+
+    // COIL-108: directory-module codegen. A non-primary file must
+    // not define the module singletons; the primary's chain must
+    // call the group hook even when its own file defines none; the
+    // spec's module_init/module_exit spellings mangle to the hooks.
+    {
+        const char* p108 = "build/tests/coil108_secondary.co";
+        FILE* sf = fopen(p108, "w");
+        fputs("module greeter\nimport std\n\nvoid extra() {\n}\n", sf);
+        fclose(sf);
+        ASTNode* a108 = NULL;
+        if (parse_file(p108, &a108) != 0 || !a108) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: parse failed\033[0m\n");
+            return 1;
+        }
+        static char buf108[262144];
+        g_codegen_suppress_singletons = 1;
+        int rc108 = generate_c_from_ast(a108, "build/tests/coil108_secondary.c", p108, 0);
+        g_codegen_suppress_singletons = 0;
+        FILE* of108 = fopen("build/tests/coil108_secondary.c", "r");
+        size_t bl108 = fread(buf108, 1, sizeof(buf108) - 1, of108);
+        fclose(of108);
+        buf108[bl108] = 0;
+        if (rc108 != 0 || !strstr(buf108, "extern TALLOC_CTX* come_greeter__ctx;") ||
+            strstr(buf108, "come_greeter__ctx = NULL") ||
+            strstr(buf108, "void come_greeter__init(void) {")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: secondary file must not define singletons\033[0m\n");
+            return 1;
+        }
+        g_codegen_group_has_init = 1;
+        rc108 = generate_c_from_ast(a108, "build/tests/coil108_primary.c", p108, 0);
+        g_codegen_group_has_init = -1;
+        of108 = fopen("build/tests/coil108_primary.c", "r");
+        bl108 = fread(buf108, 1, sizeof(buf108) - 1, of108);
+        fclose(of108);
+        buf108[bl108] = 0;
+        if (rc108 != 0 || !strstr(buf108, "come_greeter__init_local();") ||
+            !strstr(buf108, "come_register_exit(come_greeter__exit);")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: primary chain must call the group hook and register the exit\033[0m\n");
+            return 1;
+        }
+        ast_free(a108);
+
+        const char* p108h = "build/tests/coil108_hook.co";
+        FILE* hf = fopen(p108h, "w");
+        fputs("module hook\nimport std\n\nvoid module_init() {\n}\n\nvoid module_exit() {\n}\n", hf);
+        fclose(hf);
+        ASTNode* a108h = NULL;
+        if (parse_file(p108h, &a108h) != 0 || !a108h ||
+            generate_c_from_ast(a108h, "build/tests/coil108_hook.c", p108h, 0) != 0) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: hook module must generate\033[0m\n");
+            return 1;
+        }
+        FILE* ofh = fopen("build/tests/coil108_hook.c", "r");
+        size_t blh = fread(buf108, 1, sizeof(buf108) - 1, ofh);
+        fclose(ofh);
+        buf108[blh] = 0;
+        if (!strstr(buf108, "come_hook__init_local") || !strstr(buf108, "come_hook__exit_local") ||
+            !strstr(buf108, "come_hook__init_local();")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: module_init/module_exit must mangle to the local hooks\033[0m\n");
+            return 1;
+        }
+        ast_free(a108h);
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-108 directory module test passed!\033[0m\n");
 
     // COIL-107: narrowing stores are compile errors; lossless
     // widening and explicit T(value) casts generate fine.

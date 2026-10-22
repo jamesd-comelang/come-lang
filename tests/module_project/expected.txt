@@ -1,0 +1,11 @@
+greeter init
+alpha init
+main start
+hello from greeter
+hello from greeter
+extra done
+hello from greeter
+alpha poke
+main end
+alpha exit
+greeter exit

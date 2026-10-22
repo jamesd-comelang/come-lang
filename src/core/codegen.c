@@ -21,6 +21,13 @@ static void emit_indent(FILE* f, int indent_spaces) {
 // continues so the user can see every error, but generate_c_from_ast
 // returns nonzero when any occurred and the driver refuses the output.
 static int g_codegen_errors = 0;
+
+// COIL-108: directory-module group control (see codegen.h).
+int g_codegen_suppress_singletons = 0;
+int g_codegen_group_has_init = -1;
+int g_codegen_group_has_exit = -1;
+const char** g_codegen_chain_imports = NULL;
+int g_codegen_chain_import_count = 0;
 static void codegen_error(const char* fmt, ...) {
     char buf[512];
     va_list ap;
@@ -1395,9 +1402,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         // If node->text is "Rect_area", we want "come_MMM__Rect__area".
         // Let's see if we can detect it.
         char* underscore = strchr(node->text, '_');
-        if (strcmp(node->text, "init") == 0) {
+        if (strcmp(node->text, "init") == 0 || strcmp(node->text, "module_init") == 0) {
              snprintf(func_name, sizeof(func_name), "come_%s__init_local", current_module);
-        } else if (strcmp(node->text, "exit") == 0) {
+        } else if (strcmp(node->text, "exit") == 0 || strcmp(node->text, "module_exit") == 0) {
              snprintf(func_name, sizeof(func_name), "come_%s__exit_local", current_module);
         } else if (underscore && !is_main && isupper(node->text[0])) {
 
@@ -1423,9 +1430,6 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         // Special case: nport injector
         if (strcmp(node->text, "nport") == 0) {
             fprintf(f, "struct TCP_ADDR* self");
-            has_args = 1;
-        } else if (strcmp(node->text, "module_init") == 0) {
-            fprintf(f, "TALLOC_CTX* ctx");
             has_args = 1;
         }
 
@@ -1471,12 +1475,6 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         ASTNode* body = node->children[body_idx];
         if (body->type == AST_BLOCK) {
             fprintf(f, " {\n");
-            if (strcmp(node->text, "module_init") == 0) {
-                fprintf(f, "    COME_CTX = ctx;\n");
-                for (int i=0; i<current_import_count; i++) {
-                    fprintf(f, "    come_%s__ctx = ctx;\n", current_imports[i]);
-                }
-            }
 
             
             for (int i = 0; i < body->child_count; i++) {
@@ -2218,7 +2216,13 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);
     
     // Module memory context
-    fprintf(f, "TALLOC_CTX* come_%s__ctx = NULL;\n", current_module);
+    if (g_codegen_suppress_singletons) {
+        // Non-primary file of a directory module: the primary file
+        // defines the ctx global (COIL-108).
+        fprintf(f, "extern TALLOC_CTX* come_%s__ctx;\n", current_module);
+    } else {
+        fprintf(f, "TALLOC_CTX* come_%s__ctx = NULL;\n", current_module);
+    }
     
     // TODO: Extern imports - disabled for now to avoid linker errors
     // for (int i=0; i<current_import_count; i++) {
@@ -2231,9 +2235,11 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
 
         // Scan AST to find main function and check if it has parameters
         int main_has_params = 0;
+        int has_main_fn = 0;
         for (int i = 0; i < ast->child_count; i++) {
             ASTNode* child = ast->children[i];
             if (child && child->type == AST_FUNCTION && strcmp(child->text, "main") == 0) {
+                has_main_fn = 1;
                 // Check if main has any arguments
                 // Arguments are in children[1] if present and NOT a block
                 if (child->child_count > 1 && child->children[1] && child->children[1]->type != AST_BLOCK) {
@@ -2246,6 +2252,12 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
             }
         }
 
+        // The C entry point belongs to the module that defines
+        // main(). Library modules must not emit one: previously every
+        // file got a wrapper, so any multi-module program failed to
+        // link with duplicate main / undefined come_<lib>__main
+        // (COIL-108).
+        if (has_main_fn) {
         // Forward declare user main with correct signature
         if (main_has_params) {
             fprintf(f, "int come_%s__main(come_string_list_t* args);\n", current_module);
@@ -2256,7 +2268,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         // Forward declare module init/exit
         fprintf(f, "void come_%s__init(void);\n", current_module);
         fprintf(f, "void come_%s__exit(void);\n", current_module);
-        
+
         fprintf(f, "\nint main(int argc, char* argv[]) {\n");
         fprintf(f, "    COME_CTX = mem_talloc_new_ctx(NULL);\n");
         fprintf(f, "    if (!COME_CTX) { fprintf(stderr, \"OOM\\n\"); return 1; }\n");
@@ -2276,40 +2288,62 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         }
         
         fprintf(f, "    \n");
-        fprintf(f, "    come_%s__exit();\n", current_module);
+        fprintf(f, "    come_run_exits();\n");
         fprintf(f, "    mem_talloc_free(COME_CTX);\n");
         fprintf(f, "    return ret;\n");
         fprintf(f, "}\n");
+        } // if (has_main_fn)
     }
 
     // Generate Module Init/Exit Chain
     fprintf(f, "\n/* Module Init/Exit Chain */\n");
-    
+
+    // The chain follows this module's imports. For a directory
+    // module the driver supplies the union of the group's imports
+    // (COIL-108); otherwise the file's own imports are used.
+    const char** chain_imports = g_codegen_chain_imports ? g_codegen_chain_imports
+                                                         : (const char**)current_imports;
+    int chain_count = g_codegen_chain_imports ? g_codegen_chain_import_count
+                                              : current_import_count;
+
     // Forward declare imported init/exit
-    for (int i = 0; i < current_import_count; i++) {
-        fprintf(f, "extern void come_%s__init(void);\n", current_imports[i]);
-        fprintf(f, "extern void come_%s__exit(void);\n", current_imports[i]);
+    for (int i = 0; i < chain_count; i++) {
+        fprintf(f, "extern void come_%s__init(void);\n", chain_imports[i]);
+        fprintf(f, "extern void come_%s__exit(void);\n", chain_imports[i]);
     }
 
+    if (!g_codegen_suppress_singletons) {
+    fprintf(f, "void come_%s__init(void);\n", current_module);
+    fprintf(f, "void come_%s__exit(void);\n", current_module);
     // Module Init
     fprintf(f, "void come_%s__init(void) {\n", current_module);
     fprintf(f, "    static bool initialized = false;\n");
     fprintf(f, "    if (initialized) return;\n");
     fprintf(f, "    initialized = true;\n");
-    for (int i = 0; i < current_import_count; i++) {
-        fprintf(f, "    come_%s__init();\n", current_imports[i]);
+    for (int i = 0; i < chain_count; i++) {
+        fprintf(f, "    come_%s__init();\n", chain_imports[i]);
     }
-    // Call local init if defined (mangled as come_module__init_local to avoid collision)
-    int has_local_init = 0;
-    for (int i = 0; i < ast->child_count; i++) {
-        if (ast->children[i]->type == AST_FUNCTION && strcmp(ast->children[i]->text, "init") == 0) {
-            has_local_init = 1;
-            break;
+    // Call the module's init hook if one is defined (init() or the
+    // spec 3.5 spelling module_init(); mangled to __init_local).
+    // For a directory module the driver reports the group fact.
+    int has_local_init = g_codegen_group_has_init;
+    if (has_local_init < 0) {
+        has_local_init = 0;
+        for (int i = 0; i < ast->child_count; i++) {
+            if (ast->children[i]->type == AST_FUNCTION &&
+                (strcmp(ast->children[i]->text, "init") == 0 ||
+                 strcmp(ast->children[i]->text, "module_init") == 0)) {
+                has_local_init = 1;
+                break;
+            }
         }
     }
     if (has_local_init) {
         fprintf(f, "    come_%s__init_local();\n", current_module);
     }
+    // Register this module's exit: run_exits replays registrations
+    // in reverse, giving exact reverse-of-init exit order (3.5).
+    fprintf(f, "    come_register_exit(come_%s__exit);\n", current_module);
     fprintf(f, "}\n\n");
 
     // Module Exit
@@ -2317,22 +2351,27 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "    static bool exited = false;\n");
     fprintf(f, "    if (exited) return;\n");
     fprintf(f, "    exited = true;\n");
-    // Call local exit if defined
-    int has_local_exit = 0;
-    for (int i = 0; i < ast->child_count; i++) {
-        if (ast->children[i]->type == AST_FUNCTION && strcmp(ast->children[i]->text, "exit") == 0) {
-            has_local_exit = 1;
-            break;
+    // Call the module's exit hook if defined (exit()/module_exit())
+    int has_local_exit = g_codegen_group_has_exit;
+    if (has_local_exit < 0) {
+        has_local_exit = 0;
+        for (int i = 0; i < ast->child_count; i++) {
+            if (ast->children[i]->type == AST_FUNCTION &&
+                (strcmp(ast->children[i]->text, "exit") == 0 ||
+                 strcmp(ast->children[i]->text, "module_exit") == 0)) {
+                has_local_exit = 1;
+                break;
+            }
         }
     }
     if (has_local_exit) {
         fprintf(f, "    come_%s__exit_local();\n", current_module);
     }
-    // Call imported exits in reverse order
-    for (int i = current_import_count - 1; i >= 0; i--) {
-        fprintf(f, "    come_%s__exit();\n", current_imports[i]);
-    }
+    // Imported modules' exits are NOT called from here: each module
+    // registered its own exit at init time, and come_run_exits()
+    // replays them in exact reverse initialization order (3.5).
     fprintf(f, "}\n");
+    } // if (!g_codegen_suppress_singletons)
     // Map type (not in come_types.h as it's a special case)
     // Map type moved to come_map.h
 
@@ -2415,9 +2454,9 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                       // Struct method: first char is uppercase
                       long prefix_len = underscore - child->text;
                       snprintf(func_name, sizeof(func_name), "come_%s__%.*s__%s", current_module, (int)prefix_len, child->text, underscore + 1);
-                  } else if (strcmp(child->text, "init") == 0) {
+                  } else if (strcmp(child->text, "init") == 0 || strcmp(child->text, "module_init") == 0) {
                       snprintf(func_name, sizeof(func_name), "come_%s__init_local", current_module);
-                  } else if (strcmp(child->text, "exit") == 0) {
+                  } else if (strcmp(child->text, "exit") == 0 || strcmp(child->text, "module_exit") == 0) {
                       snprintf(func_name, sizeof(func_name), "come_%s__exit_local", current_module);
                   } else {
                       // Regular function

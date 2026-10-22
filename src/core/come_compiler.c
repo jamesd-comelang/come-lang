@@ -10,6 +10,7 @@
 #include <libgen.h>
 #include <limits.h>
 #include <time.h>
+#include <dirent.h>
 
 #include "lexer.h"
 #include "parser.h"
@@ -124,66 +125,30 @@ static void detect_project_root(char *out, size_t sz) {
     if (getcwd(out, sz) == NULL) die("getcwd failed");
 }
 
-/* ---------- Module Resolution ---------- */
+/* ---------- Module Resolution (spec 3.2, COIL-108) ---------- */
 
-// Resolve import "abc" to a .co file path
-// Returns 1 if found (writes to out), 0 otherwise
-static int resolve_import(const char *import_name, const char *current_file, char *out, size_t sz) {
-    char base_dir[PATH_MAX] = {0};
-    char candidate[PATH_MAX] = {0};
-    
-    // Get directory of current file
-    strncpy(base_dir, current_file, sizeof(base_dir) - 1);
-    dirname(base_dir);
+// Facts about a directory module (a set of .co files that together
+// form one module), computed by the driver and handed to codegen
+// for each of its files.
+typedef struct {
+    int is_group;          // the files form one directory module
+    int is_primary;        // this file defines the module singletons
+    int has_init;          // some file of the group defines an init hook
+    int has_exit;          // some file of the group defines an exit hook
+    const char** imports;  // union of the group's imports
+    int import_count;
+} ModuleGroup;
 
-    // If base_dir is '.', use g_project_root? 
-    // realpath handles relative, but let's be safe.
-    // If current_file was absolute, base_dir is absolute.
-    
-    /* Phase 1: Local Context Search */
-    // 1. ./abc.co
-    snprintf(candidate, sizeof(candidate), "%s/%s.co", base_dir, import_name);
-    if (file_exists(candidate)) { realpath(candidate, out); return 1; }
-    
-    // 2. ./abc/abc.co
-    snprintf(candidate, sizeof(candidate), "%s/%s/%s.co", base_dir, import_name, import_name);
-    if (file_exists(candidate)) { realpath(candidate, out); return 1; }
-
-    // 3. ./modules/abc.co
-    snprintf(candidate, sizeof(candidate), "%s/modules/%s.co", base_dir, import_name);
-    if (file_exists(candidate)) { realpath(candidate, out); return 1; }
-
-    /* Phase 2: Source Directory Search (./src) */
-    // 1. ./src/abc.co
-    snprintf(candidate, sizeof(candidate), "%s/src/%s.co", g_project_root, import_name);
-    if (file_exists(candidate)) { realpath(candidate, out); return 1; }
-
-    // 2. ./src/abc/abc.co
-    snprintf(candidate, sizeof(candidate), "%s/src/%s/%s.co", g_project_root, import_name, import_name);
-    if (file_exists(candidate)) { realpath(candidate, out); return 1; }
-
-    // 3. ./src/modules/abc.co
-    snprintf(candidate, sizeof(candidate), "%s/src/modules/%s.co", g_project_root, import_name);
-    if (file_exists(candidate)) { realpath(candidate, out); return 1; }
-
-    /* Phase 3: System Repository Search */
-    /* Phase 3: System Repository Search */
-    // Use relative path from executable to find modules
-    char exe_path_r[PATH_MAX];
-    ssize_t len_r = readlink("/proc/self/exe", exe_path_r, sizeof(exe_path_r)-1);
-    if (len_r != -1) exe_path_r[len_r] = 0;
-    char *exe_dir_r = dirname(exe_path_r);
-    
-    snprintf(candidate, sizeof(candidate), "%s/../lib/modules/%s.co", exe_dir_r, import_name);
-    if (file_exists(candidate)) { realpath(candidate, out); return 1; }
-
-    return 0;
-}
+static void compile_file(const char *source_path, const char *forced_o_path,
+                         const ModuleGroup *group);
+static void compile_import(const char *import_name, const char *current_file);
 
 /* ---------- Compilation ---------- */
 
-// Compile a single file, recursing on imports
-static void compile_file(const char *source_path, const char *forced_o_path) {
+// Compile a single file, recursing on imports. `group` is non-NULL
+// when the file belongs to a directory module (COIL-108).
+static void compile_file(const char *source_path, const char *forced_o_path,
+                         const ModuleGroup *group) {
     char abs_path[PATH_MAX];
     if (!realpath(source_path, abs_path)) {
         snprintf(abs_path, sizeof(abs_path), "%s", source_path);
@@ -210,12 +175,7 @@ static void compile_file(const char *source_path, const char *forced_o_path) {
                     continue;
                 }
 
-                char import_path[PATH_MAX];
-                if (resolve_import(import_name, abs_path, import_path, sizeof(import_path))) {
-                    compile_file(import_path, NULL);
-                } else {
-                    die("Could not resolve import: %s in %s", import_name, abs_path);
-                }
+                compile_import(import_name, abs_path);
             }
         }
     }
@@ -277,7 +237,24 @@ static void compile_file(const char *source_path, const char *forced_o_path) {
     // 5. Transpile
     if (need_transpile || forced_o_path) {
         if (g_verbose) printf("Transpiling %s -> %s\n", abs_path, c_file);
-        if (generate_c_from_ast(ast, c_file, abs_path, 1) != 0) {
+        // Directory-module group state for codegen (COIL-108): only
+        // the group's primary file defines the module singletons,
+        // and its init/exit chain uses the group's union imports and
+        // hook facts. Set immediately before generating THIS file so
+        // nested import compiles are unaffected, reset right after.
+        int grouped = (group && group->is_group);
+        g_codegen_suppress_singletons = (grouped && !group->is_primary) ? 1 : 0;
+        g_codegen_group_has_init = (grouped && group->is_primary) ? group->has_init : -1;
+        g_codegen_group_has_exit = (grouped && group->is_primary) ? group->has_exit : -1;
+        g_codegen_chain_imports = (grouped && group->is_primary) ? group->imports : NULL;
+        g_codegen_chain_import_count = (grouped && group->is_primary) ? group->import_count : 0;
+        int gen_rc = generate_c_from_ast(ast, c_file, abs_path, 1);
+        g_codegen_suppress_singletons = 0;
+        g_codegen_group_has_init = -1;
+        g_codegen_group_has_exit = -1;
+        g_codegen_chain_imports = NULL;
+        g_codegen_chain_import_count = 0;
+        if (gen_rc != 0) {
             die("Codegen failed: %s", abs_path);
         }
     }
@@ -334,6 +311,146 @@ static void compile_file(const char *source_path, const char *forced_o_path) {
     }
     
     if (!forced_o_path) list_add(&g_object_files, o_file);
+}
+
+// Collect the .co files of a directory, sorted by file name so the
+// module's primary file (the first) is deterministic. Returns the
+// count (0 when the directory does not exist or holds no .co files).
+static int scan_co_dir(const char *dir, char paths[][PATH_MAX], int max_paths) {
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    static char names[128][256];
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *name = e->d_name;
+        size_t len = strlen(name);
+        if (len > 3 && strcmp(name + len - 3, ".co") == 0 && n < 128) {
+            snprintf(names[n], sizeof(names[n]), "%s", name);
+            n++;
+        }
+    }
+    closedir(d);
+    for (int i = 1; i < n; i++) {
+        char tmp[256];
+        strcpy(tmp, names[i]);
+        int j = i - 1;
+        while (j >= 0 && strcmp(names[j], tmp) > 0) { strcpy(names[j + 1], names[j]); j--; }
+        strcpy(names[j + 1], tmp);
+    }
+    int out_n = n < max_paths ? n : max_paths;
+    for (int i = 0; i < out_n; i++)
+        snprintf(paths[i], PATH_MAX, "%s/%s", dir, names[i]);
+    return out_n;
+}
+
+// Compile all files of a directory module as one module (COIL-108).
+// A pre-scan verifies every file declares the module, finds the
+// group's init/exit hooks, and unions its imports for the chain.
+static void compile_group(char paths[][PATH_MAX], int count, const char *module_name) {
+    int has_init = 0, has_exit = 0;
+    const char *imports[64];
+    int import_count = 0;
+    for (int i = 0; i < count; i++) {
+        ASTNode *ast = NULL;
+        if (parse_file(paths[i], &ast) != 0 || !ast) {
+            die("Parsing failed: %s", paths[i]);
+        }
+        if (ast->text[0] && strcmp(ast->text, module_name) != 0) {
+            die("%s declares module '%s' but sits in the '%s' module directory - "
+                "every file of a directory module must declare module %s",
+                paths[i], ast->text, module_name, module_name);
+        }
+        for (int j = 0; j < ast->child_count; j++) {
+            ASTNode *ch = ast->children[j];
+            if (!ch) continue;
+            if (ch->type == AST_IMPORT) {
+                int seen = 0;
+                for (int k = 0; k < import_count; k++)
+                    if (strcmp(imports[k], ch->text) == 0) seen = 1;
+                if (!seen && import_count < 64)
+                    imports[import_count++] = strdup(ch->text);
+            } else if (ch->type == AST_FUNCTION) {
+                int has_body = 0;
+                for (int k = 0; k < ch->child_count; k++)
+                    if (ch->children[k] && ch->children[k]->type == AST_BLOCK)
+                        has_body = 1;
+                if (has_body && (strcmp(ch->text, "init") == 0 ||
+                                 strcmp(ch->text, "module_init") == 0))
+                    has_init = 1;
+                if (has_body && (strcmp(ch->text, "exit") == 0 ||
+                                 strcmp(ch->text, "module_exit") == 0))
+                    has_exit = 1;
+            }
+        }
+        ast_free(ast);
+    }
+    for (int i = 0; i < count; i++) {
+        ModuleGroup g;
+        g.is_group = 1;
+        g.is_primary = (i == 0);
+        g.has_init = has_init;
+        g.has_exit = has_exit;
+        g.imports = imports;
+        g.import_count = import_count;
+        compile_file(paths[i], NULL, &g);
+    }
+}
+
+// Resolve and compile one import, following spec 3.2's order:
+// ./X.co, ./X/*.co, ./modules/X.co, ./modules/X/*.co, then the same
+// shapes under the project src/ tree, then the system depot. A file
+// and a directory providing the same module at one location is an
+// error - the module would be ambiguous.
+static void compile_import(const char *import_name, const char *current_file) {
+    char base_dir[PATH_MAX] = {0};
+    strncpy(base_dir, current_file, sizeof(base_dir) - 1);
+    dirname(base_dir);
+
+    char stems[4][PATH_MAX];
+    snprintf(stems[0], PATH_MAX, "%s", base_dir);
+    snprintf(stems[1], PATH_MAX, "%s/modules", base_dir);
+    snprintf(stems[2], PATH_MAX, "%s/src", g_project_root);
+    snprintf(stems[3], PATH_MAX, "%s/src/modules", g_project_root);
+
+    for (int s = 0; s < 4; s++) {
+        char file[PATH_MAX], dir[PATH_MAX];
+        snprintf(file, sizeof(file), "%s/%s.co", stems[s], import_name);
+        snprintf(dir, sizeof(dir), "%s/%s", stems[s], import_name);
+        int has_file = file_exists(file);
+        char (*paths)[PATH_MAX] = malloc(64 * sizeof(*paths));
+        int n = scan_co_dir(dir, paths, 64);
+        if (has_file && n > 0) {
+            die("ambiguous module '%s': both %s and the directory %s/ define it - keep only one",
+                import_name, file, dir);
+        }
+        if (has_file) {
+            free(paths);
+            compile_file(file, NULL, NULL);
+            return;
+        }
+        if (n > 0) {
+            compile_group(paths, n, import_name);
+            free(paths);
+            return;
+        }
+        free(paths);
+    }
+
+    // System depot
+    char exe_path_r[PATH_MAX];
+    ssize_t len_r = readlink("/proc/self/exe", exe_path_r, sizeof(exe_path_r) - 1);
+    if (len_r != -1) {
+        exe_path_r[len_r] = 0;
+        char *exe_dir_r = dirname(exe_path_r);
+        char candidate[PATH_MAX];
+        snprintf(candidate, sizeof(candidate), "%s/../lib/modules/%s.co", exe_dir_r, import_name);
+        if (file_exists(candidate)) {
+            compile_file(candidate, NULL, NULL);
+            return;
+        }
+    }
+    die("Could not resolve import: %s in %s", import_name, current_file);
 }
 
 
@@ -408,7 +525,7 @@ int main(int argc, char *argv[]) {
 
     // Compile everything
     // Pass output if genc mode (forced output)
-    compile_file(entry_file, (!build_mode && output) ? output : NULL);
+    compile_file(entry_file, (!build_mode && output) ? output : NULL, NULL);
 
     if (!build_mode) {
         printf("Genc finished.\n");

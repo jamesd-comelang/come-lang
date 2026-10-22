@@ -1,0 +1,17 @@
+module alpha
+import std
+import greeter
+
+// Spec 3.5 spelling of the lifecycle hooks.
+void module_init() {
+    std.out.printf("alpha init\n")
+}
+
+void module_exit() {
+    std.out.printf("alpha exit\n")
+}
+
+void poke() {
+    greeter.hello()
+    std.out.printf("alpha poke\n")
+}

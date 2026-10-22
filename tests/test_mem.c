@@ -137,8 +137,28 @@ void test_init_shutdown() {
     passed("Mem init/shutdown");
 }
 
+/* COIL-108: the exit registry replays in exact reverse
+ * registration order, and running it twice is a no-op. */
+static int g_exit_order[8];
+static int g_exit_n = 0;
+static void exit_a() { g_exit_order[g_exit_n++] = 1; }
+static void exit_b() { g_exit_order[g_exit_n++] = 2; }
+static void exit_c() { g_exit_order[g_exit_n++] = 3; }
+static void test_exit_registry() {
+    come_register_exit(exit_a);
+    come_register_exit(exit_b);
+    come_register_exit(exit_c);
+    come_run_exits();
+    assert(g_exit_n == 3);
+    assert(g_exit_order[0] == 3 && g_exit_order[1] == 2 && g_exit_order[2] == 1);
+    come_run_exits();
+    assert(g_exit_n == 3);
+    passed("Exit registry (reverse order)");
+}
+
 int main() {
     mem_talloc_module_init();
+    test_exit_registry();
     test_alloc_basics();
     test_subtree_free();
     test_steal();

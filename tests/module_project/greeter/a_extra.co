@@ -1,0 +1,11 @@
+module greeter
+import std
+
+// The group's primary file (first alphabetically). extra() calls
+// hello(), which is defined in z_core.co - a cross-file call
+// inside one module.
+
+void extra() {
+    hello()
+    std.out.printf("extra done\n")
+}

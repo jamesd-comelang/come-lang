@@ -135,6 +135,30 @@ void mem_talloc_module_init(void) {
     co_mem_root = co_to_ptr(root);
 }
 
+/* Module exit registry (spec 3.5, COIL-108). A module's generated
+ * __init registers its __exit here when it first initializes, so
+ * the registration order IS the initialization order. Running the
+ * registry pops handlers from the end: exits run in the exact
+ * reverse order of initialization, which guarantees no module
+ * outlives its dependencies. (The previous model recursed from the
+ * entry module through reverse import lists, which could exit a
+ * dependency before a dependent that imported it directly.) */
+#define COME_MAX_EXIT_HANDLERS 256
+static void (*g_exit_handlers[COME_MAX_EXIT_HANDLERS])(void);
+static int g_exit_handler_count = 0;
+
+void come_register_exit(void (*fn)(void)) {
+    if (fn && g_exit_handler_count < COME_MAX_EXIT_HANDLERS)
+        g_exit_handlers[g_exit_handler_count++] = fn;
+}
+
+void come_run_exits(void) {
+    while (g_exit_handler_count > 0) {
+        g_exit_handler_count--;
+        g_exit_handlers[g_exit_handler_count]();
+    }
+}
+
 void mem_talloc_module_shutdown(void) {
     if (co_mem_root)
         co_free_chunk(co_from_ptr(co_mem_root));

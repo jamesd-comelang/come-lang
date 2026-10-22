@@ -1,0 +1,18 @@
+module main
+import std
+import alpha
+import greeter
+
+// COIL-108 acceptance program: alpha is a single-file module that
+// depends on greeter; greeter is a directory module (two files).
+// Init order must be dependency-first (greeter, alpha), exits the
+// exact reverse (alpha, greeter) - see expected.txt.
+
+int main() {
+    std.out.printf("main start\n")
+    greeter.hello()
+    greeter.extra()
+    alpha.poke()
+    std.out.printf("main end\n")
+    return 0
+}
