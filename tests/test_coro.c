@@ -4,7 +4,9 @@
 // run to completion.
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 #include "come_coro.h"
+#include "come_link.h"
 #include "come_string.h"
 #include "mem/talloc.h"
 
@@ -21,6 +23,9 @@ static void child_worker(void* p);
 static void parent_worker(void* p);
 static void check_worker(void* p);
 static int check_seen_ok;
+static void link_worker(void* p);
+typedef struct { come_link_t* s; } link_job_t;
+static char link_seen[32];
 
 typedef struct { int id; char tag; int turns; } job_t;
 
@@ -117,13 +122,47 @@ int main(void) {
         if (!check_seen_ok) { printf("FAIL: transferred buffer corrupted\n"); return 1; }
     }
 
+    // COIL-123: a link moves data with ownership attached, and
+    // writing after the peer finished fails with EPIPE.
+    {
+        come_link_t *la, *lb;
+        come_colink(&la, &lb);
+        come_coro_t* cw2 = come_coro_create(link_worker, &fake_ctx);
+        link_job_t* lj = (link_job_t*)come_coro_args(cw2, sizeof(link_job_t));
+        if (lj) lj->s = la;
+        come_link_adopt(la, cw2);
+        come_coro_start(cw2);
+        come_link_write(lb, come_string_new(fake_ctx, "ping"));
+        come_string_t* rep = (come_string_t*)come_link_read(lb, fake_ctx);
+        if (!rep || strcmp(rep->data, "pong") != 0) { printf("FAIL: link reply\n"); return 1; }
+        if (strcmp(link_seen, "ping") != 0) { printf("FAIL: link request '%s'\n", link_seen); return 1; }
+        // The worker has finished; its end closed automatically.
+        errno = 0;
+        int ok = come_link_write(lb, come_string_new(fake_ctx, "late"));
+        if (ok != 0 || errno != EPIPE) { printf("FAIL: write-after-close ok=%d errno=%d\n", ok, errno); return 1; }
+        // Reads now report end-of-data: an empty buffer.
+        come_string_t* eof = (come_string_t*)come_link_read(lb, fake_ctx);
+        if (!eof || eof->count != 0) { printf("FAIL: link EOF\n"); return 1; }
+    }
+
     printf("COIL-120/121 coro runtime test passed!\n");
     return 0;
+}
+
+static void link_worker(void* p) {
+    come_link_t* s = ((link_job_t*)p)->s;
+    come_string_t* req = (come_string_t*)come_link_read(s, fake_ctx);
+    if (req) {
+        strncpy(link_seen, req->data, sizeof(link_seen) - 1);
+    }
+    come_link_write(s, come_string_new(fake_ctx, "pong"));
 }
 
 static int check_seen_ok = 0;
 
 static void check_worker(void* p) {
+    // p is the args block; its first field is the payload,
+    // exactly as a generated entry trampoline unpacks it.
     char** slot = (char**)p;
     come_string_t* s = (come_string_t*)*slot;
     if (s && strcmp(s->data, "owned-by-coroutine") == 0) check_seen_ok = 1;

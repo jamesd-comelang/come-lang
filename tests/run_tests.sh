@@ -24,7 +24,7 @@ gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_std.c src/std/std.c src
 gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_array.c src/array/array.c src/string/string.c src/mem/memory.c src/core/utils.c -o build/tests/test_array
 ./build/tests/test_array
 
-gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_coro.c src/coro/coro.c src/string/string.c src/array/array.c src/mem/memory.c src/core/utils.c -o build/tests/test_coro
+gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_coro.c src/coro/coro.c src/coro/link.c src/string/string.c src/array/array.c src/mem/memory.c src/core/utils.c -o build/tests/test_coro
 ./build/tests/test_coro
 
 gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_oob.c src/array/array.c src/string/string.c src/mem/memory.c src/core/utils.c -o build/tests/test_oob

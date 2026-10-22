@@ -44,4 +44,21 @@ void come_coro_yield(void);
 // Number of coroutines not yet finished (excluding main).
 int come_coro_alive(void);
 
+// The coroutine running now (main is a coroutine too).
+come_coro_t* come_coro_current(void);
+
+// Block the current coroutine until another coroutine wakes
+// it with come_coro_wake. Used by channel reads (spec 9.2).
+// If no coroutine can run, the program is deadlocked: that is
+// reported and the program exits (spec 9.3).
+void come_coro_block(void);
+void come_coro_wake(come_coro_t* co);
+
+// Hooks run when a coroutine's function returns, on its own
+// stack, before it is switched away for the last time. The
+// link runtime uses this to close a finished coroutine's
+// channel ends automatically (spec 9.3).
+typedef void (*come_coro_finish_hook)(come_coro_t* co);
+void come_coro_add_finish_hook(come_coro_finish_hook hook);
+
 #endif

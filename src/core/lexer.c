@@ -81,6 +81,7 @@ int lex_file(const char* filename, TokenList* out) {
             else if(MATCH_KEYWORD("coroutine", TOKEN_COROUTINE)) { tok.type=TOKEN_COROUTINE; strcpy(tok.text,"coroutine"); p+=9; }
             else if(MATCH_KEYWORD("spawn", TOKEN_SPAWN)) { tok.type=TOKEN_SPAWN; strcpy(tok.text,"spawn"); p+=5; }
             else if(MATCH_KEYWORD("yield", TOKEN_YIELD)) { tok.type=TOKEN_YIELD; strcpy(tok.text,"yield"); p+=5; }
+            else if(MATCH_KEYWORD("link", TOKEN_LINK)) { tok.type=TOKEN_LINK; strcpy(tok.text,"link"); p+=4; }
             
             // Types
             else if(MATCH_KEYWORD("int", TOKEN_INT)) { tok.type=TOKEN_INT; strcpy(tok.text,"int"); p+=3; }

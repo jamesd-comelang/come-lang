@@ -619,8 +619,8 @@ int main(int argc, char *argv[]) {
     if (use_lib) {
         pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, " \"%s\"", libcome);
     } else {
-        const char *std_objs[] = {"std.o", "string.o", "array.o", "map.o", "memory.o", "coro.o"};
-        for (int i=0; i<6; i++) {
+        const char *std_objs[] = {"std.o", "string.o", "array.o", "map.o", "memory.o", "coro.o", "link.o"};
+        for (int i=0; i<7; i++) {
             pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, " \"%s/build/%s\"", project_base, std_objs[i]);
         }
     }

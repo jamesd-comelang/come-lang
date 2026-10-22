@@ -323,11 +323,16 @@ static ASTNode* parse_primary() {
             ASTNode* index = parse_expression();
             expect(TOKEN_RBRACKET);
             ASTNode* access = ast_new(AST_ARRAY_ACCESS);
-            access->children[access->child_count++] = node; 
-            access->children[access->child_count++] = index; 
+            access->children[access->child_count++] = node;
+            access->children[access->child_count++] = index;
             node = access;
-        } else if (match(TOKEN_LPAREN)) {
+        } else if (current()->type == TOKEN_LPAREN &&
+                   current()->line == tokens.tokens[pos - 1].line &&
+                   match(TOKEN_LPAREN)) {
             // Function Call: expr(...)   (e.g. func(), arr[0]())
+            // Only on the same line as the callee: a '(' starting
+            // a later line begins a new statement (statements
+            // have no terminators, so this is the boundary).
             
             if (node->type == AST_IDENTIFIER) {
                  ASTNode* call = ast_new(AST_CALL);
@@ -956,6 +961,33 @@ static ASTNode* parse_alias_statement() {
 static ASTNode* parse_statement() {
     Token* t = current();
 
+    // Channel creation (COIL-123, spec 9.2):
+    //   (a, b) = colink()
+    // declares two link variables holding the channel's ends.
+    if (t->type == TOKEN_LPAREN && pos + 5 < tokens.count &&
+        tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER &&
+        tokens.tokens[pos + 2].type == TOKEN_COMMA &&
+        tokens.tokens[pos + 3].type == TOKEN_IDENTIFIER &&
+        tokens.tokens[pos + 4].type == TOKEN_RPAREN &&
+        tokens.tokens[pos + 5].type == TOKEN_ASSIGN) {
+        ASTNode* node = ast_new(AST_COLINK_ASSIGN);
+        advance(); // (
+        ASTNode* n1 = ast_new(AST_IDENTIFIER);
+        strcpy(n1->text, current()->text);
+        advance();
+        advance(); // ,
+        ASTNode* n2 = ast_new(AST_IDENTIFIER);
+        strcpy(n2->text, current()->text);
+        advance();
+        expect(TOKEN_RPAREN);
+        expect(TOKEN_ASSIGN);
+        node->children[node->child_count++] = n1;
+        node->children[node->child_count++] = n2;
+        node->children[node->child_count++] = parse_expression();
+        if (current()->type == TOKEN_SEMICOLON) advance();
+        return node;
+    }
+
     // Struct definition with layout modifiers (COIL-104)
     if (at_struct_modifier()) {
         int m_align = 0;
@@ -1359,7 +1391,8 @@ static int is_type_token(TokenType type) {
             type == TOKEN_SHORT || type == TOKEN_USHORT ||
             type == TOKEN_UINT ||
             type == TOKEN_LONG || type == TOKEN_ULONG ||
-            type == TOKEN_WCHAR || type == TOKEN_MAP || type == TOKEN_VAR || 
+            type == TOKEN_WCHAR || type == TOKEN_MAP || type == TOKEN_VAR ||
+            type == TOKEN_LINK ||
             type == TOKEN_STRUCT || type == TOKEN_UNION);
 }
 

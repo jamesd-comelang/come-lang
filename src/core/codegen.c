@@ -530,6 +530,8 @@ static void emit_coro_field_type(FILE* f, const char* type_text) {
         fprintf(f, "come_string_t*");
     } else if (strncmp(type_text, "map{", 4) == 0) {
         fprintf(f, "come_map_t*");
+    } else if (strcmp(type_text, "link") == 0) {
+        fprintf(f, "come_link_t*");
     } else {
         fprintf(f, "%s", type_text);
     }
@@ -1604,6 +1606,37 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  strcpy(c_func, "on"); 
              }
         }
+        // Link methods (COIL-123, spec 9.2): read/write/close
+        // on a link-typed receiver go to the channel runtime.
+        else if ((strcmp(method, "read") == 0 || strcmp(method, "write") == 0 ||
+                  strcmp(method, "close") == 0) &&
+                 receiver->type == AST_IDENTIFIER &&
+                 get_local_variable_type(receiver->text) &&
+                 strcmp(get_local_variable_type(receiver->text), "link") == 0) {
+             if (strcmp(method, "read") == 0) {
+                 fprintf(f, "come_link_read(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ", COME_CTX)");
+             } else if (strcmp(method, "write") == 0) {
+                 fprintf(f, "come_link_write(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ", ");
+                 if (node->child_count > 1) {
+                     ASTNode* arg = node->children[1];
+                     if (arg->type == AST_STRING_LITERAL) emit_string_expr(f, arg);
+                     else generate_expression(f, arg);
+                 } else {
+                     codegen_error("link write needs a buffer argument");
+                     fprintf(f, "NULL");
+                 }
+                 fprintf(f, ")");
+             } else {
+                 fprintf(f, "come_link_close(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ")");
+             }
+             return;
+        }
         // Array toolbox (COIL-116): methods on an array-typed
         // receiver go to the array runtime. Must precede the map
         // branch below, which also claims remove.
@@ -2014,6 +2047,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
         if (find_coroutine(node->text)) {
             codegen_error("coroutine '%s' cannot be called as a function; start it with spawn (spec 9.1)", node->text);
         }
+        if (strcmp(node->text, "colink") == 0 && !find_module_fn_sig(node->text)) {
+            codegen_error("colink() creates two links at once: use (a, b) = colink() (spec 9.2)");
+        }
         // sprintf / sscanf are the string module's free functions
         // (COIL-117, Come_string.md). A user function of the same
         // name in this module shadows them.
@@ -2363,6 +2399,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 } else if (is_main && strncmp(arg->text, "args", 4) == 0 && (strcmp(type->text, "string") == 0 || strcmp(type->text, "string[]") == 0)) {
                     // special case for main(string args) -> we pass string list
                     fprintf(f, "come_string_list_t* %s", arg->text);
+                } else if (strcmp(type->text, "link") == 0) {
+                   fprintf(f, "come_link_t* %s", arg->text);
                 } else {
                    fprintf(f, "%s %s", type->text, arg->text);
                 }
@@ -2533,6 +2571,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     fprintf(f, ";\n");
                 } else {
                     fprintf(f, "come_std__FILE_t %s = {0};\n", node->text);
+                }
+            } else if (strcmp(type_node->text, "link") == 0) {
+                // Channel end (COIL-123, spec 6.7): from colink
+                // (the destructure statement), wait(), or another
+                // link variable.
+                if (init_expr && !(init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0)) {
+                    fprintf(f, "come_link_t* %s = ", node->text);
+                    generate_expression(f, init_expr);
+                    fprintf(f, ";\n");
+                } else {
+                    fprintf(f, "come_link_t* %s = NULL;\n", node->text);
                 }
             } else if (strcmp(type_node->text, "bool") == 0) {
                 fprintf(f, "bool %s = ", node->text);
@@ -2757,17 +2806,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             emit_indent(f, indent);
             fprintf(f, "{\n");
             emit_indent(f, indent + 4);
-            fprintf(f, "come_coro_t* co = come_coro_create(come_%s__%s__entry, &come_%s__ctx);\n",
+            fprintf(f, "come_coro_t* __come_co = come_coro_create(come_%s__%s__entry, &come_%s__ctx);\n",
                     current_module, node->text, current_module);
             if (want > 0) {
                 emit_indent(f, indent + 4);
-                fprintf(f, "come_%s__%s__args_t* a = (come_%s__%s__args_t*)come_coro_args(co, sizeof(come_%s__%s__args_t));\n",
+                fprintf(f, "come_%s__%s__args_t* __come_a = (come_%s__%s__args_t*)come_coro_args(__come_co, sizeof(come_%s__%s__args_t));\n",
                         current_module, node->text, current_module, node->text,
                         current_module, node->text);
                 for (int i = 0; i < node->child_count && i < want; i++) {
                     ASTNode* param = coro->children[1 + i];
                     emit_indent(f, indent + 4);
-                    fprintf(f, "a->%s = ", param->text);
+                    fprintf(f, "__come_a->%s = ", param->text);
                     if (strcmp(param->children[1]->text, "string") == 0) {
                         emit_string_expr(f, node->children[i]);
                     } else {
@@ -2778,15 +2827,26 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     // a buffer argument changes owner to the
                     // coroutine - the args block lives in the
                     // coroutine's own context, so stealing to it
-                    // moves the buffer under the coroutine.
-                    if (is_buffer_type(param->children[1]->text)) {
+                    // moves the buffer under the coroutine. A
+                    // link is not a buffer: it is a handle into
+                    // its channel, and its ownership moves by
+                    // adoption below instead.
+                    if (is_buffer_type(param->children[1]->text) &&
+                        strcmp(param->children[1]->text, "link") != 0) {
                         emit_indent(f, indent + 4);
-                        fprintf(f, "mem_talloc_steal(a, a->%s);\n", param->text);
+                        fprintf(f, "mem_talloc_steal(__come_a, __come_a->%s);\n", param->text);
+                    }
+                    // A link argument is adopted by the new
+                    // coroutine (COIL-123): its end closes
+                    // automatically when the coroutine finishes.
+                    if (strcmp(param->children[1]->text, "link") == 0) {
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "come_link_adopt(__come_a->%s, __come_co);\n", param->text);
                     }
                 }
             }
             emit_indent(f, indent + 4);
-            fprintf(f, "come_coro_start(co);\n");
+            fprintf(f, "come_coro_start(__come_co);\n");
             emit_indent(f, indent);
             fprintf(f, "}\n");
             break;
@@ -2796,6 +2856,28 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             emit_line_directive(f, node);
             emit_indent(f, indent);
             fprintf(f, "come_coro_yield();\n");
+            break;
+        }
+
+        case AST_COLINK_ASSIGN: {
+            // (a, b) = colink() (COIL-123, spec 9.2): declares
+            // two link variables and creates the channel.
+            emit_line_directive(f, node);
+            ASTNode* rhs = node->children[2];
+            if (!rhs || rhs->type != AST_CALL || strcmp(rhs->text, "colink") != 0) {
+                codegen_error("the (a, b) = ... form is only for colink()");
+                break;
+            }
+            for (int i = 0; i < 2; i++) {
+                ASTNode* tn = ast_new(AST_IDENTIFIER);
+                strcpy(tn->text, "link");
+                register_local_type(node->children[i]->text, tn);
+                emit_indent(f, indent);
+                fprintf(f, "come_link_t* %s;\n", node->children[i]->text);
+            }
+            emit_indent(f, indent);
+            fprintf(f, "come_colink(&%s, &%s);\n",
+                    node->children[0]->text, node->children[1]->text);
             break;
         }
 
@@ -3219,6 +3301,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "#include \"come_array.h\"\n");
     fprintf(f, "#include \"come_map.h\"\n");
     fprintf(f, "#include \"come_coro.h\"\n");
+    fprintf(f, "#include \"come_link.h\"\n");
     fprintf(f, "#include \"come_types.h\"\n");
     fprintf(f, "#include \"mem/talloc.h\"\n");
     fprintf(f, "#include <errno.h>\n");
@@ -3615,6 +3698,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                             fprintf(f, "void"); // Multi-return hack
                        } else {
                             if (strcmp(type->text, "string")==0) fprintf(f, "come_string_t*");
+                            else if (strcmp(type->text, "link")==0) fprintf(f, "come_link_t*");
                             else fprintf(f, "%s", type->text);
                        }
                   } else {

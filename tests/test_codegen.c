@@ -855,7 +855,7 @@ int main() {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-121: expected 2 spawn sites, found %d\033[0m\n", creates);
             return 1;
         }
-        if (!strstr(buf121, "come_coro_start(co)")) {
+        if (!strstr(buf121, "come_coro_start(__come_co)")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-121: spawn must start the coroutine\033[0m\n");
             return 1;
         }
@@ -886,11 +886,11 @@ int main() {
         size_t blen122 = fread(buf122, 1, sizeof(buf122) - 1, of122);
         fclose(of122);
         buf122[blen122] = 0;
-        if (!strstr(buf122, "mem_talloc_steal(a, a->s)")) {
+        if (!strstr(buf122, "mem_talloc_steal(__come_a, __come_a->s)")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: string argument ownership must move at spawn\033[0m\n");
             return 1;
         }
-        if (strstr(buf122, "mem_talloc_steal(a, a->n)")) {
+        if (strstr(buf122, "mem_talloc_steal(__come_a, __come_a->n)")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: value argument must be copied, not stolen\033[0m\n");
             return 1;
         }
@@ -936,5 +936,60 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-122 isolation codegen test passed!\033[0m\n");
+
+    // COIL-123: (a, b) = colink() creates a channel; link
+    // methods reach the channel runtime; a link spawn argument
+    // is adopted by the coroutine. A bare colink() call is an
+    // error - it makes two ends at once.
+    {
+        const char* src123 =
+            "module m123\nimport std\n\n"
+            "coroutine worker(link s) {\n"
+            "    string req = s.read()\n"
+            "    s.write(req)\n"
+            "}\n"
+            "int main() {\n"
+            "    (a, b) = colink()\n"
+            "    spawn worker(a)\n"
+            "    b.write(\"ping\")\n"
+            "    string r = b.read()\n"
+            "    b.close()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil123.co", src123)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-123: link program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of123 = fopen("build/tests/coil123.co.c", "r");
+        if (!of123) { printf("COIL-123: output file missing\n"); return 1; }
+        static char buf123[262144];
+        size_t blen123 = fread(buf123, 1, sizeof(buf123) - 1, of123);
+        fclose(of123);
+        buf123[blen123] = 0;
+        if (!strstr(buf123, "come_colink(&a, &b)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-123: colink destructure must create the channel\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf123, "come_link_read(") || !strstr(buf123, "come_link_write(") ||
+            !strstr(buf123, "come_link_close(")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-123: link methods must reach the channel runtime\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf123, "come_link_adopt(__come_a->s, __come_co)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-123: a spawned coroutine must adopt its link end\033[0m\n");
+            return 1;
+        }
+        const char* bad123 =
+            "module m123b\nimport std\n\n"
+            "int main() {\n"
+            "    link a = colink()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil123bad.co", bad123)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-123: a bare colink() call must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-123 link codegen test passed!\033[0m\n");
     return 0;
 }

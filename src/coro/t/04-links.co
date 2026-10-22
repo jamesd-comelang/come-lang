@@ -1,0 +1,59 @@
+module coro_test
+import std
+
+// COIL-123: links hand data between coroutines with ownership
+// attached: request/reply, a stream that ends when the
+// producer finishes, and ERR on write-after-close.
+
+coroutine echo_worker(link s) {
+    string req = s.read()
+    if (req != "hello") {
+        std.out.printf("FAIL: echo got '%s'\n", req)
+    }
+    s.write("world")
+}
+
+coroutine producer(link s) {
+    int i = 0
+    while (i < 3) {
+        string item = sprintf("item-%d", i)
+        s.write(item)
+        i = i + 1
+    }
+}
+
+int main() {
+    (a, b) = colink()
+    spawn echo_worker(a)
+    b.write("hello")
+    string reply = b.read()
+    if (reply != "world") {
+        std.out.printf("FAIL: reply '%s'\n", reply)
+        return 1
+    }
+
+    (c, d) = colink()
+    spawn producer(c)
+    int n = 0
+    while (true) {
+        string v = d.read()
+        if (v.length() == 0) { break }
+        n = n + 1
+    }
+    if (n != 3) {
+        std.out.printf("FAIL: producer sent %d items\n", n)
+        return 1
+    }
+
+    // Writing to an end whose peer finished sets ERR.
+    if (ERR.set()) { std.out.printf("FAIL: ERR already set\n"); return 1 }
+    d.write("too late")
+    if (!ERR.set()) { std.out.printf("FAIL: write-after-close must set ERR\n"); return 1 }
+    if (ERR.str() != "link peer closed") {
+        std.out.printf("FAIL: ERR text '%s'\n", ERR.str())
+        return 1
+    }
+
+    std.out.printf("PASS: 04-links\n")
+    return 0
+}

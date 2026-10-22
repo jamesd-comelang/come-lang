@@ -78,7 +78,7 @@ implements it (0 files reference `coroutine` / `spawn` / `colink`).
 | COIL-120 | Coroutines are cheap enough to spawn per task — no threads, no locks | §9.3 | XL | v0.7.0 | Two coroutines interleave deterministically under `yield` | ☑ |
 | COIL-121 | Concurrent work starts with a single spawn statement | §9.1 | M | COIL-120 | A spawned coroutine runs to completion | ☑ |
 | COIL-122 | Coroutines cannot data-race — they share nothing by construction | §9.1, §7 | M | COIL-121 | Violations are compile errors; ownership moves verified in tests | ☑ |
-| COIL-123 | Coroutines hand data to each other with ownership attached | §9.2, §6.7 | L | COIL-120, COIL-122 | Ping-pong example passes; write-after-close sets `ERR` | ☐ |
+| COIL-123 | Coroutines hand data to each other with ownership attached | §9.2, §6.7 | L | COIL-120, COIL-122 | Ping-pong example passes; write-after-close sets `ERR` | ☑ |
 | COIL-124 | A single wait can listen to many channels at once | §9.2 | M | COIL-123 | Multi-producer example passes | ☐ |
 | COIL-125 | Coroutines clean up after themselves; a deadlock reports instead of hanging | §9.3 | M | COIL-123 | Deadlocked program reports an error instead of hanging | ☐ |
 | COIL-126 | The spec's coroutine examples run as written, even under load | §9 | M | COIL-121–125 | Examples pass; no leaks under the ownership tests | ☐ |

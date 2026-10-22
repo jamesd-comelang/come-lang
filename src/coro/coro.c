@@ -27,6 +27,7 @@ enum {
     CS_NEW,     // created, not yet started
     CS_READY,   // runnable
     CS_RUNNING, // on the CPU now (exactly one)
+    CS_BLOCKED, // waiting to be woken (a channel read)
     CS_DONE,    // returned; stack/contexts not yet reaped
     CS_FREE     // reaped
 };
@@ -149,19 +150,55 @@ void come_coro_yield(void) {
     switch_to(next);
 }
 
+come_coro_t* come_coro_current(void) {
+    if (!g_inited) come_coro_init();
+    return &g_coros[g_current];
+}
+
+// No coroutine can ever run again: every unfinished one is
+// blocked waiting for data nobody will send. Report it and
+// stop instead of hanging (spec 9.3; COIL-125).
+static void coro_deadlock(void) {
+    int blocked = 0;
+    for (int i = 0; i < g_coro_count; i++) {
+        if (g_coros[i].state == CS_BLOCKED) blocked++;
+    }
+    fprintf(stderr, "deadlock: no coroutine can run (%d blocked)\n", blocked);
+    exit(1);
+}
+
+void come_coro_block(void) {
+    if (!g_inited) return;
+    int self = g_current;
+    g_coros[self].state = CS_BLOCKED;
+    int next = next_ready(self);
+    if (next == self) coro_deadlock();
+    switch_to(next);
+}
+
+void come_coro_wake(come_coro_t* co) {
+    if (co && co->state == CS_BLOCKED) co->state = CS_READY;
+}
+
+#define COME_CORO_MAX_HOOKS 8
+static come_coro_finish_hook g_hooks[COME_CORO_MAX_HOOKS];
+static int g_hook_count = 0;
+
+void come_coro_add_finish_hook(come_coro_finish_hook hook) {
+    if (g_hook_count < COME_CORO_MAX_HOOKS) g_hooks[g_hook_count++] = hook;
+}
+
 static void coro_trampoline(int id) {
     come_coro_t* co = &g_coros[id];
     co->fn(co->args);
+    // Finish hooks (a coroutine's links close here, spec 9.3)
+    // run while this coroutine is still the current one.
+    for (int i = 0; i < g_hook_count; i++) g_hooks[i](co);
     co->state = CS_DONE;
     // A finished coroutine never runs again: switch away and
     // let the coroutine we land on reap this one's stack.
     int next = next_ready(id);
-    if (next == id) {
-        // Only main can remain; main may itself be done when it
-        // is the one waiting, but it always has a context to
-        // land on.
-        next = 0;
-    }
+    if (next == id) coro_deadlock();
     switch_to(next);
     // Unreachable: DONE coroutines are never scheduled.
     fprintf(stderr, "coroutine: finished coroutine resumed\n");

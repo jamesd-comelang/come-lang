@@ -25,7 +25,7 @@ typedef enum { TOKEN_EOF, TOKEN_IMPORT, TOKEN_MAIN, TOKEN_INT,
                 TOKEN_AND_ASSIGN, TOKEN_OR_ASSIGN, TOKEN_XOR_ASSIGN, 
                 TOKEN_LSHIFT_ASSIGN, TOKEN_RSHIFT_ASSIGN, TOKEN_MOD_ASSIGN,
                 TOKEN_INC, TOKEN_DEC, TOKEN_QUESTION,
-               TOKEN_COROUTINE, TOKEN_SPAWN, TOKEN_YIELD,
+               TOKEN_COROUTINE, TOKEN_SPAWN, TOKEN_YIELD, TOKEN_LINK,
                TOKEN_UNKNOWN } TokenType;
 
 typedef struct { TokenType type; char text[128]; int line; } Token;

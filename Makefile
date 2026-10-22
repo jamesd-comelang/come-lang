@@ -117,6 +117,7 @@ dist-local: all
 		$(BUILD_DIR)/memory.o \
 		$(BUILD_DIR)/string.o \
 		$(BUILD_DIR)/coro.o \
+		$(BUILD_DIR)/link.o \
 		$(BUILD_DIR)/std.o
 	@# Copy modules
 	@cp src/std/std.co $(BUILD_DIR)/dist/lib/modules/

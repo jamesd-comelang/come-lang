@@ -50,6 +50,7 @@ typedef enum {
     AST_MAP_PAIR,  // key: value entry inside a map literal (COIL-102)
     AST_SPAWN,     // spawn name(args) statement (COIL-120)
     AST_YIELD,     // yield statement (COIL-120)
+    AST_COLINK_ASSIGN, // (a, b) = colink() statement (COIL-123)
     AST_TYPE_END
 } ASTNodeType;
 

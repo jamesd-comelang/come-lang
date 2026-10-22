@@ -1,0 +1,57 @@
+module main
+import std
+
+// COIL-123 fixture: coroutines hand data to each other with
+// ownership attached. Ping-pong, a producer whose end closes
+// automatically when it finishes, an array payload, and
+// write-after-close reporting through ERR. Expected stdout is
+// in tests/run_coro_test.sh.
+
+coroutine worker(link s) {
+    string req = s.read()
+    std.out.printf("worker got: %s\n", req)
+    s.write("pong")
+}
+
+coroutine producer(link s) {
+    s.write("one")
+    s.write("two")
+    s.write("three")
+}
+
+coroutine arr_worker(link s) {
+    int vals[]
+    vals.append(7)
+    vals.append(8)
+    s.write(vals)
+    s.close()
+    s.write(vals)
+    std.out.printf("worker ERR: %s\n", ERR.str())
+}
+
+int main() {
+    (a, b) = colink()
+    spawn worker(a)
+    b.write("ping")
+    string reply = b.read()
+    std.out.printf("main got: %s\n", reply)
+
+    (c, d) = colink()
+    spawn producer(c)
+    int i = 0
+    while (i < 4) {
+        string v = d.read()
+        std.out.printf("got[%d] = '%s' len %d\n", i, v, v.length())
+        i = i + 1
+    }
+
+    (e, f) = colink()
+    spawn arr_worker(e)
+    int got[] = f.read()
+    std.out.printf("array payload: %d %d\n", got[0], got[1])
+    string empty = f.read()
+    std.out.printf("after close read len %d\n", empty.length())
+    f.write("late")
+    std.out.printf("main ERR: %s\n", ERR.str())
+    return 0
+}

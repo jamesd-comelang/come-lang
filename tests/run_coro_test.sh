@@ -31,3 +31,18 @@ if [ "$out" != "$expected" ]; then
     exit 1
 fi
 echo "coro completion e2e: OK"
+
+# COIL-123: links move data with ownership attached -
+# ping-pong, producer EOF, array payloads, write-after-close.
+./build/come build tests/coro_pingpong.co -o build/tests/coro_pingpong || exit 1
+out=$(./build/tests/coro_pingpong)
+expected=$(printf 'worker got: ping\nmain got: pong\ngot[0] = %s len 3\ngot[1] = %s len 3\ngot[2] = %s len 5\ngot[3] = %s len 0\nworker ERR: link is closed\narray payload: 7 8\nafter close read len 0\nmain ERR: link peer closed' "'one'" "'two'" "'three'" "''")
+if [ "$out" != "$expected" ]; then
+    echo "FAIL: coro pingpong output mismatch"
+    echo "--- got ---"
+    echo "$out"
+    echo "--- want ---"
+    echo "$expected"
+    exit 1
+fi
+echo "coro pingpong e2e: OK"
