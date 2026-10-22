@@ -14,6 +14,22 @@
 
 #include "come_link.h"
 #include "come_string.h"
+#include "come_array.h"
+#include <string.h>
+
+// End-of-data reads hand back an empty header value, boxed in
+// the reader's context (COIL-135: buffers travel as header
+// cells, and read() dereferences the cell).
+static void* come_link_empty_box(TALLOC_CTX* ctx) {
+    come_hdr_t* b = (come_hdr_t*)mem_talloc_alloc(ctx, sizeof(come_hdr_t));
+    memset(b, 0, sizeof(*b));
+    // A real (if empty) data block: the value must behave like
+    // the empty string everywhere, including %s printing.
+    b->data = mem_talloc_alloc(ctx, 1);
+    if (b->data) ((char*)b->data)[0] = 0;
+    b->ctx = ctx;
+    return b;
+}
 
 #include <errno.h>
 #include <stddef.h>
@@ -120,7 +136,7 @@ int come_link_write(come_link_t* end, void* buf) {
 }
 
 void* come_link_read(come_link_t* end, TALLOC_CTX* reader_ctx) {
-    if (!end) { come_ERR_set(EBADF, "read on a null link"); return come_string_new(reader_ctx, ""); }
+    if (!end) { come_ERR_set(EBADF, "read on a null link"); return come_link_empty_box(reader_ctx); }
     come_chan_t* c = end->chan;
     int me = end->side;
     int peer = 1 - me;
@@ -137,7 +153,7 @@ void* come_link_read(come_link_t* end, TALLOC_CTX* reader_ctx) {
         }
         if (c->end_closed[peer]) {
             // End of data: an empty buffer, never null.
-            return come_string_new(reader_ctx, "");
+            return come_link_empty_box(reader_ctx);
         }
         c->waiter[me] = come_coro_current();
         come_coro_block();

@@ -10,7 +10,7 @@
 #include "ast.h"
 #include "common.h"
 
-typedef come_map_t* map;
+typedef come_map_t map;
 
 /* small helper: write indentation spaces */
 static void emit_indent(FILE* f, int indent_spaces) {
@@ -122,6 +122,8 @@ static void emit_line_directive(FILE* f, ASTNode* node) {
 
 static void generate_node(FILE* f, ASTNode* node, int indent);
 static void generate_expression(FILE* f, ASTNode* node);
+static void emit_expr_as(FILE* f, ASTNode* e, const char* ct);
+static const char* expr_come_type(ASTNode* e, char* buf, size_t n);
 
 static int is_pointer_expression(ASTNode* node) {
     if (!node) return 0;
@@ -211,7 +213,17 @@ static const char* infer_assign_type(ASTNode* rhs) {
                     strchr(rhs->text, 'E')) ? "double" : "int";
         case AST_IDENTIFIER:
             return get_local_variable_type(rhs->text);
+        case AST_MEMBER_ACCESS: {
+            static char ibuf[160];
+            return expr_come_type(rhs, ibuf, sizeof(ibuf));
+        }
         case AST_METHOD_CALL:
+            if ((strcmp(rhs->text, "dup") == 0 || strcmp(rhs->text, "slice") == 0) &&
+                rhs->child_count >= 1) {
+                // dup/slice keep the receiver's buffer type.
+                static char dbuf[160];
+                return expr_come_type(rhs->children[0], dbuf, sizeof(dbuf));
+            }
             if (strcmp(rhs->text, "read") == 0 && rhs->child_count >= 1 &&
                 rhs->children[0]->type == AST_IDENTIFIER) {
                 const char* rt = get_local_variable_type(rhs->children[0]->text);
@@ -229,13 +241,13 @@ static const char* infer_assign_type(ASTNode* rhs) {
 // Emit `name = rhs` as a declaration of the inferred type.
 static void emit_inferred_decl(FILE* f, const char* type, const char* name, ASTNode* rhs) {
     if (strcmp(type, "string") == 0) {
-        fprintf(f, "come_string_t* %s = ", name);
+        fprintf(f, "come_string_t %s = ", name);
         if (rhs->type == AST_STRING_LITERAL) {
             fprintf(f, "come_string_new(COME_CTX, ");
             generate_expression(f, rhs);
             fprintf(f, ")");
         } else {
-            generate_expression(f, rhs);
+            emit_expr_as(f, rhs, "come_string_t");
         }
         fprintf(f, ";\n");
     } else if (strcmp(type, "link") == 0) {
@@ -532,8 +544,24 @@ static char g_struct_names[64][128];
 static int g_struct_fields[64];
 static int g_struct_count = 0;
 
+// Field types per struct (COIL-135): indexing a struct field
+// array needs the field's element type.
+static char g_sfield_struct[512][128];
+static char g_sfield_name[512][128];
+static char g_sfield_type[512][160];
+static int g_sfield_count = 0;
+
+static const char* struct_field_type(const char* sname, const char* fname) {
+    for (int i = 0; i < g_sfield_count; i++) {
+        if (strcmp(g_sfield_struct[i], sname) == 0 && strcmp(g_sfield_name[i], fname) == 0)
+            return g_sfield_type[i];
+    }
+    return NULL;
+}
+
 static void collect_structs(ASTNode* ast) {
     g_struct_count = 0;
+    g_sfield_count = 0;
     if (!ast || ast->type != AST_PROGRAM) return;
     for (int i = 0; i < ast->child_count && g_struct_count < 64; i++) {
         ASTNode* ch = ast->children[i];
@@ -544,6 +572,15 @@ static void collect_structs(ASTNode* ast) {
             }
             snprintf(g_struct_names[g_struct_count], 128, "%s", ch->text);
             g_struct_fields[g_struct_count] = fields;
+            for (int j = 0; j < ch->child_count && g_sfield_count < 512; j++) {
+                ASTNode* fd = ch->children[j];
+                if (fd && fd->type == AST_VAR_DECL && fd->child_count >= 2 && fd->children[1]) {
+                    snprintf(g_sfield_struct[g_sfield_count], 128, "%s", ch->text);
+                    snprintf(g_sfield_name[g_sfield_count], 128, "%s", fd->text);
+                    snprintf(g_sfield_type[g_sfield_count], 160, "%s", fd->children[1]->text);
+                    g_sfield_count++;
+                }
+            }
             g_struct_count++;
         }
     }
@@ -751,17 +788,17 @@ static void emit_coro_field_type(FILE* f, const char* type_text) {
         if (n >= 2 && n - 2 < sizeof(raw)) {
             memcpy(raw, type_text, n - 2);
             raw[n - 2] = 0;
-            if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t*");
-            else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t*");
-            else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t*");
-            else fprintf(f, "come_array_t*");
+            if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t");
+            else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t");
+            else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t");
+            else fprintf(f, "come_array_t");
         } else {
-            fprintf(f, "come_array_t*");
+            fprintf(f, "come_array_t");
         }
     } else if (strcmp(type_text, "string") == 0) {
-        fprintf(f, "come_string_t*");
+        fprintf(f, "come_string_t");
     } else if (strncmp(type_text, "map{", 4) == 0) {
-        fprintf(f, "come_map_t*");
+        fprintf(f, "come_map_t");
     } else if (strcmp(type_text, "link") == 0) {
         fprintf(f, "come_link_t*");
     } else {
@@ -802,16 +839,16 @@ static void come_type_to_c(const char* t, char* out, size_t n) {
     if (len >= 2 && strcmp(t + len - 2, "[]") == 0) {
         char raw[128];
         snprintf(raw, sizeof(raw), "%.*s", (int)(len - 2), t);
-        if (strcmp(raw, "int") == 0) snprintf(out, n, "come_int_array_t*");
-        else if (strcmp(raw, "byte") == 0) snprintf(out, n, "come_byte_array_t*");
-        else if (strcmp(raw, "string") == 0) snprintf(out, n, "come_string_list_t*");
-        else snprintf(out, n, "come_array_%s_t*", raw);
+        if (strcmp(raw, "int") == 0) snprintf(out, n, "come_int_array_t");
+        else if (strcmp(raw, "byte") == 0) snprintf(out, n, "come_byte_array_t");
+        else if (strcmp(raw, "string") == 0) snprintf(out, n, "come_string_list_t");
+        else snprintf(out, n, "come_array_%s_t", raw);
     } else if (strcmp(t, "string") == 0) {
-        snprintf(out, n, "come_string_t*");
+        snprintf(out, n, "come_string_t");
     } else if (strcmp(t, "link") == 0) {
         snprintf(out, n, "come_link_t*");
     } else if (strncmp(t, "map{", 4) == 0) {
-        snprintf(out, n, "come_map_t*");
+        snprintf(out, n, "come_map_t");
     } else {
         // Scalars, struct X, and typedef'd names pass through:
         // the runtime headers define byte/short/... and user
@@ -883,10 +920,10 @@ static void emit_fn_param(FILE* f, const char* fn_text, const char* name) {
             if (L >= 2 && strcmp(parts[i] + L - 2, "[]") == 0) {
                 char raw[128];
                 snprintf(raw, sizeof(raw), "%.*s", (int)(L - 2), parts[i]);
-                if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t*");
-                else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t*");
-                else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t*");
-                else fprintf(f, "come_array_t*");
+                if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t");
+                else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t");
+                else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t");
+                else fprintf(f, "come_array_t");
             } else {
                 fprintf(f, "%s", parts[i]);
             }
@@ -1013,7 +1050,7 @@ static int is_typed_map_method(ASTNode* receiver, const char* method) {
            strcmp(method, "dup") == 0;
 }
 
-// Emit an expression in a position that needs a come_string_t*:
+// Emit an expression in a position that needs a come_string_t:
 // string literals need an explicit come_string_new wrap there.
 static void emit_string_expr(FILE* f, ASTNode* e) {
     if (e && e->type == AST_STRING_LITERAL) {
@@ -1045,7 +1082,7 @@ static int expr_is_stringish(ASTNode* e) {
     }
     if (e->type == AST_CALL) {
         const char* sig = find_module_fn_sig(e->text);
-        return sig && strncmp(sig, "come_string_t*", 14) == 0;
+        return sig && strncmp(sig, "come_string_t", 14) == 0;
     }
     return 0;
 }
@@ -1133,25 +1170,34 @@ static int is_array_toolbox_method(const char* m) {
 }
 
 static int is_array_receiver(ASTNode* receiver) {
-    if (!receiver || receiver->type != AST_IDENTIFIER) return 0;
-    const char* rt = get_local_variable_type(receiver->text);
+    if (!receiver) return 0;
+    char tb[160];
+    const char* rt = expr_come_type(receiver, tb, sizeof(tb));
     return rt && strchr(rt, '[') != NULL;
 }
 
 // Emit one array toolbox call. The receiver is an array variable;
-// growing operations assign the (possibly moved) array back.
+// COIL-135: the header lives inline in the variable, mutating
+// operations take the address of the header slot, and growth never
+// moves a shared data block, so no assignment back is needed - the
+// expression still yields the header value where the old code did.
 static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const char* method) {
-    const char* rt = get_local_variable_type(receiver->text);
+    char rtb[160];
+    const char* rt = expr_come_type(receiver, rtb, sizeof(rtb));
     char elem[64];
     const char* lb = rt ? strchr(rt, '[') : NULL;
     size_t el = lb ? (size_t)(lb - rt) : 0;
     if (el >= sizeof(elem)) el = sizeof(elem) - 1;
     memcpy(elem, rt ? rt : "", el);
     elem[el] = 0;
-    const char* prefix = NULL;
-    if (strcmp(elem, "int") == 0) prefix = "come_int_array_";
-    else if (strcmp(elem, "byte") == 0) prefix = "come_byte_array_";
-    else if (strcmp(elem, "string") == 0) prefix = "come_string_list_";
+    // The element's C type: scalar typedefs in come_types.h make the
+    // Come spelling valid C for every scalar kind.
+    char et[96];
+    if (strcmp(elem, "int") == 0) strcpy(et, "int");
+    else if (strcmp(elem, "byte") == 0) strcpy(et, "uint8_t");
+    else if (strcmp(elem, "string") == 0) strcpy(et, "come_string_t");
+    else if (strcmp(elem, "bool") == 0) strcpy(et, "bool");
+    else snprintf(et, sizeof(et), "%s", elem);
     ASTNode* a1 = node->child_count > 1 ? node->children[1] : NULL;
     ASTNode* a2 = node->child_count > 2 ? node->children[2] : NULL;
 
@@ -1168,15 +1214,32 @@ static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const c
         return;
     }
     if (strcmp(method, "owner") == 0) {
-        fprintf(f, "COME_CTX");
+        fprintf(f, "(");
+        generate_expression(f, receiver);
+        fprintf(f, ").ctx");
         return;
     }
     if (strcmp(method, "chown") == 0) {
-        fprintf(f, "mem_talloc_steal(");
-        if (a1) generate_expression(f, a1);
-        fprintf(f, ", ");
-        generate_expression(f, receiver);
-        fprintf(f, ")");
+        // chown(owner) re-parents to a context; chown(buffer) makes
+        // the buffer a child of that buffer (an owner can be a
+        // variable - the allocation tree is the model).
+        const char* at = (a1 && a1->type == AST_IDENTIFIER) ? get_local_variable_type(a1->text) : NULL;
+        int arg_is_buffer = at && (strchr(at, '[') != NULL || strcmp(at, "string") == 0 ||
+                                   strncmp(at, "map{", 4) == 0);
+        if (arg_is_buffer) {
+            fprintf(f, "come_hdr_chown_to((come_hdr_t*)&(");
+            generate_expression(f, receiver);
+            fprintf(f, "), (const come_hdr_t*)&(");
+            generate_expression(f, a1);
+            fprintf(f, "))");
+        } else {
+            fprintf(f, "come_hdr_chown_ctx((come_hdr_t*)&(");
+            generate_expression(f, receiver);
+            fprintf(f, "), ");
+            if (a1) generate_expression(f, a1);
+            else fprintf(f, "COME_CTX");
+            fprintf(f, ")");
+        }
         return;
     }
     if (strcmp(method, "dup") == 0) {
@@ -1184,61 +1247,49 @@ static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const c
             generate_expression(f, receiver);   // dup(0) shares the buffer
             return;
         }
-        if (prefix) fprintf(f, "%sdup(COME_CTX, ", prefix);
-        else fprintf(f, "come_array_dup_g(COME_CTX, ");
+        fprintf(f, "come_array_dup_g(COME_CTX, ");
         generate_expression(f, receiver);
-        if (!prefix) {
-            fprintf(f, ", sizeof((");
-            generate_expression(f, receiver);
-            fprintf(f, ")->items[0])");
-        }
-        fprintf(f, ")");
+        fprintf(f, ", sizeof(%s))", et);
         return;
     }
     if (strcmp(method, "clear") == 0) {
-        fprintf(f, "come_array_clear_g(");
+        fprintf(f, "come_array_clear_g((come_hdr_t*)&(");
+        generate_expression(f, receiver);
+        fprintf(f, "))");
+        return;
+    }
+    if (strcmp(method, "reverse") == 0) {
+        fprintf(f, "come_array_reverse_g((come_hdr_t*)&(");
+        generate_expression(f, receiver);
+        fprintf(f, "), sizeof(%s))", et);
+        return;
+    }
+    if (strcmp(method, "remove") == 0) {
+        fprintf(f, "(come_array_remove_g((come_hdr_t*)&(");
+        generate_expression(f, receiver);
+        fprintf(f, "), sizeof(%s), ", et);
+        if (a1) generate_expression(f, a1);
+        fprintf(f, "), ");
         generate_expression(f, receiver);
         fprintf(f, ")");
         return;
     }
-    if (strcmp(method, "reverse") == 0) {
-        fprintf(f, "come_array_reverse_g(");
-        generate_expression(f, receiver);
-        fprintf(f, ", sizeof((");
-        generate_expression(f, receiver);
-        fprintf(f, ")->items[0]))");
-        return;
-    }
-    if (strcmp(method, "remove") == 0) {
-        fprintf(f, "(");
-        generate_expression(f, receiver);
-        fprintf(f, " = come_array_remove_g(");
-        generate_expression(f, receiver);
-        fprintf(f, ", sizeof((");
-        generate_expression(f, receiver);
-        fprintf(f, ")->items[0]), ");
-        if (a1) generate_expression(f, a1);
-        fprintf(f, "))");
-        return;
-    }
     if (strcmp(method, "cpy") == 0) {
-        fprintf(f, "(");
+        fprintf(f, "(come_array_cpy_g((come_hdr_t*)&(");
         generate_expression(f, receiver);
-        if (prefix) fprintf(f, " = %scpy(", prefix);
-        else fprintf(f, " = come_array_cpy_g(");
-        generate_expression(f, receiver);
-        if (!prefix) {
-            fprintf(f, ", sizeof((");
-            generate_expression(f, receiver);
-            fprintf(f, ")->items[0])");
-        }
-        fprintf(f, ", ");
+        fprintf(f, "), sizeof(%s), ", et);
         if (a1) generate_expression(f, a1);
-        fprintf(f, "))");
+        fprintf(f, "), ");
+        generate_expression(f, receiver);
+        fprintf(f, ")");
         return;
     }
     if (strcmp(method, "sort") == 0) {
-        if (!prefix) {
+        const char* sortfn = NULL;
+        if (strcmp(elem, "int") == 0) sortfn = "come_int_array_sort";
+        else if (strcmp(elem, "byte") == 0) sortfn = "come_byte_array_sort";
+        else if (strcmp(elem, "string") == 0) sortfn = "come_string_list_sort";
+        if (!sortfn) {
             codegen_error("sort(cmp) is implemented for int, byte and string arrays, not '%s'", rt);
             fprintf(f, "0");
             return;
@@ -1249,71 +1300,52 @@ static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const c
             return;
         }
         const char* lt = get_local_variable_type(a1->text);
-        fprintf(f, "%ssort(", prefix);
+        fprintf(f, "%s((come_hdr_t*)&(", sortfn);
         generate_expression(f, receiver);
-        fprintf(f, ", ");
+        fprintf(f, "), ");
         if (lt && is_fn_type(lt)) generate_expression(f, a1);
         else if (find_module_fn_sig(a1->text)) fprintf(f, "come_%s__%s", current_module, a1->text);
         else codegen_error("sort: '%s' is not a function of this module", a1->text);
         fprintf(f, ")");
         return;
     }
-    // append / insert / set / contains / index carry an element.
+    // append / insert / set / contains / index carry an element,
+    // materialized into a temp so its address can be taken.
     ASTNode* elem_expr = (strcmp(method, "insert") == 0) ? a2 : a1;
-    if (prefix) {
-        if (strcmp(method, "append") == 0 || strcmp(method, "insert") == 0) {
-            fprintf(f, "(");
-            generate_expression(f, receiver);
-            fprintf(f, " = %s%s(", prefix, method);
-            generate_expression(f, receiver);
-            if (strcmp(method, "insert") == 0) {
-                fprintf(f, ", ");
-                if (a1) generate_expression(f, a1);
-            }
-            fprintf(f, ", ");
-            if (elem_expr) {
-                if (strcmp(elem, "string") == 0) emit_string_expr(f, elem_expr);
-                else generate_expression(f, elem_expr);
-            }
-            fprintf(f, "))");
-        } else {
-            fprintf(f, "%s%s(", prefix, method);
-            generate_expression(f, receiver);
-            fprintf(f, ", ");
-            if (elem_expr) {
-                if (strcmp(elem, "string") == 0) emit_string_expr(f, elem_expr);
-                else generate_expression(f, elem_expr);
-            }
-            fprintf(f, ")");
-        }
-        return;
+    fprintf(f, "({ %s _ae = (", et);
+    if (elem_expr) {
+        if (strcmp(elem, "string") == 0) emit_string_expr(f, elem_expr);
+        else generate_expression(f, elem_expr);
+    } else {
+        fprintf(f, "0");
     }
-    // Generic element types: pass the element by address.
-    fprintf(f, "({ __typeof__((");
-    generate_expression(f, receiver);
-    fprintf(f, ")->items[0]) _ae = (");
-    if (elem_expr) generate_expression(f, elem_expr);
     fprintf(f, "); ");
     if (strcmp(method, "append") == 0) {
+        fprintf(f, "come_array_append_g((come_hdr_t*)&(");
         generate_expression(f, receiver);
-        fprintf(f, " = come_array_append_g(");
+        fprintf(f, "), sizeof(%s), &_ae); ", et);
         generate_expression(f, receiver);
-        fprintf(f, ", sizeof _ae, &_ae); })");
+        fprintf(f, "; })");
     } else if (strcmp(method, "insert") == 0) {
+        fprintf(f, "come_array_insert_g((come_hdr_t*)&(");
         generate_expression(f, receiver);
-        fprintf(f, " = come_array_insert_g(");
-        generate_expression(f, receiver);
-        fprintf(f, ", sizeof _ae, ");
+        fprintf(f, "), sizeof(%s), ", et);
         if (a1) generate_expression(f, a1);
-        fprintf(f, ", &_ae); })");
-    } else if (strcmp(method, "set") == 0) {
-        fprintf(f, "come_array_set_g(");
+        fprintf(f, ", &_ae); ");
         generate_expression(f, receiver);
-        fprintf(f, ", sizeof _ae, &_ae); })");
-    } else {   // contains / index
+        fprintf(f, "; })");
+    } else if (strcmp(method, "set") == 0) {
+        fprintf(f, "come_array_set_g((come_hdr_t*)&(");
+        generate_expression(f, receiver);
+        fprintf(f, "), sizeof(%s), &_ae); })", et);
+    } else if (strcmp(elem, "string") == 0) {   // contains / index on strings compare contents
+        fprintf(f, "come_array_%s_string(", method);
+        generate_expression(f, receiver);
+        fprintf(f, ", _ae); })");
+    } else {   // contains / index: reads take the header by value
         fprintf(f, "come_array_%s_g(", method);
         generate_expression(f, receiver);
-        fprintf(f, ", sizeof _ae, &_ae); })");
+        fprintf(f, ", sizeof(%s), &_ae); })", et);
     }
 }
 
@@ -1346,11 +1378,11 @@ static void emit_string_obj(FILE* f, ASTNode* e) {
 static void emit_cstr_arg(FILE* f, ASTNode* e) {
     if (!e) { fprintf(f, "NULL"); return; }
     if (e->type == AST_STRING_LITERAL) { generate_expression(f, e); return; }
-    fprintf(f, "(");
+    fprintf(f, "((");
     generate_expression(f, e);
-    fprintf(f, " ? ");
+    fprintf(f, ").data ? (");
     generate_expression(f, e);
-    fprintf(f, "->data : \"\")");
+    fprintf(f, ").data : \"\")");
 }
 
 static void emit_cstr_string_method(FILE* f, ASTNode* node, const char* method) {
@@ -1405,6 +1437,14 @@ static void emit_map_put(FILE* f, const char* map_var, const char* vtype, ASTNod
         fprintf(f, "); come_map_put(&%s, ", map_var);
         emit_string_expr(f, key_expr);
         fprintf(f, ", _vp); }\n");
+    } else if (strcmp(vtype, "string") == 0) {
+        // String values are boxed in a cell too (COIL-135): the
+        // stored value is a header value, not a pointer.
+        fprintf(f, "{ come_string_t* _vp = (come_string_t*)mem_talloc_alloc(COME_CTX, sizeof(come_string_t)); *_vp = (");
+        emit_string_expr(f, val_expr);
+        fprintf(f, "); come_map_put(&%s, ", map_var);
+        emit_string_expr(f, key_expr);
+        fprintf(f, ", _vp); }\n");
     } else {
         fprintf(f, "come_map_put(&%s, ", map_var);
         emit_string_expr(f, key_expr);
@@ -1412,6 +1452,125 @@ static void emit_map_put(FILE* f, const char* map_var, const char* vtype, ASTNod
         emit_string_expr(f, val_expr);
         fprintf(f, ");\n");
     }
+}
+
+// The Come type of an expression, for the cases codegen can
+// track (COIL-135): locals, struct fields, module function calls,
+// and the string-list-producing methods. Returns NULL when the
+// type is not knowable here.
+static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
+    if (!e) return NULL;
+    if (e->type == AST_IDENTIFIER) return get_local_variable_type(e->text);
+    if (e->type == AST_MEMBER_ACCESS && e->child_count >= 1 &&
+        e->children[0]->type == AST_IDENTIFIER) {
+        const char* ot = get_local_variable_type(e->children[0]->text);
+        if (ot) {
+            if (strncmp(ot, "struct ", 7) == 0) ot += 7;
+            const char* ft = struct_field_type(ot, e->text);
+            if (ft) return ft;
+        }
+        return NULL;
+    }
+    if (e->type == AST_CALL && e->text) {
+        const char* nm = strrchr(e->text, '.');
+        nm = nm ? nm + 1 : e->text;
+        const char* sig = find_module_fn_sig(nm);
+        if (sig && strncmp(sig, "fn:", 3) == 0) {
+            const char* lp = strchr(sig, '(');
+            if (lp && lp > sig + 3) {
+                size_t rl = (size_t)(lp - (sig + 3));
+                if (rl >= n) rl = n - 1;
+                memcpy(buf, sig + 3, rl);
+                buf[rl] = 0;
+                return buf;
+            }
+        }
+        return NULL;
+    }
+    if (e->type == AST_METHOD_CALL && e->child_count >= 1) {
+        const char* m = e->text;
+        if (strcmp(m, "get") == 0) {
+            // A legacy map's get() yields a string value.
+            char rb[160];
+            const char* rct = expr_come_type(e->children[0], rb, sizeof(rb));
+            if (rct && strcmp(rct, "map") == 0) { snprintf(buf, n, "string"); return buf; }
+        }
+        if (strcmp(m, "split") == 0 || strcmp(m, "split_n") == 0 ||
+            strcmp(m, "regex_split") == 0 || strcmp(m, "regex_groups") == 0 ||
+            strcmp(m, "keys") == 0) {
+            snprintf(buf, n, "string[]");
+            return buf;
+        }
+        if (strcmp(m, "slice") == 0 || strcmp(m, "dup") == 0)
+            return expr_come_type(e->children[0], buf, n);
+        return NULL;
+    }
+    if (e->type == AST_ARRAY_ACCESS && e->child_count >= 1) {
+        const char* bt2 = expr_come_type(e->children[0], buf, n);
+        if (bt2 && strncmp(bt2, "map{", 4) == 0) {
+            // A typed map read yields the value type.
+            char mk[160], mv[160];
+            if (map_type_parts(bt2, mk, sizeof(mk), mv, sizeof(mv))) {
+                snprintf(buf, n, "%s", mv);
+                return buf;
+            }
+            return NULL;
+        }
+        if (bt2) {
+            size_t bl = strlen(bt2);
+            if (bl > 2 && strcmp(bt2 + bl - 2, "[]") == 0) {
+                // Indexing strips exactly one []: T[] -> T,
+                // T[][] -> T[].
+                snprintf(buf, n, "%.*s", (int)(bl - 2), bt2);
+                return buf;
+            }
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+// Map a Come element type to its C type text.
+static void elem_c_type(const char* elem, char* out, size_t n) {
+    if (strcmp(elem, "int") == 0) snprintf(out, n, "int");
+    else if (strcmp(elem, "byte") == 0) snprintf(out, n, "uint8_t");
+    else if (strcmp(elem, "string") == 0) snprintf(out, n, "come_string_t");
+    else if (strcmp(elem, "bool") == 0) snprintf(out, n, "bool");
+    else snprintf(out, n, "%s", elem);
+}
+
+// A link .read() call (COIL-135): buffers travel through a
+// channel as boxed header cells; the default read emission
+// dereferences the cell into a header value. When the value
+// lands in a link-typed variable the payload is an end handle
+// and the raw cell pointer is the value instead.
+static int is_link_read_expr(ASTNode* e) {
+    if (!e || e->type != AST_METHOD_CALL || strcmp(e->text, "read") != 0 ||
+        e->child_count < 1 || !e->children[0] || e->children[0]->type != AST_IDENTIFIER)
+        return 0;
+    const char* rt = get_local_variable_type(e->children[0]->text);
+    return rt && strcmp(rt, "link") == 0;
+}
+
+static void emit_link_read_raw(FILE* f, ASTNode* e) {
+    fprintf(f, "come_link_read(");
+    generate_expression(f, e->children[0]);
+    fprintf(f, ", COME_CTX)");
+}
+
+// Emit an expression where a value of C type `ct` is needed.
+// A link read naturally yields a come_hdr_t; when the landing
+// type is a different header struct (come_string_t,
+// come_map_t), copy the bits across (COIL-135: all header
+// structs share one layout).
+static void emit_expr_as(FILE* f, ASTNode* e, const char* ct) {
+    if (is_link_read_expr(e) && strcmp(ct, "come_hdr_t") != 0) {
+        fprintf(f, "({ %s _t; come_hdr_t _h = ", ct);
+        generate_expression(f, e);
+        fprintf(f, "; memcpy(&_t, &_h, sizeof(_t)); _t; })");
+        return;
+    }
+    generate_expression(f, e);
 }
 
 static void generate_expression(FILE* f, ASTNode* node) {
@@ -1496,15 +1655,34 @@ static void generate_expression(FILE* f, ASTNode* node) {
             if (strcmp(mvt, "int") == 0) {
                 fprintf(f, "); _p ? *(int*)_p : 0; })");
             } else {
-                fprintf(f, "); _p ? (come_string_t*)_p : come_string_new(COME_CTX, \"\"); })");
+                fprintf(f, "); _p ? *(come_string_t*)_p : come_string_new(COME_CTX, \"\"); })");
             }
         } else {
-            // COME_ARR_GET(arr, index)
-            fprintf(f, "COME_ARR_GET(");
-            generate_expression(f, node->children[0]);
-            fprintf(f, ", ");
-            generate_expression(f, node->children[1]);
-            fprintf(f, ")");
+            // COME_ARR_GET_T(arr, index, ElemCType) (COIL-135: the
+            // header's data is void*, so the element type travels
+            // with the access).
+            char ctbuf[160];
+            const char* ct = expr_come_type(node->children[0], ctbuf, sizeof(ctbuf));
+            char et[96] = "";
+            if (ct) {
+                const char* lb = strchr(ct, '[');
+                if (lb && (size_t)(lb - ct) < 64) {
+                    char elem[64];
+                    memcpy(elem, ct, (size_t)(lb - ct));
+                    elem[lb - ct] = 0;
+                    elem_c_type(elem, et, sizeof(et));
+                }
+            }
+            if (!et[0]) {
+                codegen_error("cannot index here: the element type is not known - index a named array variable");
+                fprintf(f, "(*(int*)come_oob_slot_bytes())");
+            } else {
+                fprintf(f, "COME_ARR_GET_T(");
+                generate_expression(f, node->children[0]);
+                fprintf(f, ", ");
+                generate_expression(f, node->children[1]);
+                fprintf(f, ", %s)", et);
+            }
         }
     } else if (node->type == AST_ASSIGN) {
         check_assign_store(node); // COIL-107
@@ -1512,6 +1690,24 @@ static void generate_expression(FILE* f, ASTNode* node) {
             const char* lt = get_local_variable_type(node->children[0]->text);
             const char* rt = get_local_variable_type(node->children[1]->text);
             if (lt && rt) check_array_transfer("be assigned to", node->children[0]->text, lt, node->children[1]->text, rt);
+        }
+        if (node->children[0]->type == AST_IDENTIFIER && is_link_read_expr(node->children[1])) {
+            const char* lt = get_local_variable_type(node->children[0]->text);
+            if (lt && strcmp(lt, "link") == 0) {
+                generate_expression(f, node->children[0]);
+                fprintf(f, " %s ", node->text);
+                emit_link_read_raw(f, node->children[1]);
+                return;
+            }
+        }
+        if (node->children[0]->type == AST_IDENTIFIER && is_link_read_expr(node->children[1])) {
+            const char* lt = get_local_variable_type(node->children[0]->text);
+            if (lt && strcmp(lt, "string") == 0) {
+                generate_expression(f, node->children[0]);
+                fprintf(f, " %s ", node->text);
+                emit_expr_as(f, node->children[1], "come_string_t");
+                return;
+            }
         }
         generate_expression(f, node->children[0]);
         fprintf(f, " %s ", node->text);
@@ -1731,11 +1927,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
                      if (a->type == AST_STRING_LITERAL) {
                          generate_expression(f, a);
                      } else {
-                         fprintf(f, "(");
+                         fprintf(f, "((");
                          generate_expression(f, a);
-                         fprintf(f, " ? ");
+                         fprintf(f, ").data ? (");
                          generate_expression(f, a);
-                         fprintf(f, "->data : \"\")");
+                         fprintf(f, ").data : \"\")");
                      }
                  } else {
                      fprintf(f, "\"\"");
@@ -1832,7 +2028,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                      int is_str = 0;
                      if (arg->type == AST_IDENTIFIER) {
                           const char* type = get_local_variable_type(arg->text);
-                          if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t*") == 0)) {
+                          if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t") == 0)) {
                               is_str = 1;
                           }
                       } else if (arg->type == AST_METHOD_CALL || arg->type == AST_CALL) {
@@ -1880,11 +2076,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
                      }
 
                      if (is_str) {
-                         fprintf(f, "(");
+                         fprintf(f, "((");
                          generate_expression(f, arg);
-                         fprintf(f, " ? ");
+                         fprintf(f, ").data ? (");
                          generate_expression(f, arg);
-                         fprintf(f, "->data : \"NULL\")");
+                         fprintf(f, ").data : \"NULL\")");
                      } else {
                          generate_expression(f, arg);
                      }
@@ -1964,22 +2160,44 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  get_local_variable_type(receiver->text) &&
                  strcmp(get_local_variable_type(receiver->text), "link") == 0) {
              if (strcmp(method, "read") == 0) {
-                 fprintf(f, "come_link_read(");
+                 // The value form: dereference the traveling
+                 // header cell and adopt the reader's context.
+                 fprintf(f, "({ come_hdr_t* _c = (come_hdr_t*)come_link_read(");
                  generate_expression(f, receiver);
-                 fprintf(f, ", COME_CTX)");
+                 fprintf(f, ", COME_CTX); _c->ctx = COME_CTX; *_c; })");
              } else if (strcmp(method, "write") == 0) {
-                 fprintf(f, "come_link_write(");
-                 generate_expression(f, receiver);
-                 fprintf(f, ", ");
                  if (node->child_count > 1) {
                      ASTNode* arg = node->children[1];
-                     if (arg->type == AST_STRING_LITERAL) emit_string_expr(f, arg);
-                     else generate_expression(f, arg);
+                     const char* at = (arg->type == AST_IDENTIFIER) ? get_local_variable_type(arg->text) : NULL;
+                     if (at && strcmp(at, "link") == 0) {
+                         // A link end travels as its handle.
+                         fprintf(f, "come_link_write(");
+                         generate_expression(f, receiver);
+                         fprintf(f, ", ");
+                         generate_expression(f, arg);
+                         fprintf(f, ")");
+                     } else if (is_link_read_expr(arg)) {
+                         // Forward the traveling cell as-is.
+                         fprintf(f, "come_link_write(");
+                         generate_expression(f, receiver);
+                         fprintf(f, ", ");
+                         emit_link_read_raw(f, arg);
+                         fprintf(f, ")");
+                     } else {
+                         // Box the header value in a cell; its
+                         // data block is re-parented under the
+                         // cell so the channel owns both.
+                         fprintf(f, "({ come_hdr_t* _b = (come_hdr_t*)mem_talloc_alloc(COME_CTX, sizeof(come_hdr_t)); __auto_type _v = (");
+                         if (arg->type == AST_STRING_LITERAL) emit_string_expr(f, arg);
+                         else generate_expression(f, arg);
+                         fprintf(f, "); memcpy(_b, &_v, sizeof(come_hdr_t)); if (_b->data) mem_talloc_steal(_b, _b->data); come_link_write(");
+                         generate_expression(f, receiver);
+                         fprintf(f, ", _b); })");
+                     }
                  } else {
                      codegen_error("link write needs a buffer argument");
-                     fprintf(f, "NULL");
+                     fprintf(f, "0");
                  }
-                 fprintf(f, ")");
              } else {
                  fprintf(f, "come_link_close(");
                  generate_expression(f, receiver);
@@ -1999,19 +2217,40 @@ static void generate_expression(FILE* f, ASTNode* node) {
              int is_map = 0;
              if (receiver->type == AST_IDENTIFIER) {
                  const char* type = get_local_variable_type(receiver->text);
-                 if (type && (strcmp(type, "map") == 0 || strcmp(type, "come_map_t*") == 0)) {
+                 if (type && (strcmp(type, "map") == 0 || strcmp(type, "come_map_t") == 0)) {
                      is_map = 1;
                  }
              }
              
              if (is_map) {
-                 snprintf(c_func, sizeof(c_func), "come_map_%s", method);
-                 
-                 fprintf(f, "%s(", c_func);
-                 if (strcmp(method, "put") == 0) {
-                     fprintf(f, "&"); // come_map_put needs map**
+                 if (strcmp(method, "put") == 0 && node->child_count > 2) {
+                     // Legacy map values are boxed cells (COIL-135).
+                     fprintf(f, "({ come_string_t* _bp = (come_string_t*)mem_talloc_alloc(COME_CTX, sizeof(come_string_t)); *_bp = (");
+                     emit_string_expr(f, node->children[2]);
+                     fprintf(f, "); come_map_put(&(");
+                     generate_expression(f, receiver);
+                     fprintf(f, "), ");
+                     emit_string_expr(f, node->children[1]);
+                     fprintf(f, ", _bp); })");
+                     return;
                  }
-                 generate_expression(f, receiver);
+                 if (strcmp(method, "get") == 0 && node->child_count > 1) {
+                     fprintf(f, "({ void* _p = come_map_get(");
+                     generate_expression(f, receiver);
+                     fprintf(f, ", ");
+                     emit_string_expr(f, node->children[1]);
+                     fprintf(f, "); _p ? *(come_string_t*)_p : (come_string_t){0}; })");
+                     return;
+                 }
+                 snprintf(c_func, sizeof(c_func), "come_map_%s", method);
+                 fprintf(f, "%s(", c_func);
+                 if (strcmp(method, "remove") == 0) {
+                     fprintf(f, "&(");
+                     generate_expression(f, receiver);
+                     fprintf(f, ")");
+                 } else {
+                     generate_expression(f, receiver);
+                 }
                  for (int i = 1; i < node->child_count; i++) {
                      fprintf(f, ", ");
                      generate_expression(f, node->children[i]);
@@ -2055,36 +2294,51 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  fprintf(f, ") != NULL)");
              } else if (strcmp(method, "delete") == 0) {
                  if (node->child_count > 1) check_map_expr_type(mkt, node->children[1], "key");
-                 fprintf(f, "come_map_remove_e(");
+                 fprintf(f, "come_map_remove_e(&(");
                  generate_expression(f, receiver);
-                 fprintf(f, ", ");
+                 fprintf(f, "), ");
                  if (node->child_count > 1) emit_string_expr(f, node->children[1]);
                  fprintf(f, ")");
              } else if (strcmp(method, "clear") == 0) {
-                 fprintf(f, "come_map_clear(");
+                 fprintf(f, "come_map_clear(&(");
                  generate_expression(f, receiver);
-                 fprintf(f, ")");
+                 fprintf(f, "))");
              } else if (strcmp(method, "keys") == 0) {
-                 fprintf(f, "come_map_keys(COME_CTX, ");
+                 fprintf(f, "come_map_keys(");
                  generate_expression(f, receiver);
                  fprintf(f, ")");
              } else if (strcmp(method, "type") == 0) {
                  fprintf(f, "come_string_new(COME_CTX, \"map\")");
              } else if (strcmp(method, "owner") == 0) {
-                 fprintf(f, "COME_CTX");
-             } else if (strcmp(method, "chown") == 0) {
-                 fprintf(f, "mem_talloc_steal(");
-                 if (node->child_count > 1) generate_expression(f, node->children[1]);
-                 fprintf(f, ", ");
+                 fprintf(f, "(");
                  generate_expression(f, receiver);
-                 fprintf(f, ")");
+                 fprintf(f, ").ctx");
+             } else if (strcmp(method, "chown") == 0) {
+                 ASTNode* a1 = node->child_count > 1 ? node->children[1] : NULL;
+                 const char* at = (a1 && a1->type == AST_IDENTIFIER) ? get_local_variable_type(a1->text) : NULL;
+                 int arg_is_buffer = at && (strchr(at, '[') != NULL || strcmp(at, "string") == 0 ||
+                                            strncmp(at, "map{", 4) == 0);
+                 if (arg_is_buffer) {
+                     fprintf(f, "come_hdr_chown_to((come_hdr_t*)&(");
+                     generate_expression(f, receiver);
+                     fprintf(f, "), (const come_hdr_t*)&(");
+                     generate_expression(f, a1);
+                     fprintf(f, "))");
+                 } else {
+                     fprintf(f, "come_hdr_chown_ctx((come_hdr_t*)&(");
+                     generate_expression(f, receiver);
+                     fprintf(f, "), ");
+                     if (a1) generate_expression(f, a1);
+                     else fprintf(f, "COME_CTX");
+                     fprintf(f, ")");
+                 }
              } else if (strcmp(method, "dup") == 0) {
                  // dup(0) shares the map; dup()/dup(n) copies it
                  if (node->child_count > 1 && node->children[1]->type == AST_NUMBER &&
                      atoi(node->children[1]->text) == 0) {
                      generate_expression(f, receiver);
                  } else {
-                     fprintf(f, "come_map_copy(COME_CTX, ");
+                     fprintf(f, "come_map_copy(");
                      generate_expression(f, receiver);
                      fprintf(f, ")");
                  }
@@ -2163,7 +2417,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
             // Check if receiver is a map for len() - maps also have len()
             if (strcmp(method, "len") == 0 && receiver->type == AST_IDENTIFIER) {
                 const char* type = get_local_variable_type(receiver->text);
-                if (type && (strcmp(type, "map") == 0 || strcmp(type, "come_map_t*") == 0)) {
+                if (type && (strcmp(type, "map") == 0 || strcmp(type, "come_map_t") == 0)) {
                     // Map len
                     fprintf(f, "come_map_len(");
                     generate_expression(f, receiver);
@@ -2186,6 +2440,29 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 }
             }
                  
+            if (strcmp(method, "chown") == 0) {
+                // COIL-135: same slot-based re-parenting as the
+                // array and map branches.
+                ASTNode* a1 = node->child_count > 1 ? node->children[1] : NULL;
+                const char* at = (a1 && a1->type == AST_IDENTIFIER) ? get_local_variable_type(a1->text) : NULL;
+                int arg_is_buffer = at && (strchr(at, '[') != NULL || strcmp(at, "string") == 0 ||
+                                           strncmp(at, "map{", 4) == 0);
+                if (arg_is_buffer) {
+                    fprintf(f, "come_hdr_chown_to((come_hdr_t*)&(");
+                    generate_expression(f, receiver);
+                    fprintf(f, "), (const come_hdr_t*)&(");
+                    generate_expression(f, a1);
+                    fprintf(f, "))");
+                } else {
+                    fprintf(f, "come_hdr_chown_ctx((come_hdr_t*)&(");
+                    generate_expression(f, receiver);
+                    fprintf(f, "), ");
+                    if (a1) generate_expression(f, a1);
+                    else fprintf(f, "COME_CTX");
+                    fprintf(f, ")");
+                }
+                return;
+            }
             if (strcmp(method, "length") == 0) {
                 // A plain string's length counts CHARACTERS (spec
                 // 6.5, COIL-110) - come_string_len walks the UTF-8.
@@ -2196,7 +2473,15 @@ static void generate_expression(FILE* f, ASTNode* node) {
                     const char* rt = get_local_variable_type(receiver->text);
                     if (rt && strcmp(rt, "string") == 0) plain_string = 1;
                 }
-                else if (receiver->type == AST_METHOD_CALL) {
+                else {
+                    // Any other expression whose Come type is
+                    // string (a map value read, a string element):
+                    // COIL-135.
+                    char tb[160];
+                    const char* rt2 = expr_come_type(receiver, tb, sizeof(tb));
+                    if (rt2 && strcmp(rt2, "string") == 0) plain_string = 1;
+                }
+                if (!plain_string && receiver->type == AST_METHOD_CALL) {
                     // A call that returns a plain string: string
                     // methods and the FILE string producers
                     // (gets/fname, COIL-114).
@@ -2226,10 +2511,80 @@ static void generate_expression(FILE* f, ASTNode* node) {
                      codegen_error("cannot resize fixed array '%s' (%s): resize() is dynamic-only - declare a dynamic array (T[]) when the length must change", receiver->text, rt);
                  }
              }
-             if (strcmp(method, "free") == 0) strcpy(c_func, "come_free");
-             else if (strcmp(method, "bytesize") == 0) strcpy(c_func, "come_array_bytesize");
-             else if (strcmp(method, "slice") == 0) strcpy(c_func, "come_array_slice");
-             else snprintf(c_func, sizeof(c_func), "come_array_%s", method);
+             // COIL-135: these four are emitted in full - they need
+             // the element size or the header slot, which the generic
+             // call tail cannot supply.
+             {
+                 char rtype[160] = "";
+                 const char* rt = expr_come_type(receiver, rtype, sizeof(rtype));
+                 if (strcmp(method, "free") == 0) {
+                     fprintf(f, "come_hdr_free((come_hdr_t*)&(");
+                     generate_expression(f, receiver);
+                     fprintf(f, "))");
+                     return;
+                 }
+                 if (!rt) {
+                     codegen_error("'%s' needs a receiver whose type is known here", method);
+                     fprintf(f, "0");
+                     return;
+                 }
+                 if (strncmp(rt, "map{", 4) == 0) {
+                     // Maps have no bytesize(): a map's byte size
+                     // is an implementation detail (Come_types.md).
+                     codegen_error("maps have no method '%s'", method);
+                     fprintf(f, "0");
+                     return;
+                 }
+                 if (strcmp(rt, "string") == 0) {
+                     if (strcmp(method, "bytesize") == 0) {
+                         fprintf(f, "((");
+                         generate_expression(f, receiver);
+                         fprintf(f, ").count)");
+                         return;
+                     }
+                     codegen_error("strings have no method '%s' (spec 6.5)", method);
+                     fprintf(f, "0");
+                     return;
+                 }
+                 // An array type T[] or T[n]: the element's C type.
+                 char et[96];
+                 {
+                     char elem[64];
+                     const char* lb = strchr(rt, '[');
+                     size_t el = lb ? (size_t)(lb - rt) : strlen(rt);
+                     if (el >= sizeof(elem)) el = sizeof(elem) - 1;
+                     memcpy(elem, rt, el);
+                     elem[el] = 0;
+                     if (strcmp(elem, "int") == 0) strcpy(et, "int");
+                     else if (strcmp(elem, "byte") == 0) strcpy(et, "uint8_t");
+                     else if (strcmp(elem, "string") == 0) strcpy(et, "come_string_t");
+                     else if (strcmp(elem, "bool") == 0) strcpy(et, "bool");
+                     else snprintf(et, sizeof(et), "%s", elem);
+                 }
+                 if (strcmp(method, "bytesize") == 0) {
+                     fprintf(f, "((");
+                     generate_expression(f, receiver);
+                     fprintf(f, ").count * (int)sizeof(%s))", et);
+                 } else if (strcmp(method, "resize") == 0) {
+                     fprintf(f, "come_array_resize_g((come_hdr_t*)&(");
+                     generate_expression(f, receiver);
+                     fprintf(f, "), sizeof(%s), ", et);
+                     if (node->child_count > 1) generate_expression(f, node->children[1]);
+                     else fprintf(f, "0");
+                     fprintf(f, ")");
+                 } else { // slice
+                     fprintf(f, "come_array_slice_g(");
+                     generate_expression(f, receiver);
+                     fprintf(f, ", sizeof(%s), ", et);
+                     if (node->child_count > 1) generate_expression(f, node->children[1]);
+                     else fprintf(f, "0");
+                     fprintf(f, ", ");
+                     if (node->child_count > 2) generate_expression(f, node->children[2]);
+                     else fprintf(f, "0");
+                     fprintf(f, ")");
+                 }
+                 return;
+             }
         }
         else {
              // FILE receiver (COIL-114): FILE is the std module's
@@ -2572,7 +2927,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
         fprintf(f, "(%s) ", node->children[0]->text);
         generate_expression(f, node->children[1]);
     } else if (node->type == AST_TERNARY) {
-        // String ternaries must agree on come_string_t* on
+        // String ternaries must agree on come_string_t on
         // both branches; a raw literal branch would decay to
         // char* and corrupt the result (spec 14, COIL-127).
         int str_tern = expr_is_stringish(node->children[1]) ||
@@ -2618,7 +2973,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
 
                 if (left->type == AST_IDENTIFIER) {
                     const char* type = get_local_variable_type(left->text);
-                    if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t*") == 0)) {
+                    if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t") == 0)) {
                         left_is_str = 1;
                     }
                 }
@@ -2628,7 +2983,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                         right_is_str = 1;
                     } else {
                         const char* type = get_local_variable_type(right->text);
-                        if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t*") == 0)) {
+                        if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t") == 0)) {
                             right_is_str = 1;
                         }
                     }
@@ -2649,6 +3004,22 @@ static void generate_expression(FILE* f, ASTNode* node) {
             }
         }
         
+        // Buffer identity / null-vs-buffer (COIL-135): two
+        // buffer values are == when they share a data block;
+        // a buffer compared with null tests its data pointer.
+        // Only fires when both sides resolve to buffer types,
+        // so string-vs-literal keeps the content path below.
+        int buf_identity = 0, null_buf = 0;
+        if (is_eq || is_neq) {
+            char ob1[160], ob2[160];
+            const char* t1 = expr_come_type(left, ob1, sizeof(ob1));
+            const char* t2 = expr_come_type(right, ob2, sizeof(ob2));
+            int b1 = t1 && (strcmp(t1, "string") == 0 || strchr(t1, '[') || strncmp(t1, "map{", 4) == 0);
+            int b2 = t2 && (strcmp(t2, "string") == 0 || strchr(t2, '[') || strncmp(t2, "map{", 4) == 0);
+            if ((left_is_null && b2) || (right_is_null && b1)) null_buf = 1;
+            else if (!left_is_null && !right_is_null && b1 && b2) buf_identity = 1;
+        }
+
         if (strcmp(node->text, "+") == 0 &&
             (expr_is_stringish(left) || expr_is_stringish(right))) {
             // String concatenation (spec 6.5): `+` on strings
@@ -2658,6 +3029,19 @@ static void generate_expression(FILE* f, ASTNode* node) {
             fprintf(f, ", ");
             emit_string_expr(f, right);
             fprintf(f, ")");
+        } else if (buf_identity || null_buf) {
+            if (null_buf) {
+                ASTNode* other = left_is_null ? right : left;
+                fprintf(f, "((");
+                generate_expression(f, other);
+                fprintf(f, ").data %s NULL)", is_eq ? "==" : "!=");
+            } else {
+                fprintf(f, "((");
+                generate_expression(f, left);
+                fprintf(f, ").data %s (", is_eq ? "==" : "!=");
+                generate_expression(f, right);
+                fprintf(f, ").data)");
+            }
         } else if (is_string_cmp) {
             // Content comparison against a literal (either
             // side): both operands go through emit_string_expr
@@ -2846,17 +3230,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     emit_fn_param(f, type->text, arg->text);
                 // array?
                 } else if (strstr(type->text, "[]")) {
-                    // int input[] -> come_int_array_t* input
+                    // int input[] -> come_int_array_t input
                      char raw[64];
                      strncpy(raw, type->text, strlen(type->text)-2);
                      raw[strlen(type->text)-2] = 0;
-                     if (strcmp(raw, "int")==0) fprintf(f, "come_int_array_t* %s", arg->text);
-                     else if (strcmp(raw, "byte")==0) fprintf(f, "come_byte_array_t* %s", arg->text);
-                     else if (strcmp(raw, "string")==0) fprintf(f, "come_string_list_t* %s", arg->text);
-                     else fprintf(f, "come_array_t* %s", arg->text);
+                     if (strcmp(raw, "int")==0) fprintf(f, "come_int_array_t %s", arg->text);
+                     else if (strcmp(raw, "byte")==0) fprintf(f, "come_byte_array_t %s", arg->text);
+                     else if (strcmp(raw, "string")==0) fprintf(f, "come_string_list_t %s", arg->text);
+                     else fprintf(f, "come_array_t %s", arg->text);
                 } else if (is_main && strncmp(arg->text, "args", 4) == 0 && (strcmp(type->text, "string") == 0 || strcmp(type->text, "string[]") == 0)) {
                     // special case for main(string args) -> we pass string list
-                    fprintf(f, "come_string_list_t* %s", arg->text);
+                    fprintf(f, "come_string_list_t %s", arg->text);
                 } else if (strcmp(type->text, "link") == 0) {
                    fprintf(f, "come_link_t* %s", arg->text);
                 } else {
@@ -2949,27 +3333,28 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         
         emit_indent(f, indent);
             if (strcmp(type_node->text, "string") == 0) {
-                fprintf(f, "come_string_t* %s = ", node->text);
-                if (init_expr->type == AST_STRING_LITERAL) {
+                fprintf(f, "come_string_t %s = ", node->text);
+                if (init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0) {
+                    fprintf(f, "{0}");
+                } else if (init_expr->type == AST_STRING_LITERAL) {
                     fprintf(f, "come_string_new(COME_CTX, ");
                     generate_expression(f, init_expr);
                     fprintf(f, ")");
                 } else {
-                    generate_expression(f, init_expr);
+                    emit_expr_as(f, init_expr, "come_string_t");
                 }
                 fprintf(f, ";\n");
             } else if (strcmp(type_node->text, "string[]") == 0) {
                 if (init_expr && init_expr->type == AST_AGGREGATE_INIT) {
-                    // String array literal (COIL-100): build a real list -
-                    // header + one owned string per element.
+                    // String array literal (COIL-100): a header value
+                    // (COIL-135) grown by appends, one owned string
+                    // per element.
                     int count = init_expr->child_count;
-                    fprintf(f, "come_string_list_t* %s = (come_string_list_t*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %d * sizeof(come_string_t*));\n", node->text, count);
-                    emit_indent(f, indent);
-                    fprintf(f, "%s->size = %d; %s->count = %d;\n", node->text, count, node->text, count);
+                    fprintf(f, "come_string_list_t %s = COME_HDR_INIT(COME_CTX);\n", node->text);
                     for (int ei = 0; ei < count; ei++) {
                         ASTNode* elem = init_expr->children[ei];
                         emit_indent(f, indent);
-                        fprintf(f, "%s->items[%d] = ", node->text, ei);
+                        fprintf(f, "{ come_string_t _e = ");
                         if (elem->type == AST_STRING_LITERAL) {
                             fprintf(f, "come_string_new(COME_CTX, ");
                             generate_expression(f, elem);
@@ -2977,11 +3362,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                         } else {
                             generate_expression(f, elem);
                         }
-                        fprintf(f, ";\n");
+                        fprintf(f, "; come_array_append_g((come_hdr_t*)&%s, sizeof(come_string_t), &_e); }\n", node->text);
                     }
                 } else {
-                fprintf(f, "come_string_list_t* %s = ", node->text);
-                if (init_expr->type == AST_STRING_LITERAL && strcmp(init_expr->text, "\"__ARGS__\"") == 0) {
+                fprintf(f, "come_string_list_t %s = ", node->text);
+                if (init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0) {
+                    fprintf(f, "{0}");
+                } else if (init_expr->type == AST_STRING_LITERAL && strcmp(init_expr->text, "\"__ARGS__\"") == 0) {
                     fprintf(f, "come_string_list_from_argv(COME_CTX, argc, argv)");
                 } else {
                     generate_expression(f, init_expr);
@@ -3002,17 +3389,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     map_combo_error(mkt, mvt);
                 }
                 if (init_expr && init_expr->type == AST_IDENTIFIER) {
-                    fprintf(f, "come_map_t* %s = ", node->text);
+                    fprintf(f, "come_map_t %s = ", node->text);
                     generate_expression(f, init_expr);
                     fprintf(f, ";\n");
                 } else if (init_expr && init_expr->type != AST_AGGREGATE_INIT &&
                            !(init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0)) {
                     // Expression init (dup(), a call returning a map, ...)
-                    fprintf(f, "come_map_t* %s = ", node->text);
-                    generate_expression(f, init_expr);
+                    fprintf(f, "come_map_t %s = ", node->text);
+                    emit_expr_as(f, init_expr, "come_map_t");
                     fprintf(f, ";\n");
                 } else {
-                    fprintf(f, "come_map_t* %s = come_map_new(COME_CTX);\n", node->text);
+                    fprintf(f, "come_map_t %s = come_map_new(COME_CTX);\n", node->text);
                     if (init_expr && init_expr->type == AST_AGGREGATE_INIT) {
                         for (int pi = 0; pi < init_expr->child_count; pi++) {
                             ASTNode* pair = init_expr->children[pi];
@@ -3044,7 +3431,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 // link variable.
                 if (init_expr && !(init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0)) {
                     fprintf(f, "come_link_t* %s = ", node->text);
-                    generate_expression(f, init_expr);
+                    if (is_link_read_expr(init_expr)) emit_link_read_raw(f, init_expr);
+                    else generate_expression(f, init_expr);
                     fprintf(f, ";\n");
                 } else {
                     fprintf(f, "come_link_t* %s = NULL;\n", node->text);
@@ -3056,9 +3444,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             } else if (strcmp(type_node->text, "var") == 0) {
                 // Type inference
                 if (init_expr->type == AST_STRING_LITERAL) {
-                    fprintf(f, "come_string_t* %s = come_string_new(COME_CTX, ", node->text);
+                    fprintf(f, "come_string_t %s = come_string_new(COME_CTX, ", node->text);
                     generate_expression(f, init_expr);
                     fprintf(f, ");\n");
+                } else if (is_link_read_expr(init_expr)) {
+                    fprintf(f, "come_string_t %s = ", node->text);
+                    emit_expr_as(f, init_expr, "come_string_t");
+                    fprintf(f, ";\n");
                 } else {
                     fprintf(f, "__auto_type %s = ", node->text);
                     generate_expression(f, init_expr);
@@ -3098,31 +3490,33 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                         int count = init_expr->child_count;
                         int alloc_count = (eff_fixed > count) ? eff_fixed : count;
 
-                        fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %u * sizeof(%s));\n",
-                                arr_type, node->text, arr_type, alloc_count, elem_type);
-                        emit_indent(f, indent);
-                        fprintf(f, "%s->size = %u; %s->count = %u;\n", node->text, alloc_count, node->text, count);
+                        // Header value (COIL-135); the data block is
+                        // sized for the literal and zero-filled past
+                        // the given elements.
+                        fprintf(f, "%s %s = COME_HDR_INIT(COME_CTX);\n", arr_type, node->text);
                         emit_indent(f, indent);
                         fprintf(f, "{ %s _vals[] = ", elem_type);
                         generate_expression(f, init_expr);
-                        fprintf(f, "; memcpy(%s->items, _vals, sizeof(_vals)); }\n", node->text);
+                        fprintf(f, "; come_array_ensure((come_hdr_t*)&%s, sizeof(%s), %u); memcpy(%s.data, _vals, sizeof(_vals)); %s.count = %u; }\n",
+                                node->text, elem_type, alloc_count, node->text, node->text, count);
                     } else if (init_expr && !zero_init) {
                         // Initialized from expression (e.g. slice, function return)
-                        fprintf(f, "%s* %s = ", arr_type, node->text);
+                        fprintf(f, "%s %s = ", arr_type, node->text);
                         generate_expression(f, init_expr);
                         fprintf(f, ";\n");
                     } else if (eff_fixed > 0) {
-                        fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %u * sizeof(%s));\n",
-                                arr_type, node->text, arr_type, eff_fixed, elem_type);
+                        // Fixed array: a header over a data block of
+                        // exactly eff_fixed zeroed elements; it can
+                        // never grow (the compiler forbids it).
+                        fprintf(f, "%s %s = COME_HDR_INIT(COME_CTX);\n", arr_type, node->text);
                         emit_indent(f, indent);
-                        fprintf(f, "memset(%s->items, 0, %u * sizeof(%s));\n", node->text, eff_fixed, elem_type);
-                        emit_indent(f, indent);
-                        fprintf(f, "%s->size = %u; %s->count = %u;\n", node->text, eff_fixed, node->text, eff_fixed);
+                        fprintf(f, "%s.data = mem_talloc_alloc(COME_CTX, %u * sizeof(%s)); memset(%s.data, 0, %u * sizeof(%s)); %s.cap = %u; %s.count = %u;\n",
+                                node->text, eff_fixed, elem_type, node->text, eff_fixed, elem_type,
+                                node->text, eff_fixed, node->text, eff_fixed);
                     } else {
-                        // Empty dynamic
-                        fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2);\n", arr_type, node->text, arr_type);
-                        emit_indent(f, indent);
-                        fprintf(f, "%s->size = 0; %s->count = 0;\n", node->text, node->text);
+                        // Empty dynamic: a zeroed header, no allocation
+                        // until the first growth (COIL-135).
+                        fprintf(f, "%s %s = COME_HDR_INIT(COME_CTX);\n", arr_type, node->text);
                     }
                 }
  else {
@@ -3138,8 +3532,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                          // Just emit the aggregate initializer as-is for structs
                          generate_expression(f, init_expr);
                      } else if (init_expr && init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0) {
-                          // Check if type is struct or union?
-                          if (strncmp(type_node->text, "struct", 6) == 0 || strncmp(type_node->text, "union", 5) == 0) {
+                          // Struct values zero-initialize with {0}
+                          // (COIL-135: a struct whose first field is
+                          // itself a header struct cannot take = 0).
+                          const char* tn = type_node->text;
+                          if (strncmp(tn, "struct ", 7) == 0) tn += 7;
+                          if (strncmp(type_node->text, "struct", 6) == 0 || strncmp(type_node->text, "union", 5) == 0 ||
+                              struct_field_count(tn) > 0) {
                               fprintf(f, "{0}");
                           } else {
                               generate_expression(f, init_expr);
@@ -3166,9 +3565,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     emit_c_string_literal(f, arg->text);
                 } else if (arg->type == AST_IDENTIFIER) {
                     const char* type = get_local_variable_type(arg->text);
-                    int is_str = (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t*") == 0));
+                    int is_str = (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t") == 0));
                     if (is_str) {
-                        fprintf(f, "(%s ? %s->data : \"NULL\")", arg->text, arg->text);
+                        fprintf(f, "((%s).data ? (%s).data : \"NULL\")", arg->text, arg->text);
                     } else {
                         generate_expression(f, arg);
                     }
@@ -3307,8 +3706,15 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     // adoption below instead.
                     if (is_buffer_type(param->children[1]->text) &&
                         strcmp(param->children[1]->text, "link") != 0) {
+                        // COIL-135: the field is a header value; steal
+                        // its data block under the args block (which
+                        // lives in the coroutine's context) and point
+                        // the header's owner at it.
                         emit_indent(f, indent + 4);
-                        fprintf(f, "mem_talloc_steal(__come_a, __come_a->%s);\n", param->text);
+                        fprintf(f, "if (__come_a->%s.data) mem_talloc_steal(__come_a, __come_a->%s.data);\n",
+                                param->text, param->text);
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "__come_a->%s.ctx = __come_a;\n", param->text);
                     }
                     // A link argument is adopted by the new
                     // coroutine (COIL-123): its end closes
@@ -3484,11 +3890,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                          // If parser put dimensions in name, just print name.
                          // If type is "byte[]", we don't know size here unless in name.
                          // Let's assume standard type printing.
-                         // Fix: if type ends in [], map to come_byte_array_t* for structs
+                         // Fix: if type ends in [], map to come_byte_array_t for structs
                          // Or use pointer? byte* items.
                          // But we want to support size?
-                         // "byte[]" usually come_byte_array_t* in my codegen.
-                         fprintf(f, "come_%s_array_t* %s;\n", raw_type, field->text);
+                         // "byte[]" usually come_byte_array_t in my codegen.
+                         fprintf(f, "come_hdr_t %s;\n", field->text);
                      } else {
                          fprintf(f, "%s %s;\n", type->text, field->text);
                      }
@@ -3611,11 +4017,16 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // materializes, exactly as in a declaration;
             // emitting the raw C literal would type-mismatch
             // (COIL-126).
-            if (node->children[0]->type == AST_IDENTIFIER &&
-                node->children[1]->type == AST_STRING_LITERAL) {
-                const char* lt = get_local_variable_type(node->children[0]->text);
+            if (node->children[1]->type == AST_STRING_LITERAL &&
+                (node->children[0]->type == AST_IDENTIFIER ||
+                 node->children[0]->type == AST_MEMBER_ACCESS)) {
+                // A string literal assigned to a string variable
+                // or a string field materializes (COIL-126/135).
+                char ltb[160];
+                const char* lt = expr_come_type(node->children[0], ltb, sizeof(ltb));
                 if (lt && strcmp(lt, "string") == 0) {
-                    fprintf(f, "%s = come_string_new(COME_CTX, ", node->children[0]->text);
+                    generate_expression(f, node->children[0]);
+                    fprintf(f, " = come_string_new(COME_CTX, ");
                     generate_expression(f, node->children[1]);
                     fprintf(f, ");\n");
                     break;
@@ -3625,6 +4036,40 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 const char* lt = get_local_variable_type(node->children[0]->text);
                 const char* rt = get_local_variable_type(node->children[1]->text);
                 if (lt && rt) check_array_transfer("be assigned to", node->children[0]->text, lt, node->children[1]->text, rt);
+            }
+            if (node->children[0]->type == AST_IDENTIFIER && is_link_read_expr(node->children[1])) {
+                const char* lt = get_local_variable_type(node->children[0]->text);
+                if (lt && strcmp(lt, "link") == 0) {
+                    generate_expression(f, node->children[0]);
+                    fprintf(f, " %s ", node->text);
+                    emit_link_read_raw(f, node->children[1]);
+                    fprintf(f, ";\n");
+                    break;
+                }
+            }
+            if (node->children[0]->type == AST_IDENTIFIER && is_link_read_expr(node->children[1])) {
+                const char* lt = get_local_variable_type(node->children[0]->text);
+                if (lt && strcmp(lt, "string") == 0) {
+                    generate_expression(f, node->children[0]);
+                    fprintf(f, " %s ", node->text);
+                    emit_expr_as(f, node->children[1], "come_string_t");
+                    fprintf(f, ";\n");
+                    break;
+                }
+            }
+            if (node->children[0]->type == AST_ARRAY_ACCESS &&
+                node->children[1]->type == AST_STRING_LITERAL) {
+                // A string literal stored into a string element
+                // materializes, like any string store.
+                char atb[160];
+                const char* at = expr_come_type(node->children[0], atb, sizeof(atb));
+                if (at && strcmp(at, "string") == 0) {
+                    generate_expression(f, node->children[0]);
+                    fprintf(f, " %s come_string_new(COME_CTX, ", node->text);
+                    generate_expression(f, node->children[1]);
+                    fprintf(f, ");\n");
+                    break;
+                }
             }
             generate_expression(f, node->children[0]);
             fprintf(f, " %s ", node->text);
@@ -3993,9 +4438,9 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     }
     if (std_imported) {
         fprintf(f, "extern int come_ERR_no(void);\n");
-        fprintf(f, "extern come_string_t* come_ERR_str(void);\n");
+        fprintf(f, "extern come_string_t come_ERR_str(void);\n");
         fprintf(f, "extern void come_ERR_clear(void);\n");
-        fprintf(f, "extern void come_ERR_fatal(come_string_t* msg);\n");
+        fprintf(f, "extern void come_ERR_fatal(come_string_t msg);\n");
         // We need the type for ERR object too
         fprintf(f, "typedef struct come_std__ERR_t come_std__ERR_t;\n");
         fprintf(f, "extern come_std__ERR_t come_std__ERR;\n");
@@ -4007,22 +4452,22 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "extern come_std__FILE_t std_err;\n");
         fprintf(f, "void come_std__FILE__init(come_std__FILE_t*);\n");
         fprintf(f, "void come_std__FILE__exit(come_std__FILE_t*);\n");
-        fprintf(f, "bool come_std__FILE__open(come_std__FILE_t*, come_string_t*, come_string_t*);\n");
+        fprintf(f, "bool come_std__FILE__open(come_std__FILE_t*, come_string_t, come_string_t);\n");
         fprintf(f, "void come_std__FILE__close(come_std__FILE_t*);\n");
-        fprintf(f, "bool come_std__FILE__fdopen(come_std__FILE_t*, int, come_string_t*);\n");
-        fprintf(f, "bool come_std__FILE__reopen(come_std__FILE_t*, come_string_t*, come_string_t*);\n");
+        fprintf(f, "bool come_std__FILE__fdopen(come_std__FILE_t*, int, come_string_t);\n");
+        fprintf(f, "bool come_std__FILE__reopen(come_std__FILE_t*, come_string_t, come_string_t);\n");
         fprintf(f, "int come_std__FILE__fileno(come_std__FILE_t*);\n");
-        fprintf(f, "int come_std__FILE__printf(come_std__FILE_t*, come_string_t*, ...);\n");
-        fprintf(f, "int come_std__FILE__scanf(come_std__FILE_t*, come_string_t*, ...);\n");
-        fprintf(f, "int come_std__FILE__vprintf(come_std__FILE_t*, come_string_t*, va_list);\n");
-        fprintf(f, "int come_std__FILE__vscanf(come_std__FILE_t*, come_string_t*, va_list);\n");
-        fprintf(f, "long come_std__FILE__read(come_std__FILE_t*, come_byte_array_t*, long);\n");
-        fprintf(f, "long come_std__FILE__write(come_std__FILE_t*, come_byte_array_t*, long);\n");
+        fprintf(f, "int come_std__FILE__printf(come_std__FILE_t*, come_string_t, ...);\n");
+        fprintf(f, "int come_std__FILE__scanf(come_std__FILE_t*, come_string_t, ...);\n");
+        fprintf(f, "int come_std__FILE__vprintf(come_std__FILE_t*, come_string_t, va_list);\n");
+        fprintf(f, "int come_std__FILE__vscanf(come_std__FILE_t*, come_string_t, va_list);\n");
+        fprintf(f, "long come_std__FILE__read(come_std__FILE_t*, come_byte_array_t, long);\n");
+        fprintf(f, "long come_std__FILE__write(come_std__FILE_t*, come_byte_array_t, long);\n");
         fprintf(f, "int32_t come_std__FILE__getc(come_std__FILE_t*);\n");
         fprintf(f, "void come_std__FILE__putc(come_std__FILE_t*, int32_t);\n");
-        fprintf(f, "come_string_t* come_std__FILE__gets(come_std__FILE_t*);\n");
-        fprintf(f, "long come_std__FILE__puts(come_std__FILE_t*, come_string_t*);\n");
-        fprintf(f, "come_string_t* come_std__FILE__fname(come_std__FILE_t*);\n");
+        fprintf(f, "come_string_t come_std__FILE__gets(come_std__FILE_t*);\n");
+        fprintf(f, "long come_std__FILE__puts(come_std__FILE_t*, come_string_t);\n");
+        fprintf(f, "come_string_t come_std__FILE__fname(come_std__FILE_t*);\n");
         fprintf(f, "void come_std__FILE__ungetc(come_std__FILE_t*, int32_t);\n");
         fprintf(f, "void come_std__FILE__seek(come_std__FILE_t*, long, int);\n");
         fprintf(f, "long come_std__FILE__tell(come_std__FILE_t*);\n");
@@ -4032,20 +4477,20 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "bool come_std__FILE__error(come_std__FILE_t*);\n");
         fprintf(f, "void come_std__FILE__flush(come_std__FILE_t*);\n");
         fprintf(f, "void come_std__FILE__clearerr(come_std__FILE_t*);\n");
-        fprintf(f, "void come_std__FILE__setbuf(come_std__FILE_t*, come_byte_array_t*, long);\n");
-        fprintf(f, "void come_std__FILE__setvbuf(come_std__FILE_t*, come_byte_array_t*, int, long);\n");
+        fprintf(f, "void come_std__FILE__setbuf(come_std__FILE_t*, come_byte_array_t, long);\n");
+        fprintf(f, "void come_std__FILE__setvbuf(come_std__FILE_t*, come_byte_array_t, int, long);\n");
         fprintf(f, "void come_std__FILE__setlinebuf(come_std__FILE_t*);\n");
-        fprintf(f, "bool come_std__remove(come_string_t*);\n");
+        fprintf(f, "bool come_std__remove(come_string_t);\n");
         fprintf(f, "come_std__FILE_t come_std__tmpfile(void);\n");
-        fprintf(f, "come_string_t* come_std__tmpname(void);\n");
+        fprintf(f, "come_string_t come_std__tmpname(void);\n");
         fprintf(f, "int come_std__rand(void);\n");
         fprintf(f, "void come_std__srand(unsigned int);\n");
-        fprintf(f, "void come_std__qsort(come_byte_array_t*, int (*)(int8_t, int8_t));\n");
+        fprintf(f, "void come_std__qsort(come_byte_array_t, int (*)(int8_t, int8_t));\n");
         fprintf(f, "void come_std__Proc__abort(void*);\n");
         fprintf(f, "void come_std__Proc__exit(void*, int);\n");
         fprintf(f, "void come_std__Proc__atexit(void*, void (*)(void));\n");
-        fprintf(f, "come_string_t* come_std__Proc__getenv(void*, come_string_t*);\n");
-        fprintf(f, "int come_std__Proc__system(void*, come_string_t*);\n");
+        fprintf(f, "come_string_t come_std__Proc__getenv(void*, come_string_t);\n");
+        fprintf(f, "int come_std__Proc__system(void*, come_string_t);\n");
     }
     // Macros for method dispatch
     fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);
@@ -4103,7 +4548,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         if (has_main_fn) {
         // Forward declare user main with correct signature
         if (main_has_params) {
-            fprintf(f, "%s come_%s__main(come_string_list_t* args);\n", main_is_void ? "void" : "int", current_module);
+            fprintf(f, "%s come_%s__main(come_string_list_t args);\n", main_is_void ? "void" : "int", current_module);
         } else {
             fprintf(f, "%s come_%s__main(void);\n", main_is_void ? "void" : "int", current_module);
         }
@@ -4123,7 +4568,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         if (main_is_void) {
             // Void main implies exit code 0 (spec 2.1).
             if (main_has_params) {
-                fprintf(f, "    come_string_list_t* args = come_string_list_from_argv(COME_CTX, argc, argv);\n");
+                fprintf(f, "    come_string_list_t args = come_string_list_from_argv(COME_CTX, argc, argv);\n");
                 fprintf(f, "    come_%s__main(args);\n", current_module);
             } else {
                 fprintf(f, "    come_%s__main();\n", current_module);
@@ -4131,7 +4576,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
             fprintf(f, "    int ret = 0;\n");
         } else if (main_has_params) {
             fprintf(f, "    // Convert argv to string[]\n");
-            fprintf(f, "    come_string_list_t* args = come_string_list_from_argv(COME_CTX, argc, argv);\n");
+            fprintf(f, "    come_string_list_t args = come_string_list_from_argv(COME_CTX, argc, argv);\n");
             fprintf(f, "    \n");
             fprintf(f, "    // Call user main\n");
             fprintf(f, "    int ret = come_%s__main(args);\n", current_module);
@@ -4356,7 +4801,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                   if (ret->text[0] == '(') {
                        fprintf(f, "come_%s__%s_ret_t %s(", current_module, child->text, func_name);
                   } else {
-                       if (strcmp(ret->text, "string") == 0) fprintf(f, "come_string_t* %s(", func_name);
+                       if (strcmp(ret->text, "string") == 0) fprintf(f, "come_string_t %s(", func_name);
                        else fprintf(f, "%s %s(", ret->text, func_name);
                   }
              } else {
@@ -4392,14 +4837,14 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                             strncpy(raw, type->text, strlen(type->text)-2);
                             raw[strlen(type->text)-2] = 0;
                             
-                            if (strcmp(raw, "int")==0) fprintf(f, "come_int_array_t*");
-                            else if (strcmp(raw, "byte")==0) fprintf(f, "come_byte_array_t*");
-                            else if (strcmp(raw, "string")==0) fprintf(f, "come_string_list_t*");
-                            else fprintf(f, "come_array_t*");
+                            if (strcmp(raw, "int")==0) fprintf(f, "come_int_array_t");
+                            else if (strcmp(raw, "byte")==0) fprintf(f, "come_byte_array_t");
+                            else if (strcmp(raw, "string")==0) fprintf(f, "come_string_list_t");
+                            else fprintf(f, "come_array_t");
                        } else if (type->text[0] == '(') {
                             fprintf(f, "void"); // Multi-return hack
                        } else {
-                            if (strcmp(type->text, "string")==0) fprintf(f, "come_string_t*");
+                            if (strcmp(type->text, "string")==0) fprintf(f, "come_string_t");
                             else if (strcmp(type->text, "link")==0) fprintf(f, "come_link_t*");
                             else fprintf(f, "%s", type->text);
                        }

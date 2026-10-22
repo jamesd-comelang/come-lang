@@ -665,11 +665,11 @@ int main() {
         size_t blen116 = fread(buf116, 1, sizeof(buf116) - 1, of116);
         fclose(of116);
         buf116[blen116] = 0;
-        if (!strstr(buf116, "come_int_array_append")) {
+        if (!strstr(buf116, "come_array_append_g")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-116: append must dispatch to the array runtime\033[0m\n");
             return 1;
         }
-        if (!strstr(buf116, "come_int_array_contains")) {
+        if (!strstr(buf116, "come_array_contains_g")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-116: contains must dispatch to the array runtime\033[0m\n");
             return 1;
         }
@@ -710,7 +710,7 @@ int main() {
         size_t blen117 = fread(buf117, 1, sizeof(buf117) - 1, of117);
         fclose(of117);
         buf117[blen117] = 0;
-        if (!strstr(buf117, "come_string_split(csv, (sep ? sep->data : \"\"))")) {
+        if (!strstr(buf117, "come_string_split(csv, ((sep).data ? (sep).data : \"\"))")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-117: split must pass the separator's bytes, not the object\033[0m\n");
             return 1;
         }
@@ -886,11 +886,11 @@ int main() {
         size_t blen122 = fread(buf122, 1, sizeof(buf122) - 1, of122);
         fclose(of122);
         buf122[blen122] = 0;
-        if (!strstr(buf122, "mem_talloc_steal(__come_a, __come_a->s)")) {
+        if (!strstr(buf122, "mem_talloc_steal(__come_a, __come_a->s.data)")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: string argument ownership must move at spawn\033[0m\n");
             return 1;
         }
-        if (strstr(buf122, "mem_talloc_steal(__come_a, __come_a->n)")) {
+        if (strstr(buf122, "mem_talloc_steal(__come_a, __come_a->n.data)")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: value argument must be copied, not stolen\033[0m\n");
             return 1;
         }
@@ -1073,7 +1073,7 @@ int main() {
         size_t blen126 = fread(buf126, 1, sizeof(buf126) - 1, of126);
         fclose(of126);
         buf126[blen126] = 0;
-        if (!strstr(buf126, "come_string_t* reply =") || !strstr(buf126, "int n = 42")) {
+        if (!strstr(buf126, "come_string_t reply =") || !strstr(buf126, "int n = 42")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-126: first assignments must emit inferred declarations\033[0m\n");
             return 1;
         }

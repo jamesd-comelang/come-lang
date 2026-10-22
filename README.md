@@ -53,11 +53,12 @@ come build hello.co
   exposes exactly those names; calling anything else from outside
   is a compile error. A module with no export list is open.
 - **No raw pointers in user code.** Arrays, strings, and maps are
-  headered buffer objects:
-
-  ```text
-  [ capacity | count | data... ]
-  ```
+  headered buffers: the header — data pointer, count, capacity,
+  owner context — is a small value kept inline in the variable,
+  and only the data block is heap-allocated, owned by a memory
+  context. Assignment copies the header and shares the data;
+  growth allocates a fresh block, so an alias keeps a valid
+  snapshot instead of dangling.
 
   Every buffer answers `.length()`, `.bytesize()`, `.owner()`,
   `.chown()`, `.dup()`, and `.type()`.

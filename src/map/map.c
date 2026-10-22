@@ -17,143 +17,127 @@ static uint32_t hash_string(const char* str) {
     return hash;
 }
 
-come_map_t* come_map_new(TALLOC_CTX* ctx) {
-    size_t header_size = sizeof(uint32_t) * 2;
-    size_t total_size = header_size + sizeof(come_map_entry_t) * INITIAL_CAPACITY;
-    come_map_t* m = mem_talloc_alloc(ctx, total_size);
-    if (!m) return NULL;
-    
-    m->size = INITIAL_CAPACITY;
-    m->count = 0;
-    memset(m->entries, 0, sizeof(come_map_entry_t) * INITIAL_CAPACITY);
-    
+static const char* kdata(const come_string_t* k) {
+    return (k && k->data) ? k->data : "";
+}
+
+// COIL-135: the map is a header value; only the entries block is a
+// heap allocation, owned by the header's context.
+come_map_t come_map_new(TALLOC_CTX* ctx) {
+    come_map_t m = { NULL, 0, 0, ctx };
     return m;
 }
 
-static void rehash(come_map_t** m_ptr) {
-    come_map_t* old_m = *m_ptr;
-    uint32_t new_size = old_m->size * 2;
-    TALLOC_CTX* ctx = NULL; // Use NULL context for rehash, or pass as param if needed
-    
-    come_map_t* new_m = mem_talloc_alloc(ctx, sizeof(uint32_t) * 2 + sizeof(come_map_entry_t) * new_size);
-    if (!new_m) return;
-    
-    new_m->size = new_size;
-    new_m->count = 0;
-    memset(new_m->entries, 0, sizeof(come_map_entry_t) * new_size);
-    
-    for (uint32_t i = 0; i < old_m->size; i++) {
-        if (old_m->entries[i].occupied) {
-            come_map_put(&new_m, old_m->entries[i].key, old_m->entries[i].value);
+// Grow the entries block: allocate a fresh block in the owner
+// context, rehash into it, and leave the old block for the context
+// to reclaim, so an alias keeps a valid older snapshot.
+static void map_grow(come_map_t* m, uint32_t new_cap) {
+    come_map_entry_t* old = m->data;
+    uint32_t old_cap = m->cap;
+    come_map_entry_t* nd = (come_map_entry_t*)mem_talloc_alloc(
+        m->ctx, sizeof(come_map_entry_t) * new_cap);
+    if (!nd) return;
+    memset(nd, 0, sizeof(come_map_entry_t) * new_cap);
+    m->data = nd;
+    m->cap = new_cap;
+    m->count = 0;
+    for (uint32_t i = 0; i < old_cap; i++) {
+        if (old[i].occupied) {
+            uint32_t idx = old[i].hash % new_cap;
+            while (nd[idx].occupied) idx = (idx + 1) % new_cap;
+            nd[idx] = old[i];
+            m->count++;
         }
     }
-    
-    *m_ptr = new_m;
-    // We don't explicitly free old_m if it behaves like talloc_realloc but here it's a new alloc.
-    // In Come's model, we might want to let the arena handle it or free it.
-    // mem_talloc_free(old_m); // Safe to free since we copied entries
 }
 
-void come_map_put(come_map_t** m_ptr, string key, void* value) {
-    if (!m_ptr || !key) return;
-    
-    if (!*m_ptr) {
-        *m_ptr = come_map_new(NULL);
-        if (!*m_ptr) return;
-    }
-    
-    come_map_t* m = *m_ptr;
-    
-    if ((float)(m->count + 1) / m->size > LOAD_FACTOR_THRESHOLD) {
-        rehash(m_ptr);
-        m = *m_ptr;
-    }
-    
-    uint32_t hash = hash_string(key->data);
-    uint32_t idx = hash % m->size;
-    
-    while (m->entries[idx].occupied) {
-        if (strcmp(m->entries[idx].key->data, key->data) == 0) {
-            m->entries[idx].value = value;
+static void map_ensure(come_map_t* m) {
+    if (!m->data) { map_grow(m, INITIAL_CAPACITY); return; }
+    if ((float)(m->count + 1) / (float)m->cap > LOAD_FACTOR_THRESHOLD)
+        map_grow(m, m->cap * 2);
+}
+
+void come_map_put(come_map_t* m, come_string_t key, void* value) {
+    if (!m) return;
+    map_ensure(m);
+    if (!m->data) return;
+
+    uint32_t hash = hash_string(kdata(&key));
+    uint32_t idx = hash % m->cap;
+
+    while (m->data[idx].occupied) {
+        if (strcmp(kdata(&m->data[idx].key), kdata(&key)) == 0) {
+            m->data[idx].value = value;
             return;
         }
-        idx = (idx + 1) % m->size;
+        idx = (idx + 1) % m->cap;
     }
-    
-    m->entries[idx].key = key;
-    m->entries[idx].value = value;
-    m->entries[idx].hash = hash;
-    m->entries[idx].occupied = true;
+
+    m->data[idx].key = key;
+    m->data[idx].value = value;
+    m->data[idx].hash = hash;
+    m->data[idx].occupied = true;
     m->count++;
 }
 
-void* come_map_get(come_map_t* m, string key) {
-    if (!m || !key) return NULL;
-    
-    uint32_t hash = hash_string(key->data);
-    uint32_t idx = hash % m->size;
+static come_map_entry_t* map_find(const come_map_t* m, const come_string_t* key) {
+    if (!m || !m->data) return NULL;
+    uint32_t hash = hash_string(kdata(key));
+    uint32_t idx = hash % m->cap;
     uint32_t start_idx = idx;
-    
-    while (m->entries[idx].occupied) {
-        if (strcmp(m->entries[idx].key->data, key->data) == 0) {
-            return m->entries[idx].value;
+    while (m->data[idx].occupied) {
+        if (strcmp(kdata(&m->data[idx].key), kdata(key)) == 0) {
+            return &m->data[idx];
         }
-        idx = (idx + 1) % m->size;
+        idx = (idx + 1) % m->cap;
         if (idx == start_idx) break;
     }
-    
     return NULL;
 }
 
-void come_map_remove(come_map_t* m, string key) {
-    if (!m || !key) return;
-    
-    uint32_t hash = hash_string(key->data);
-    uint32_t idx = hash % m->size;
-    uint32_t start_idx = idx;
-    
-    while (m->entries[idx].occupied) {
-        if (strcmp(m->entries[idx].key->data, key->data) == 0) {
-            m->entries[idx].occupied = false;
-            m->entries[idx].key = NULL;
-            m->entries[idx].value = NULL;
-            m->count--;
-            // Linear probing removal needs re-insertion of subsequent elements or tombstones.
-            // For MVP, we'll just mark it unoccupied. But collisions at this index will break.
-            // Better: re-insert until empty slot.
-            uint32_t next = (idx + 1) % m->size;
-            while (m->entries[next].occupied) {
-                come_map_entry_t entry = m->entries[next];
-                m->entries[next].occupied = false;
-                m->count--;
-                come_map_put(&m, entry.key, entry.value);
-                next = (next + 1) % m->size;
-            }
-            return;
-        }
-        idx = (idx + 1) % m->size;
-        if (idx == start_idx) break;
-    }
+void* come_map_get(come_map_t m, come_string_t key) {
+    come_map_entry_t* e = map_find(&m, &key);
+    return e ? e->value : NULL;
 }
 
-uint32_t come_map_len(const come_map_t* m) {
-    return m ? m->count : 0;
-}
-
-void come_map_free(come_map_t* m) {
-    // mem_talloc_free(m);
-}
-
-// ---- Typed-map support (COIL-103) ----
-
-void* come_map_get_e(come_map_t* m, string key) {
+void* come_map_get_e(come_map_t m, come_string_t key) {
     void* v = come_map_get(m, key);
     if (!v) come_ERR_set(ENOENT, "map key not found");
     return v;
 }
 
-int come_map_remove_e(come_map_t* m, string key) {
-    if (!come_map_get(m, key)) {
+void come_map_remove(come_map_t* m, come_string_t key) {
+    if (!m || !m->data) return;
+
+    uint32_t hash = hash_string(kdata(&key));
+    uint32_t idx = hash % m->cap;
+    uint32_t start_idx = idx;
+
+    while (m->data[idx].occupied) {
+        if (strcmp(kdata(&m->data[idx].key), kdata(&key)) == 0) {
+            m->data[idx].occupied = false;
+            memset(&m->data[idx].key, 0, sizeof(come_string_t));
+            m->data[idx].value = NULL;
+            m->count--;
+            // Linear probing removal: re-insert the following
+            // cluster so probe chains stay intact.
+            uint32_t next = (idx + 1) % m->cap;
+            while (m->data[next].occupied) {
+                come_map_entry_t entry = m->data[next];
+                m->data[next].occupied = false;
+                m->count--;
+                come_map_put(m, entry.key, entry.value);
+                next = (next + 1) % m->cap;
+            }
+            return;
+        }
+        idx = (idx + 1) % m->cap;
+        if (idx == start_idx) break;
+    }
+}
+
+int come_map_remove_e(come_map_t* m, come_string_t key) {
+    if (!come_map_get(*m, key)) {
         come_ERR_set(ENOENT, "map key not found");
         return 0;
     }
@@ -161,38 +145,40 @@ int come_map_remove_e(come_map_t* m, string key) {
     return 1;
 }
 
+uint32_t come_map_len(come_map_t m) {
+    return m.count;
+}
+
 void come_map_clear(come_map_t* m) {
     if (!m) return;
-    for (uint32_t i = 0; i < m->size; i++) {
-        m->entries[i].occupied = false;
-        m->entries[i].key = NULL;
-        m->entries[i].value = NULL;
-    }
+    if (m->data) memset(m->data, 0, sizeof(come_map_entry_t) * m->cap);
     m->count = 0;
 }
 
-come_string_list_t* come_map_keys(TALLOC_CTX* ctx, come_map_t* m) {
-    if (!m) return NULL;
-    come_string_list_t* list = mem_talloc_alloc(ctx, sizeof(uint32_t) * 2 + sizeof(come_string_t*) * m->count);
-    if (!list) return NULL;
-    list->size = m->count;
-    list->count = m->count;
-    uint32_t j = 0;
-    for (uint32_t i = 0; i < m->size; i++) {
-        if (m->entries[i].occupied) {
-            list->items[j++] = m->entries[i].key;
+void come_map_free(come_map_t* m) {
+    if (m) mem_talloc_free(m->data);
+}
+
+come_string_list_t come_map_keys(come_map_t m) {
+    come_string_list_t list = COME_HDR_INIT(m.ctx);
+    if (!m.data) return list;
+    for (uint32_t i = 0; i < m.cap; i++) {
+        if (m.data[i].occupied) {
+            come_string_t k = m.data[i].key;
+            come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &k);
         }
     }
     return list;
 }
 
-come_map_t* come_map_copy(TALLOC_CTX* ctx, come_map_t* src) {
-    if (!src) return NULL;
-    come_map_t* copy = come_map_new(ctx);
-    if (!copy) return NULL;
-    for (uint32_t i = 0; i < src->size; i++) {
-        if (src->entries[i].occupied) {
-            come_map_put(&copy, src->entries[i].key, src->entries[i].value);
+// A shallow copy: the new table shares the key strings and the
+// value pointers with the source.
+come_map_t come_map_copy(come_map_t src) {
+    come_map_t copy = come_map_new(src.ctx);
+    if (!src.data) return copy;
+    for (uint32_t i = 0; i < src.cap; i++) {
+        if (src.data[i].occupied) {
+            come_map_put(&copy, src.data[i].key, src.data[i].value);
         }
     }
     return copy;

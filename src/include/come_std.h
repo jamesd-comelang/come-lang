@@ -12,7 +12,7 @@ struct come_std__FILE {
     FILE *fp;             /* libc FILE* */
     int   fd;             /* cached fd, -1 when not open */
     int   flags;          /* mode, ownership flags, etc */
-    come_string_t* fname; /* file name, empty for std streams */
+    come_string_t fname;  /* file name (a header value), empty for std streams */
 };
 
 typedef struct come_std__FILE come_std__FILE_t;

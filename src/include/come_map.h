@@ -9,36 +9,43 @@
 // Forward declaration for talloc context
 typedef void TALLOC_CTX;
 
+// A map is a split header kept inline in the variable (COIL-135),
+// with the uniform buffer layout: data is the heap entries block
+// (context-owned), count is the number of entries, cap is the
+// number of slots, ctx is the owner context. Growth allocates a
+// fresh entries block and updates only the header it was called on,
+// so an alias keeps a valid older snapshot of the table.
 typedef struct come_map_entry_t {
-    string key;
+    come_string_t key;
     void* value;
     uint32_t hash;
     bool occupied;
 } come_map_entry_t;
 
 typedef struct come_map_t {
-    uint32_t size;  // Capacity (slots)
-    uint32_t count; // Number of elements
-    come_map_entry_t entries[];
+    come_map_entry_t* data;
+    uint32_t count;
+    uint32_t cap;
+    void* ctx;
 } come_map_t;
 
-typedef come_map_t* map;
+typedef come_map_t map;
 
-// API
-come_map_t* come_map_new(TALLOC_CTX* ctx);
-void come_map_put(come_map_t** m, string key, void* value);
-void* come_map_get(come_map_t* m, string key);
-void come_map_remove(come_map_t* m, string key);
-uint32_t come_map_len(const come_map_t* m);
+// API. Mutating operations take the address of the header slot.
+come_map_t come_map_new(TALLOC_CTX* ctx);
+void come_map_put(come_map_t* m, come_string_t key, void* value);
+void* come_map_get(come_map_t m, come_string_t key);
+void come_map_remove(come_map_t* m, come_string_t key);
+uint32_t come_map_len(come_map_t m);
 void come_map_free(come_map_t* m);
 
 // Typed-map support (COIL-103): ERR-aware access and the documented
 // method table. ERR is errno-backed, so a miss sets errno = ENOENT,
 // which is what ERR.no()/ERR.str() report.
-void* come_map_get_e(come_map_t* m, string key);
-int come_map_remove_e(come_map_t* m, string key);
+void* come_map_get_e(come_map_t m, come_string_t key);
+int come_map_remove_e(come_map_t* m, come_string_t key);
 void come_map_clear(come_map_t* m);
-come_string_list_t* come_map_keys(TALLOC_CTX* ctx, come_map_t* m);
-come_map_t* come_map_copy(TALLOC_CTX* ctx, come_map_t* src);
+come_string_list_t come_map_keys(come_map_t m);
+come_map_t come_map_copy(come_map_t src);
 
 #endif // COME_MAP_H

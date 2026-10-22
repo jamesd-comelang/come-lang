@@ -5,7 +5,7 @@ The `map{K, V}` type is a statically typed, unordered key-value collection.
 - `K` is the key type. V1 key types: integer types, `bool`, `wchar`, `string` (hashed by contents), and enums.
 - `V` is the value type: one single type per map — a primitive, a `string`, a struct, an array, or another map.
 
-Maps are composite objects and participate in Come ownership contexts.
+Maps are composite objects and participate in Come ownership contexts. A map variable holds its header — entries pointer, pair count, capacity, and owner context — inline, as a value; only the entries block is heap-allocated. Assignment copies the header and shares the entries block, and growth (rehashing into a fresh entries block) forks an alias made earlier into a valid snapshot, exactly as for arrays (spec 7.2).
 
 ## 1. Overview
 

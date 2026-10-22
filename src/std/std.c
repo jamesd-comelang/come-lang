@@ -21,7 +21,7 @@
 // ERR_t structure with preallocated 1024-byte buffer
 struct come_std__ERR_t {
     int no;
-    come_string_t* str;  // Points to the buffer below
+    come_string_t str;   // Header value; its data points into the buffer below
     char buffer[1024];   // Preallocated buffer for error strings
 };
 
@@ -79,12 +79,9 @@ static char* come_convert_format(const char* fmt) {
     return new_fmt;
 }
 
-// Helper to extract C string from come_string_t
-static const char* come_string_to_cstr(come_string_t* s) {
-    if (!s) return "(null)";
-    // come_string_t has: uint32_t size, uint32_t count, char data[]
-    // Offset past the header to get to the char array
-    return (const char*)&s->data[0];
+// Helper to extract C string from a come_string_t value
+static const char* come_string_to_cstr(come_string_t s) {
+    return s.data ? s.data : "(null)";
 }
 
 // Module Initialization
@@ -92,20 +89,21 @@ void come_std__init_local() {
     // Initialize FILE objects
     std_in.fp = stdin;
     std_in.fd = 0;
-    std_in.fname = NULL;
+    memset(&std_in.fname, 0, sizeof(std_in.fname));
     std_out.fp = stdout;
     std_out.fd = 1;
-    std_out.fname = NULL;
+    memset(&std_out.fname, 0, sizeof(std_out.fname));
     std_err.fp = stderr;
     std_err.fd = 2;
-    std_err.fname = NULL;
+    memset(&std_err.fname, 0, sizeof(std_err.fname));
 
-    // Initialize ERR object
+    // Initialize ERR object: str is a header value over the buffer.
     memset(&come_std__ERR, 0, sizeof(come_std__ERR));
-    come_std__ERR.str = (come_string_t*)come_std__ERR.buffer;
-    come_std__ERR.str->size = sizeof(come_std__ERR.buffer);
-    come_std__ERR.str->count = 0;
-    come_std__ERR.str->data[0] = '\0';
+    come_std__ERR.str.data = come_std__ERR.buffer;
+    come_std__ERR.str.cap = sizeof(come_std__ERR.buffer);
+    come_std__ERR.str.count = 0;
+    come_std__ERR.str.ctx = NULL;
+    come_std__ERR.buffer[0] = '\0';
 }
 
 void come_std__exit_local() {
@@ -120,7 +118,7 @@ void come_std__FILE__init(come_std__FILE_t* self) {
     self->fp = NULL;
     self->fd = -1;
     self->flags = 0;
-    self->fname = NULL;
+    memset(&self->fname, 0, sizeof(self->fname));
 }
 
 // FILE.exit(): release the OS resource if still open. Called by
@@ -143,8 +141,8 @@ static bool std_file_ready(come_std__FILE_t* self) {
     return true;
 }
 
-bool come_std__FILE__open(come_std__FILE_t* self, come_string_t* path, come_string_t* mode) {
-    if (!self || !path || !mode) return false;
+bool come_std__FILE__open(come_std__FILE_t* self, come_string_t path, come_string_t mode) {
+    if (!self) return false;
     if (self->fp && self->fp != stdin && self->fp != stdout && self->fp != stderr) {
         fclose(self->fp);
         self->fp = NULL;
@@ -167,8 +165,8 @@ void come_std__FILE__close(come_std__FILE_t* self) {
     }
 }
 
-bool come_std__FILE__fdopen(come_std__FILE_t* self, int fd, come_string_t* mode) {
-    if (!self || !mode || fd < 0) return false;
+bool come_std__FILE__fdopen(come_std__FILE_t* self, int fd, come_string_t mode) {
+    if (!self || fd < 0) return false;
     FILE* f = fdopen(fd, come_string_to_cstr(mode));
     if (!f) return false;
     self->fp = f;
@@ -177,8 +175,8 @@ bool come_std__FILE__fdopen(come_std__FILE_t* self, int fd, come_string_t* mode)
     return true;
 }
 
-bool come_std__FILE__reopen(come_std__FILE_t* self, come_string_t* path, come_string_t* mode) {
-    if (!self || !path || !mode) return false;
+bool come_std__FILE__reopen(come_std__FILE_t* self, come_string_t path, come_string_t mode) {
+    if (!self) return false;
     FILE* f;
     if (self->fp) {
         f = freopen(come_string_to_cstr(path), come_string_to_cstr(mode), self->fp);
@@ -205,8 +203,8 @@ int come_std__FILE__fileno(come_std__FILE_t* self) {
 // %s expects come_string_t* (converted to char*)
 // %t/%T expects bool (converted to "true"/"false")
 // %c expects wchar (converted to %lc)
-int come_std__FILE__printf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
-    if (!fmt_s || !std_file_ready(self)) return -1;
+int come_std__FILE__printf(come_std__FILE_t* self, come_string_t fmt_s, ...) {
+    if (!std_file_ready(self)) return -1;
     const char* fmt = come_string_to_cstr(fmt_s);
 
     // Convert format string
@@ -235,8 +233,8 @@ int come_std__FILE__printf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
                 converted_args[arg_idx++] = (void*)(b ? "true" : "false");
                 p++;
             } else if (*p == 's') {
-                // come_string_t* -> char*
-                come_string_t* str = va_arg(args, come_string_t*);
+                // come_string_t value -> char*
+                come_string_t str = va_arg(args, come_string_t);
                 converted_args[arg_idx++] = (void*)come_string_to_cstr(str);
                 p++;
             } else if (*p == 'd' || *p == 'i' || *p == 'u' || *p == 'x' || *p == 'X' || *p == 'o') {
@@ -290,13 +288,13 @@ int come_std__FILE__printf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
     return ret;
 }
 
-int come_std__FILE__vprintf(come_std__FILE_t* self, come_string_t* fmt_s, va_list ap) {
-    if (!fmt_s || !std_file_ready(self)) return -1;
+int come_std__FILE__vprintf(come_std__FILE_t* self, come_string_t fmt_s, va_list ap) {
+    if (!std_file_ready(self)) return -1;
     return vfprintf(self->fp, come_string_to_cstr(fmt_s), ap);
 }
 
-int come_std__FILE__scanf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
-    if (!fmt_s || !std_file_ready(self)) return EOF;
+int come_std__FILE__scanf(come_std__FILE_t* self, come_string_t fmt_s, ...) {
+    if (!std_file_ready(self)) return EOF;
     va_list ap;
     va_start(ap, fmt_s);
     int r = vfscanf(self->fp, come_string_to_cstr(fmt_s), ap);
@@ -304,25 +302,25 @@ int come_std__FILE__scanf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
     return r;
 }
 
-int come_std__FILE__vscanf(come_std__FILE_t* self, come_string_t* fmt_s, va_list ap) {
-    if (!fmt_s || !std_file_ready(self)) return EOF;
+int come_std__FILE__vscanf(come_std__FILE_t* self, come_string_t fmt_s, va_list ap) {
+    if (!std_file_ready(self)) return EOF;
     return vfscanf(self->fp, come_string_to_cstr(fmt_s), ap);
 }
 
-long come_std__FILE__read(come_std__FILE_t* self, come_byte_array_t* buf, long n) {
-    if (!buf || n < 0 || !std_file_ready(self)) return -1;
+long come_std__FILE__read(come_std__FILE_t* self, come_byte_array_t buf, long n) {
+    if (!buf.data || n < 0 || !std_file_ready(self)) return -1;
     long want = n;
-    if ((uint32_t)want > buf->count) want = buf->count;
+    if ((uint32_t)want > buf.count) want = buf.count;
     if (want == 0) return 0;
-    return (long)fread(buf->items, 1, (size_t)want, self->fp);
+    return (long)fread(buf.data, 1, (size_t)want, self->fp);
 }
 
-long come_std__FILE__write(come_std__FILE_t* self, come_byte_array_t* buf, long n) {
-    if (!buf || n < 0 || !std_file_ready(self)) return -1;
+long come_std__FILE__write(come_std__FILE_t* self, come_byte_array_t buf, long n) {
+    if (!buf.data || n < 0 || !std_file_ready(self)) return -1;
     long want = n;
-    if ((uint32_t)want > buf->count) want = buf->count;
+    if ((uint32_t)want > buf.count) want = buf.count;
     if (want == 0) return 0;
-    return (long)fwrite(buf->items, 1, (size_t)want, self->fp);
+    return (long)fwrite(buf.data, 1, (size_t)want, self->fp);
 }
 
 // getc/putc/ungetc work on wchar (Unicode scalar) over a byte
@@ -367,7 +365,7 @@ void come_std__FILE__putc(come_std__FILE_t* self, int32_t c) {
     }
 }
 
-come_string_t* come_std__FILE__gets(come_std__FILE_t* self) {
+come_string_t come_std__FILE__gets(come_std__FILE_t* self) {
     if (!std_file_ready(self)) return come_string_new(NULL, "");
     size_t cap = 128, len = 0;
     char* buf = (char*)malloc(cap);
@@ -385,21 +383,21 @@ come_string_t* come_std__FILE__gets(come_std__FILE_t* self) {
         if (len > 0 && buf[len - 1] == '\n') break;
         if (feof(self->fp)) break;
     }
-    come_string_t* s = come_string_new_len(NULL, buf, len);
+    come_string_t s = come_string_new_len(NULL, buf, len);
     free(buf);
     return s;
 }
 
-long come_std__FILE__puts(come_std__FILE_t* self, come_string_t* s) {
-    if (!s || !std_file_ready(self)) return EOF;
+long come_std__FILE__puts(come_std__FILE_t* self, come_string_t s) {
+    if (!std_file_ready(self)) return EOF;
     const char* text = come_string_to_cstr(s);
     if (fputs(text, self->fp) == EOF) return EOF;
     if (fputc('\n', self->fp) == EOF) return EOF;
     return (long)strlen(text) + 1;
 }
 
-come_string_t* come_std__FILE__fname(come_std__FILE_t* self) {
-    if (!self || !self->fname) return come_string_new(NULL, "");
+come_string_t come_std__FILE__fname(come_std__FILE_t* self) {
+    if (!self) return come_string_new(NULL, "");
     return self->fname;
 }
 
@@ -460,16 +458,16 @@ void come_std__FILE__clearerr(come_std__FILE_t* self) {
     if (self && self->fp) clearerr(self->fp);
 }
 
-void come_std__FILE__setbuf(come_std__FILE_t* self, come_byte_array_t* buf, long size) {
+void come_std__FILE__setbuf(come_std__FILE_t* self, come_byte_array_t buf, long size) {
     if (!self || !self->fp) return;
     (void)size;   // setbuf has no size parameter in C; see setvbuf
-    if (buf && buf->count > 0) setbuf(self->fp, (char*)buf->items);
+    if (buf.data && buf.count > 0) setbuf(self->fp, (char*)buf.data);
     else setbuf(self->fp, NULL);
 }
 
-void come_std__FILE__setvbuf(come_std__FILE_t* self, come_byte_array_t* buf, int mode, long size) {
+void come_std__FILE__setvbuf(come_std__FILE_t* self, come_byte_array_t buf, int mode, long size) {
     if (!self || !self->fp) return;
-    char* b = (buf && buf->count > 0) ? (char*)buf->items : NULL;
+    char* b = (buf.data && buf.count > 0) ? (char*)buf.data : NULL;
     setvbuf(self->fp, b, mode, (size_t)(size > 0 ? size : 0));
 }
 
@@ -487,9 +485,9 @@ void come_std__Proc__atexit(void* self, void (*cb)(void)) {
     (void)self;
     if (cb) atexit(cb);
 }
-come_string_t* come_std__Proc__getenv(void* self, come_string_t* name) {
+come_string_t come_std__Proc__getenv(void* self, come_string_t name) {
     (void)self;
-    if (!name) return come_string_new(NULL, "");
+
     const char* v = getenv(come_string_to_cstr(name));
     if (!v) {
         // Missing variable: empty string (never null) + ENOENT
@@ -499,15 +497,15 @@ come_string_t* come_std__Proc__getenv(void* self, come_string_t* name) {
     }
     return come_string_new(NULL, v);
 }
-int come_std__Proc__system(void* self, come_string_t* cmd) {
+int come_std__Proc__system(void* self, come_string_t cmd) {
     (void)self;
-    if (!cmd) return -1;
+
     return system(come_string_to_cstr(cmd));
 }
 
 // Module-level file operations (Come_std.md section 4)
-bool come_std__remove(come_string_t* path) {
-    if (!path) return false;
+bool come_std__remove(come_string_t path) {
+
     return remove(come_string_to_cstr(path)) == 0;
 }
 
@@ -520,7 +518,7 @@ come_std__FILE_t come_std__tmpfile(void) {
     return t;
 }
 
-come_string_t* come_std__tmpname(void) {
+come_string_t come_std__tmpname(void) {
     static unsigned counter = 0;
     char buf[256];
     snprintf(buf, sizeof(buf), "/tmp/come-tmp-%ld-%u", (long)getpid(), ++counter);
@@ -532,8 +530,8 @@ void come_std__srand(unsigned int seed) { srand(seed); }
 
 // std.qsort (Come_std.md section 4): sorts a byte array in
 // place with the caller's comparator.
-void come_std__qsort(come_byte_array_t* a, int (*cmp)(int8_t, int8_t)) {
-    come_byte_array_sort(a, cmp);
+void come_std__qsort(come_byte_array_t a, int (*cmp)(int8_t, int8_t)) {
+    come_byte_array_sort(&a, cmp);
 }
 
 // ERR_t methods - following the name mangling convention: come_std__ERR_t__method
@@ -545,7 +543,7 @@ int come_std__ERR_t__no(come_std__ERR_t* self) {
 }
 
 
-come_string_t* come_std__ERR_t__str(come_std__ERR_t* self) {
+come_string_t come_std__ERR_t__str(come_std__ERR_t* self) {
     // Copy the message for the current code into the ERR.str
     // buffer and return it. A specific runtime message wins over
     // strerror where strerror would mislead (COIL-118); the
@@ -558,16 +556,17 @@ come_string_t* come_std__ERR_t__str(come_std__ERR_t* self) {
     if (!err_msg || !*err_msg) err_msg = "Unknown error";
 
     size_t len = strlen(err_msg);
-    if (len >= sizeof(self->buffer) - sizeof(come_string_t)) {
-        len = sizeof(self->buffer) - sizeof(come_string_t) - 1;
+    if (len >= sizeof(self->buffer)) {
+        len = sizeof(self->buffer) - 1;
     }
 
-    // Use the buffer as a come_string_t
-    self->str = (come_string_t*)self->buffer;
-    self->str->size = (uint32_t)(sizeof(self->buffer));
-    self->str->count = (uint32_t)len;
-    memcpy(self->str->data, err_msg, len);
-    self->str->data[len] = '\0';
+    // The str header value overlays the static buffer.
+    self->str.data = self->buffer;
+    self->str.cap = (uint32_t)sizeof(self->buffer);
+    self->str.count = (uint32_t)len;
+    self->str.ctx = NULL;
+    memcpy(self->str.data, err_msg, len);
+    self->str.data[len] = '\0';
 
     return self->str;
 }
@@ -578,10 +577,8 @@ void come_std__ERR_t__clear(come_std__ERR_t* self) {
     self->no = 0;
     errno = 0;
     come_ERR_clear_custom();
-    if (self->str) {
-        self->str->count = 0;
-        self->str->data[0] = '\0';
-    }
+    self->str.count = 0;
+    if (self->str.data) self->str.data[0] = '\0';
 }
 
 // Wrapper functions for global ERR object access
@@ -589,7 +586,7 @@ int come_ERR_no() {
     return come_std__ERR_t__no(&come_std__ERR);
 }
 
-come_string_t* come_ERR_str() {
+come_string_t come_ERR_str() {
     return come_std__ERR_t__str(&come_std__ERR);
 }
 
@@ -599,7 +596,7 @@ void come_ERR_clear() {
 
 // ERR.fatal(msg): halt the program immediately, in every build.
 // A plain runtime call - there is no build mode that removes it.
-void come_ERR_fatal(come_string_t* msg) {
-    fprintf(stderr, "Fatal error: %s\n", (msg && msg->data) ? msg->data : "unknown error");
+void come_ERR_fatal(come_string_t msg) {
+    fprintf(stderr, "Fatal error: %s\n", msg.data ? msg.data : "unknown error");
     exit(1);
 }

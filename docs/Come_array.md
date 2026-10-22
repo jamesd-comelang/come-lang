@@ -2,9 +2,7 @@
 
 Arrays in Come are headered buffers with bounds-aware access and ownership context tracking. An array is either fixed-size (`T[N]`) or dynamic (`T[]`).
 
-```text
-[ uint size_in_bytes | uint element_count | element data... ]
-```
+The header — data pointer, element count, capacity, and owner context — is a small fixed-size value kept inline in the array variable (or struct field, or element) itself; only the element data block is heap-allocated, in the header's owner context. Assignment copies the header and shares the data block; growth allocates a fresh data block for the growing variable only, so an alias made before the growth keeps the old block as a valid snapshot (spec 7.2).
 
 ## 1. Declaration and Initialization
 
@@ -145,7 +143,8 @@ Array memory is reclaimed automatically when its owner context ends:
 
 ## 8. Summary
 
-- Arrays are headered buffers, fixed-size or dynamic.
+- Arrays are headered buffers, fixed-size or dynamic: the header is a value inline in the variable; only the data block is heap-allocated.
+- Assignment copies the header and shares the data block; growth forks an alias into a valid snapshot, never a dangling pointer.
 - Indexing is bounds-checked.
 - `resize(n)` changes a dynamic array's logical length.
 - `append()` and `insert()` grow automatically.

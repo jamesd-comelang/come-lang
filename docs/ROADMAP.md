@@ -6,7 +6,7 @@ Built from the v2 spec (`Come_spec.md`) and the type/stdlib docs
 when its acceptance line holds and a test covers it.
 
 Stories are numbered **COIL-100** upward, globally across releases
-(next free number: **COIL-135**).
+(next free number: **COIL-136**).
 
 Story titles state the **value delivered** — who gains what — in one
 read. Implementation detail belongs in the Spec and Acceptance columns,
@@ -102,6 +102,15 @@ Theme: v1 is the spec, fully — verified, documented, packaged.
 and implementation agree.
 
 ---
+
+## v1.1.0 — One buffer design
+
+Theme: arrays, strings and maps share one representation, and a
+growing buffer can never leave an alias pointing at freed memory.
+
+| Story | Title | Spec | Size | Depends | Acceptance | Done |
+|-------|-------|------|------|---------|------------|------|
+| COIL-135 | Aliases survive growth: one split-header value design for arrays, strings and maps | §7 | L | v1.0.0 | Header lives inline in the variable (data pointer, count, capacity, owner context); only the data block is heap-allocated; growth allocates a fresh data block and forks aliases into valid snapshots; C and .co tests pin alias-over-growth for arrays and maps; spec, type docs and README revised | ☑ |
 
 ## Post-v1 backlog (explicitly deferred by the spec)
 

@@ -3,6 +3,7 @@
 #include <string.h>
 #include <errno.h>
 #include "come_array.h"
+#include "come_string.h"
 #include "mem/talloc.h"
 
 // Out-of-bounds scratch slots (COIL-106). Every call zeroes the slot
@@ -22,14 +23,6 @@ uint8_t* come_oob_slot_byte(void) {
     return &slot;
 }
 
-struct come_string_t** come_oob_slot_string(void) {
-    static struct come_string_t* slot;
-    static struct { uint32_t size; uint32_t count; char data[1]; } empty = { 9, 0, { 0 } };
-    slot = (struct come_string_t*)&empty;
-    come_ERR_set(ERANGE, "array index out of bounds");
-    return &slot;
-}
-
 void* come_oob_slot_bytes(void) {
     static uint8_t slot[4096];
     memset(slot, 0, sizeof(slot));
@@ -37,314 +30,224 @@ void* come_oob_slot_bytes(void) {
     return slot;
 }
 
-// Generic allocation
-void* come_array_alloc(TALLOC_CTX* ctx, size_t elem_size, uint32_t count) {
-    size_t header_size = sizeof(uint32_t) * 2;
-    void* arr = mem_talloc_alloc(ctx, header_size + elem_size * count);
-    if (!arr) return NULL;
-    
-    uint32_t* h = (uint32_t*)arr;
-    h[0] = count; // size
-    h[1] = count; // count
-    
-    // Clear items
-    memset((char*)arr + header_size, 0, elem_size * count);
-    
-    return arr;
+/* ---- Uniform header operations (COIL-135) -----------------------
+ * Every buffer kind shares the header layout {data, count, cap,
+ * ctx}, kept inline in the variable. Mutating operations take the
+ * address of the header slot. Growth allocates a FRESH data block in
+ * the header's owner context and never frees or moves the old one:
+ * an alias that copied the header earlier keeps pointing at the old
+ * block, which stays valid until the owner context dies. */
+
+// Ensure room for at least mincap elements, growing by doubling.
+void come_array_ensure(come_hdr_t* h, size_t esz, uint32_t mincap) {
+    if (!h || h->cap >= mincap) return;
+    uint32_t ncap = h->cap ? h->cap : 4;
+    while (ncap < mincap) ncap *= 2;
+    void* nd = mem_talloc_alloc(h->ctx, esz * ncap);
+    if (!nd) return;
+    if (h->data && h->count)
+        memcpy(nd, h->data, (size_t)h->count * esz);
+    memset((char*)nd + (size_t)h->count * esz, 0,
+           (size_t)(ncap - h->count) * esz);
+    h->data = nd;
+    h->cap = ncap;
 }
 
-void* come_array_realloc(void* arr, size_t elem_size, uint32_t new_size) {
-    size_t header_size = sizeof(uint32_t) * 2;
-    uint32_t old_size = arr ? ((uint32_t*)arr)[0] : 0;
-    
-    void* new_arr = mem_talloc_realloc(NULL, arr, header_size + elem_size * new_size);
-    if (!new_arr) return NULL;
-    
-    uint32_t* h = (uint32_t*)new_arr;
-    h[0] = new_size; // size
-    h[1] = new_size; // count - resize implies changing used count
-    
-    // Zero init new items if growing
-    if (new_size > old_size) {
-        memset((char*)new_arr + header_size + old_size * elem_size, 
-               0, 
-               (new_size - old_size) * elem_size);
-    }
-    
-    return new_arr;
+void come_array_resize_g(come_hdr_t* h, size_t esz, uint32_t n) {
+    if (!h) return;
+    if (n > h->cap) come_array_ensure(h, esz, n);
+    if (n > h->count && h->data)
+        memset((char*)h->data + (size_t)h->count * esz, 0,
+               (size_t)(n - h->count) * esz);
+    h->count = n;
 }
 
-void* come_int_array_resize(come_int_array_t* a, uint32_t n) {
-    return (come_int_array_t*)come_array_realloc(a, sizeof(int), n);
+void come_array_append_g(come_hdr_t* h, size_t esz, const void* elem) {
+    if (!h || !elem) return;
+    come_array_ensure(h, esz, h->count + 1);
+    if (!h->data) return;
+    memcpy((char*)h->data + (size_t)h->count * esz, elem, esz);
+    h->count++;
 }
 
-void* come_byte_array_resize(come_byte_array_t* a, uint32_t n) {
-    return (come_byte_array_t*)come_array_realloc(a, sizeof(uint8_t), n);
+void come_array_insert_g(come_hdr_t* h, size_t esz, uint32_t idx, const void* elem) {
+    if (!h || !elem) return;
+    if (idx > h->count) { come_ERR_set(ERANGE, "array index out of bounds"); return; }
+    come_array_ensure(h, esz, h->count + 1);
+    if (!h->data) return;
+    char* items = (char*)h->data;
+    memmove(items + (size_t)(idx + 1) * esz, items + (size_t)idx * esz,
+            (size_t)(h->count - idx) * esz);
+    memcpy(items + (size_t)idx * esz, elem, esz);
+    h->count++;
 }
 
-void* come_string_list_resize(come_string_list_t* a, uint32_t n) {
-    return (come_string_list_t*)come_array_realloc(a, sizeof(void*), n);
+void come_array_remove_g(come_hdr_t* h, size_t esz, uint32_t idx) {
+    if (!h || !h->data) return;
+    if (idx >= h->count) { come_ERR_set(ERANGE, "array index out of bounds"); return; }
+    char* items = (char*)h->data;
+    memmove(items + (size_t)idx * esz, items + (size_t)(idx + 1) * esz,
+            (size_t)(h->count - idx - 1) * esz);
+    h->count--;
 }
 
-come_int_array_t* come_int_array_slice(come_int_array_t* a, uint32_t start, uint32_t end) {
-    if (!a) {
-        return (come_int_array_t*)come_array_alloc(NULL, sizeof(int), 0);
-    }
-    
-    if (start >= a->count || start >= end) {
-        return (come_int_array_t*)come_array_alloc((void*)a, sizeof(int), 0);
-    }
-    if (end > a->count) end = a->count;
-    uint32_t n = end - start;
-    come_int_array_t* res = (come_int_array_t*)come_array_alloc((void*)a, sizeof(int), n);
-    if (res) {
-        memcpy(res->items, &a->items[start], n * sizeof(int));
-    }
-    return res;
+void come_array_clear_g(come_hdr_t* h) {
+    if (h) h->count = 0;
 }
 
-come_byte_array_t* come_byte_array_slice(come_byte_array_t* a, uint32_t start, uint32_t end) {
-    if (!a || start >= a->count || start >= end) {
-        return (come_byte_array_t*)come_array_alloc((void*)a, sizeof(uint8_t), 0);
-    }
-    if (end > a->count) end = a->count;
-    uint32_t n = end - start;
-    come_byte_array_t* res = (come_byte_array_t*)come_array_alloc((void*)a, sizeof(uint8_t), n);
-    if (res) {
-        memcpy(res->items, &a->items[start], n * sizeof(uint8_t));
-    }
-    return res;
-}
-
-come_string_list_t* come_string_list_slice(come_string_list_t* a, uint32_t start, uint32_t end) {
-    if (!a || start >= a->count || start >= end) {
-        return (come_string_list_t*)come_array_alloc((void*)a, sizeof(void*), 0);
-    }
-    if (end > a->count) end = a->count;
-    uint32_t n = end - start;
-    come_string_list_t* res = (come_string_list_t*)come_array_alloc((void*)a, sizeof(void*), n);
-    if (res) {
-        memcpy(res->items, &a->items[start], n * sizeof(void*));
-    }
-    return res;
-}
-
-/* ---- Toolbox (Come_array.md section 4, COIL-116) ----------------
- * All arrays share the header layout [uint32 capacity][uint32
- * count][items...]. The generic functions take the element size;
- * typed wrappers below adapt them. Growing operations may move
- * the array and return the new pointer. */
-
-static uint32_t* arr_hdr(void* a) { return (uint32_t*)a; }
-static char* arr_items(void* a) { return (char*)a + sizeof(uint32_t) * 2; }
-
-static void* arr_grow(void* a, size_t esz, uint32_t need) {
-    uint32_t cap = a ? arr_hdr(a)[0] : 0;
-    uint32_t cnt = a ? arr_hdr(a)[1] : 0;
-    if (a && cap >= need) return a;
-    uint32_t ncap = cap ? cap : 4;
-    while (ncap < need) ncap *= 2;
-    void* na = mem_talloc_realloc(NULL, a, sizeof(uint32_t) * 2 + esz * ncap);
-    if (!na) return a;
-    arr_hdr(na)[0] = ncap;
-    arr_hdr(na)[1] = cnt;
-    return na;
-}
-
-void* come_array_append_g(void* a, size_t esz, const void* elem) {
-    if (!elem) return a;
-    uint32_t cnt = a ? arr_hdr(a)[1] : 0;
-    a = arr_grow(a, esz, cnt + 1);
-    if (!a) return NULL;
-    memcpy(arr_items(a) + cnt * esz, elem, esz);
-    arr_hdr(a)[1] = cnt + 1;
-    return a;
-}
-
-void* come_array_insert_g(void* a, size_t esz, uint32_t idx, const void* elem) {
-    if (!elem) return a;
-    uint32_t cnt = a ? arr_hdr(a)[1] : 0;
-    if (idx > cnt) { come_ERR_set(ERANGE, "array index out of bounds"); return a; }
-    a = arr_grow(a, esz, cnt + 1);
-    if (!a) return NULL;
-    char* items = arr_items(a);
-    memmove(items + (idx + 1) * esz, items + idx * esz, (cnt - idx) * esz);
-    memcpy(items + idx * esz, elem, esz);
-    arr_hdr(a)[1] = cnt + 1;
-    return a;
-}
-
-void* come_array_remove_g(void* a, size_t esz, uint32_t idx) {
-    if (!a) return NULL;
-    uint32_t cnt = arr_hdr(a)[1];
-    if (idx >= cnt) { come_ERR_set(ERANGE, "array index out of bounds"); return a; }
-    char* items = arr_items(a);
-    memmove(items + idx * esz, items + (idx + 1) * esz, (cnt - idx - 1) * esz);
-    arr_hdr(a)[1] = cnt - 1;
-    return a;
-}
-
-void come_array_clear_g(void* a) {
-    if (a) arr_hdr(a)[1] = 0;
-}
-
-void come_array_reverse_g(void* a, size_t esz) {
-    if (!a || esz == 0) return;
-    uint32_t cnt = arr_hdr(a)[1];
-    char* items = arr_items(a);
+void come_array_reverse_g(come_hdr_t* h, size_t esz) {
+    if (!h || !h->data || esz == 0) return;
+    char* items = (char*)h->data;
     char tmp[64];
     if (esz > sizeof(tmp)) return;
-    for (uint32_t i = 0; i < cnt / 2; i++) {
-        char* lo = items + i * esz;
-        char* hi = items + (cnt - 1 - i) * esz;
+    for (uint32_t i = 0; i < h->count / 2; i++) {
+        char* lo = items + (size_t)i * esz;
+        char* hi = items + (size_t)(h->count - 1 - i) * esz;
         memcpy(tmp, lo, esz);
         memcpy(lo, hi, esz);
         memcpy(hi, tmp, esz);
     }
 }
 
-void come_array_set_g(void* a, size_t esz, const void* value) {
-    if (!a || !value) return;
-    uint32_t cnt = arr_hdr(a)[1];
-    char* items = arr_items(a);
-    for (uint32_t i = 0; i < cnt; i++) memcpy(items + i * esz, value, esz);
+void come_array_set_g(come_hdr_t* h, size_t esz, const void* value) {
+    if (!h || !h->data || !value) return;
+    char* items = (char*)h->data;
+    for (uint32_t i = 0; i < h->count; i++)
+        memcpy(items + (size_t)i * esz, value, esz);
 }
 
-void* come_array_cpy_g(void* dst, size_t esz, const void* src) {
-    if (!src) return dst;
-    uint32_t scnt = ((const uint32_t*)src)[1];
-    dst = arr_grow(dst, esz, scnt);
-    if (!dst) return NULL;
-    memcpy(arr_items(dst), (const char*)src + sizeof(uint32_t) * 2, scnt * esz);
-    arr_hdr(dst)[1] = scnt;
-    return dst;
+void come_array_cpy_g(come_hdr_t* dst, size_t esz, come_hdr_t src) {
+    if (!dst) return;
+    come_array_ensure(dst, esz, src.count);
+    if (src.count && !dst->data) return;
+    if (src.count)
+        memcpy(dst->data, src.data, (size_t)src.count * esz);
+    dst->count = src.count;
 }
 
-void* come_array_dup_g(void* ctx, const void* a, size_t esz) {
-    if (!a) return NULL;
-    uint32_t cnt = ((const uint32_t*)a)[1];
-    void* res = come_array_alloc(ctx, esz, cnt);
-    if (res) memcpy(arr_items(res), (const char*)a + sizeof(uint32_t) * 2, cnt * esz);
+come_hdr_t come_array_dup_g(void* ctx, come_hdr_t a, size_t esz) {
+    come_hdr_t res = { NULL, 0, 0, ctx };
+    res.count = a.count;
+    res.cap = a.count;
+    if (a.count) {
+        res.data = mem_talloc_alloc(ctx, esz * a.count);
+        if (res.data) memcpy(res.data, a.data, (size_t)a.count * esz);
+    }
     return res;
 }
 
-long come_array_index_g(const void* a, size_t esz, const void* elem) {
-    if (!a || !elem) return -1;
-    uint32_t cnt = ((const uint32_t*)a)[1];
-    const char* items = (const char*)a + sizeof(uint32_t) * 2;
-    for (uint32_t i = 0; i < cnt; i++)
-        if (memcmp(items + i * esz, elem, esz) == 0) return (long)i;
+long come_array_index_g(come_hdr_t a, size_t esz, const void* elem) {
+    if (!a.data || !elem) return -1;
+    const char* items = (const char*)a.data;
+    for (uint32_t i = 0; i < a.count; i++)
+        if (memcmp(items + (size_t)i * esz, elem, esz) == 0) return (long)i;
     return -1;
 }
 
-bool come_array_contains_g(const void* a, size_t esz, const void* elem) {
+bool come_array_contains_g(come_hdr_t a, size_t esz, const void* elem) {
     return come_array_index_g(a, esz, elem) >= 0;
 }
 
-/* Typed wrappers: value semantics per element type. */
-
-come_int_array_t* come_int_array_append(come_int_array_t* a, int elem) {
-    return (come_int_array_t*)come_array_append_g(a, sizeof(int), &elem);
-}
-come_int_array_t* come_int_array_insert(come_int_array_t* a, uint32_t idx, int elem) {
-    return (come_int_array_t*)come_array_insert_g(a, sizeof(int), idx, &elem);
-}
-void come_int_array_set(come_int_array_t* a, int value) { come_array_set_g(a, sizeof(int), &value); }
-come_int_array_t* come_int_array_cpy(come_int_array_t* dst, const come_int_array_t* src) {
-    return (come_int_array_t*)come_array_cpy_g(dst, sizeof(int), src);
-}
-come_int_array_t* come_int_array_dup(void* ctx, const come_int_array_t* a) {
-    return (come_int_array_t*)come_array_dup_g(ctx, a, sizeof(int));
-}
-long come_int_array_index(const come_int_array_t* a, int elem) {
-    return come_array_index_g(a, sizeof(int), &elem);
-}
-bool come_int_array_contains(const come_int_array_t* a, int elem) {
-    return come_array_index_g(a, sizeof(int), &elem) >= 0;
-}
-void come_int_array_sort(come_int_array_t* a, int (*cmp)(int, int)) {
-    if (!a || !cmp) return;
-    // Insertion sort: simple, stable, and comparator-true.
-    for (uint32_t i = 1; i < a->count; i++) {
-        int key = a->items[i];
-        uint32_t j = i;
-        while (j > 0 && cmp(a->items[j - 1], key) > 0) {
-            a->items[j] = a->items[j - 1];
-            j--;
-        }
-        a->items[j] = key;
-    }
+// String elements compare by content, not by header bytes:
+// two distinct buffers with the same text are the same value.
+// (Byte-wise over the counted length, so embedded NULs count;
+// kept local so array.o needs no string.o symbols.)
+static int hdr_string_eq(come_string_t a, come_string_t b) {
+    if (a.count != b.count) return 0;
+    if (a.count == 0) return 1;
+    if (!a.data || !b.data) return 0;
+    return memcmp(a.data, b.data, a.count) == 0;
 }
 
-come_byte_array_t* come_byte_array_append(come_byte_array_t* a, uint8_t elem) {
-    return (come_byte_array_t*)come_array_append_g(a, sizeof(uint8_t), &elem);
-}
-come_byte_array_t* come_byte_array_insert(come_byte_array_t* a, uint32_t idx, uint8_t elem) {
-    return (come_byte_array_t*)come_array_insert_g(a, sizeof(uint8_t), idx, &elem);
-}
-void come_byte_array_set(come_byte_array_t* a, uint8_t value) { come_array_set_g(a, sizeof(uint8_t), &value); }
-come_byte_array_t* come_byte_array_cpy(come_byte_array_t* dst, const come_byte_array_t* src) {
-    return (come_byte_array_t*)come_array_cpy_g(dst, sizeof(uint8_t), src);
-}
-come_byte_array_t* come_byte_array_dup(void* ctx, const come_byte_array_t* a) {
-    return (come_byte_array_t*)come_array_dup_g(ctx, a, sizeof(uint8_t));
-}
-long come_byte_array_index(const come_byte_array_t* a, uint8_t elem) {
-    return come_array_index_g(a, sizeof(uint8_t), &elem);
-}
-bool come_byte_array_contains(const come_byte_array_t* a, uint8_t elem) {
-    return come_array_index_g(a, sizeof(uint8_t), &elem) >= 0;
-}
-void come_byte_array_sort(come_byte_array_t* a, int (*cmp)(int8_t, int8_t)) {
-    if (!a || !cmp) return;
-    for (uint32_t i = 1; i < a->count; i++) {
-        uint8_t key = a->items[i];
-        uint32_t j = i;
-        while (j > 0 && cmp((int8_t)a->items[j - 1], (int8_t)key) > 0) {
-            a->items[j] = a->items[j - 1];
-            j--;
-        }
-        a->items[j] = key;
-    }
-}
-
-come_string_list_t* come_string_list_append(come_string_list_t* a, struct come_string_t* elem) {
-    return (come_string_list_t*)come_array_append_g(a, sizeof(void*), &elem);
-}
-come_string_list_t* come_string_list_insert(come_string_list_t* a, uint32_t idx, struct come_string_t* elem) {
-    return (come_string_list_t*)come_array_insert_g(a, sizeof(void*), idx, &elem);
-}
-void come_string_list_set(come_string_list_t* a, struct come_string_t* value) {
-    come_array_set_g(a, sizeof(void*), &value);
-}
-come_string_list_t* come_string_list_cpy(come_string_list_t* dst, const come_string_list_t* src) {
-    return (come_string_list_t*)come_array_cpy_g(dst, sizeof(void*), src);
-}
-come_string_list_t* come_string_list_dup(void* ctx, const come_string_list_t* a) {
-    return (come_string_list_t*)come_array_dup_g(ctx, a, sizeof(void*));
-}
-long come_string_list_index(const come_string_list_t* a, const struct come_string_t* elem) {
-    if (!a || !elem) return -1;
-    const char* needle = (const char*)elem + sizeof(uint32_t) * 2;
-    for (uint32_t i = 0; i < a->count; i++) {
-        const struct come_string_t* s = a->items[i];
-        const char* data = s ? (const char*)s + sizeof(uint32_t) * 2 : "";
-        if (strcmp(data, needle) == 0) return (long)i;
-    }
+long come_array_index_string(come_hdr_t a, come_string_t v) {
+    if (!a.data) return -1;
+    const come_string_t* e = (const come_string_t*)a.data;
+    for (uint32_t i = 0; i < a.count; i++)
+        if (hdr_string_eq(e[i], v)) return (long)i;
     return -1;
 }
-bool come_string_list_contains(const come_string_list_t* a, const struct come_string_t* elem) {
-    return come_string_list_index(a, elem) >= 0;
+
+bool come_array_contains_string(come_hdr_t a, come_string_t v) {
+    return come_array_index_string(a, v) >= 0;
 }
-void come_string_list_sort(come_string_list_t* a, int (*cmp)(struct come_string_t*, struct come_string_t*)) {
-    if (!a || !cmp) return;
+
+come_hdr_t come_array_slice_g(come_hdr_t a, size_t esz, uint32_t start, uint32_t end) {
+    come_hdr_t res = { NULL, 0, 0, a.ctx };
+    if (!a.data || start >= a.count || start >= end) return res;
+    if (end > a.count) end = a.count;
+    uint32_t n = end - start;
+    res.data = mem_talloc_alloc(a.ctx, esz * n);
+    if (!res.data) return res;
+    memcpy(res.data, (const char*)a.data + (size_t)start * esz, (size_t)n * esz);
+    res.count = n;
+    res.cap = n;
+    return res;
+}
+
+/* Typed wrappers: in-place sorts with per-element comparators. */
+
+void come_int_array_sort(come_int_array_t* a, int (*cmp)(int, int)) {
+    if (!a || !a->data || !cmp) return;
+    int* items = (int*)a->data;
     for (uint32_t i = 1; i < a->count; i++) {
-        struct come_string_t* key = a->items[i];
+        int key = items[i];
         uint32_t j = i;
-        while (j > 0 && cmp(a->items[j - 1], key) > 0) {
-            a->items[j] = a->items[j - 1];
+        while (j > 0 && cmp(items[j - 1], key) > 0) {
+            items[j] = items[j - 1];
             j--;
         }
-        a->items[j] = key;
+        items[j] = key;
     }
+}
+
+void come_byte_array_sort(come_byte_array_t* a, int (*cmp)(int8_t, int8_t)) {
+    if (!a || !a->data || !cmp) return;
+    uint8_t* items = (uint8_t*)a->data;
+    for (uint32_t i = 1; i < a->count; i++) {
+        uint8_t key = items[i];
+        uint32_t j = i;
+        while (j > 0 && cmp((int8_t)items[j - 1], (int8_t)key) > 0) {
+            items[j] = items[j - 1];
+            j--;
+        }
+        items[j] = key;
+    }
+}
+
+void come_string_list_sort(come_string_list_t* a, int (*cmp)(come_string_t, come_string_t)) {
+    if (!a || !a->data || !cmp) return;
+    come_string_t* items = (come_string_t*)a->data;
+    for (uint32_t i = 1; i < a->count; i++) {
+        come_string_t key = items[i];
+        uint32_t j = i;
+        while (j > 0 && cmp(items[j - 1], key) > 0) {
+            items[j] = items[j - 1];
+            j--;
+        }
+        items[j] = key;
+    }
+}
+
+// Ownership helpers on the shared layout.
+void come_hdr_chown_ctx(come_hdr_t* h, void* new_ctx) {
+    if (!h) return;
+    if (h->data) mem_talloc_steal(new_ctx, h->data);
+    h->ctx = new_ctx;
+}
+
+void come_hdr_chown_to(come_hdr_t* h, const come_hdr_t* owner) {
+    if (!h || !owner) return;
+    if (h->data) {
+        if (owner->data) mem_talloc_steal(owner->data, h->data);
+        else if (owner->ctx) mem_talloc_steal(owner->ctx, h->data);
+    }
+    if (owner->ctx) h->ctx = owner->ctx;
+}
+
+void come_hdr_free(come_hdr_t* h) {
+    if (!h) return;
+    mem_talloc_free(h->data);
+    h->data = NULL;
+    h->count = 0;
+    h->cap = 0;
 }

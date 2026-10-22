@@ -1,0 +1,163 @@
+module core_test
+import std
+import string
+
+// COIL-135: one split-header design for arrays, strings and
+// maps. The header (data pointer, count, capacity, owner
+// context) lives inline in the variable; only the data block
+// is heap-allocated. Assignment copies the header and shares
+// the data block. Growth allocates a FRESH data block and
+// updates only the operating header, so an alias keeps a
+// valid snapshot of the old block - it never dangles. (This
+// pins the alias-over-resize bug found after v1.0.0: growth
+// that moved the single fused block left aliases pointing
+// at freed memory.)
+
+struct Bag {
+    int nums[]
+    string name
+}
+
+void touch(int xs[]) {
+    xs[0] = 77
+}
+
+int grow_it(int xs[]) {
+    xs.resize(50)
+    return xs.length()
+}
+
+coroutine array_worker(link s) {
+    int payload[] = s.read()
+    int total = 0
+    for (int i = 0; i < payload.length(); i++) {
+        total = total + payload[i]
+    }
+    int reply[] = {total}
+    s.write(reply)
+}
+
+int main() {
+    // 1. Alias + resize growth (the original bug report).
+    int a[]
+    a.resize(4)
+    a[0] = 10
+    a[1] = 20
+    a[2] = 30
+    a[3] = 40
+    var b = a
+    b[1] = 99
+    if (a[1] != 99) { std.out.printf("FAIL: alias write must be shared before growth\n"); return 1 }
+    a.resize(100000)
+    if (a.length() != 100000) { std.out.printf("FAIL: resize length %d\n", a.length()); return 1 }
+    if (b.length() != 4) { std.out.printf("FAIL: alias snapshot length %d\n", b.length()); return 1 }
+    if (b[0] != 10 || b[1] != 99 || b[3] != 40) { std.out.printf("FAIL: alias snapshot data\n"); return 1 }
+    b[2] = 55
+    if (b[2] != 55) { std.out.printf("FAIL: alias still writable after growth\n"); return 1 }
+
+    // 2. Append-driven growth forks the alias the same way.
+    int c[] = {1, 2, 3}
+    var d = c
+    for (int i = 0; i < 5000; i++) {
+        c.append(i)
+    }
+    if (c.length() != 5003) { std.out.printf("FAIL: append growth length %d\n", c.length()); return 1 }
+    if (d.length() != 3 || d[2] != 3) { std.out.printf("FAIL: append alias snapshot\n"); return 1 }
+
+    // 3. Shrink, then grow again: the regrown range is zeroed.
+    int e[]
+    e.resize(10)
+    e[9] = 5
+    e.resize(3)
+    e.resize(10)
+    if (e[9] != 0) { std.out.printf("FAIL: regrown range must be zero-filled, got %d\n", e[9]); return 1 }
+
+    // 4. Map alias + insert growth past several rehashes.
+    // The alias shares the entries block, so inserts are
+    // shared until the first growth after the alias forks
+    // it; from then on the alias holds its snapshot: its
+    // original entries stay readable, and keys inserted
+    // after the fork are misses.
+    map{string, int} m
+    m["one"] = 1
+    m["two"] = 2
+    var m2 = m
+    m2["one"] = 111
+    if (m["one"] != 111) { std.out.printf("FAIL: map alias write must be shared before growth\n"); return 1 }
+    for (int i = 0; i < 5000; i++) {
+        m[sprintf("k%d", i)] = i
+    }
+    if (m.length() != 5002) { std.out.printf("FAIL: map growth length %d\n", m.length()); return 1 }
+    if (m2.length() >= 100) { std.out.printf("FAIL: map alias must stay a snapshot, length %d\n", m2.length()); return 1 }
+    if (m2["one"] != 111 || m2["two"] != 2) { std.out.printf("FAIL: map alias snapshot data\n"); return 1 }
+    int miss = m2["k4999"]
+    if (miss != 0 || !ERR.set()) { std.out.printf("FAIL: alias miss must read zero with ERR set\n"); return 1 }
+
+    // 5. A struct field is a header slot too.
+    Bag bag
+    bag.name = "sack"
+    bag.nums.resize(2)
+    bag.nums[0] = 11
+    bag.nums.append(22)
+    if (bag.nums.length() != 3 || bag.nums[2] != 22) { std.out.printf("FAIL: struct field array\n"); return 1 }
+    var nb = bag.nums
+    bag.nums.resize(5000)
+    if (bag.nums.length() != 5000) { std.out.printf("FAIL: struct field growth\n"); return 1 }
+    if (nb.length() != 3 || nb[0] != 11) { std.out.printf("FAIL: struct field alias snapshot\n"); return 1 }
+    string bname = bag.name
+    if (bname != "sack") { std.out.printf("FAIL: struct string field\n"); return 1 }
+
+    // 6. String lists: element headers share until growth.
+    string ss[] = {"red", "green"}
+    var ss2 = ss
+    ss2[0] = "crimson"
+    if (ss[0] != "crimson") { std.out.printf("FAIL: string element write must be shared\n"); return 1 }
+    for (int i = 0; i < 1000; i++) {
+        ss.append("x")
+    }
+    if (ss2.length() != 2 || ss2[1] != "green") { std.out.printf("FAIL: string list alias snapshot\n"); return 1 }
+
+    // 7. dup(0) shares the block; dup() copies it.
+    int base[] = {5, 6, 7}
+    var shared = base.dup(0)
+    if (!(shared == base)) { std.out.printf("FAIL: dup(0) must be the same buffer\n"); return 1 }
+    var copied = base.dup()
+    if (copied == base) { std.out.printf("FAIL: dup() must be a new buffer\n"); return 1 }
+    copied[0] = 500
+    if (base[0] != 5) { std.out.printf("FAIL: dup() writes must be independent\n"); return 1 }
+    shared[0] = 555
+    if (base[0] != 555) { std.out.printf("FAIL: dup(0) writes must be shared\n"); return 1 }
+
+    // 8. Buffer parameters are header values (Go-slice-like):
+    // element writes inside capacity are shared with the
+    // caller; growing the parameter is not.
+    int p[] = {1, 2, 3}
+    touch(p)
+    if (p[0] != 77) { std.out.printf("FAIL: parameter element write must be shared\n"); return 1 }
+    int gl = grow_it(p)
+    if (gl != 50) { std.out.printf("FAIL: callee sees its grown length %d\n", gl); return 1 }
+    if (p.length() != 3) { std.out.printf("FAIL: callee growth must not change the caller's length %d\n", p.length()); return 1 }
+
+    // 9. bytesize counts the live elements' bytes.
+    int four[] = {1, 2, 3, 4}
+    if (four.bytesize() != 16) { std.out.printf("FAIL: int array bytesize %d\n", four.bytesize()); return 1 }
+    string hello = "hello"
+    if (hello.bytesize() != 5) { std.out.printf("FAIL: string bytesize %d\n", hello.bytesize()); return 1 }
+    // 10. chown(var) adopts the variable's owner exactly.
+    int own_a[] = {1}
+    int own_b[] = {2}
+    own_a.chown(own_b)
+    if (own_a.owner() != own_b.owner()) { std.out.printf("FAIL: chown(var) must adopt the owner\n"); return 1 }
+
+    // 11. A buffer crosses a link as its header; the reader
+    // owns the data on its side.
+    (la, lb) = colink()
+    spawn array_worker(la)
+    int send[] = {7, 8, 9}
+    lb.write(send)
+    int got[] = lb.read()
+    if (got.length() != 1 || got[0] != 24) { std.out.printf("FAIL: link array round trip\n"); return 1 }
+
+    std.out.printf("PASS: 18-split-headers\n")
+    return 0
+}

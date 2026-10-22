@@ -7,6 +7,15 @@
 #include <stdio.h>
 #include <regex.h>
 
+// COIL-135: a string is a header value {data, count(bytes), cap, ctx}
+// plus a context-owned byte block. A zeroed header (data == NULL)
+// reads as the empty string everywhere below.
+static const char* sdata(come_string_t a) {
+    return a.data ? a.data : "";
+}
+static void* sctx(come_string_t a) {
+    return a.ctx;
+}
 
 // Module Initialization
 void come_string__init_local() {
@@ -17,51 +26,52 @@ void come_string__exit_local() {
     // String module cleanup (currently none)
 }
 
-come_string_t* come_string_new(TALLOC_CTX* ctx, const char* str) {
-    return come_string_new_len(ctx, str, strlen(str));
+come_string_t come_string_new_len(TALLOC_CTX* ctx, const char* str, size_t len) {
+    come_string_t s;
+    s.data = (char*)mem_talloc_alloc(ctx, len + 1);
+    s.count = (uint32_t)len;
+    s.cap = (uint32_t)(len + 1);
+    s.ctx = ctx;
+    if (!s.data) { s.count = 0; s.cap = 0; return s; }
+    if (str && len) memcpy(s.data, str, len);
+    else if (len) memset(s.data, 0, len);
+    s.data[len] = '\0';
+    return s;
+}
+
+come_string_t come_string_new(TALLOC_CTX* ctx, const char* str) {
+    return come_string_new_len(ctx, str, str ? strlen(str) : 0);
 }
 
 // Concatenation (spec 6.5: `+` produces a new string; the
 // operands are unchanged because strings are immutable).
-come_string_t* come_string_concat(TALLOC_CTX* ctx, const come_string_t* a, const come_string_t* b) {
-    size_t la = a ? strlen(a->data) : 0;
-    size_t lb = b ? strlen(b->data) : 0;
-    come_string_t* s = mem_talloc_alloc(ctx, sizeof(come_string_t) + la + lb + 1);
-    if (!s) return NULL;
-    s->size = (uint32_t)(sizeof(come_string_t) + la + lb + 1);
-    s->count = (uint32_t)(la + lb);
-    if (la) memcpy(s->data, a->data, la);
-    if (lb) memcpy(s->data + la, b->data, lb);
-    s->data[la + lb] = '\0';
+come_string_t come_string_concat(TALLOC_CTX* ctx, come_string_t a, come_string_t b) {
+    size_t la = a.count;
+    size_t lb = b.count;
+    come_string_t s;
+    s.data = (char*)mem_talloc_alloc(ctx, la + lb + 1);
+    s.count = (uint32_t)(la + lb);
+    s.cap = (uint32_t)(la + lb + 1);
+    s.ctx = ctx;
+    if (!s.data) { s.count = 0; s.cap = 0; return s; }
+    if (la) memcpy(s.data, sdata(a), la);
+    if (lb) memcpy(s.data + la, sdata(b), lb);
+    s.data[la + lb] = '\0';
     return s;
 }
 
-come_string_t* come_string_new_len(TALLOC_CTX* ctx, const char* str, size_t len) {
-    // Allocate single block struct + data
-    come_string_t* s = mem_talloc_alloc(ctx, sizeof(come_string_t) + len + 1);
-    if (!s) return NULL;
-
-    s->size = (uint32_t)(sizeof(come_string_t) + len + 1);
-    s->count = (uint32_t)len;
-    
-    memcpy(s->data, str, len);
-    s->data[len] = '\0';
-    return s;
+void come_string_free(come_string_t str) {
+    mem_talloc_free(str.data);
 }
 
-void come_string_free(come_string_t* str) {
-    mem_talloc_free(str);
+uint32_t come_string_size(come_string_t a) {
+    return a.count;
 }
 
-uint32_t come_string_size(const come_string_t* a) {
-    return a ? a->count : 0;
-}
-
-// Basic UTF-8 char counting
-uint32_t come_string_len(const come_string_t* a) {
-    if (!a) return 0;
+// Character count: scan the UTF-8 content.
+uint32_t come_string_len(come_string_t a) {
     uint32_t count = 0;
-    const char* p = a->data;
+    const char* p = sdata(a);
     while (*p) {
         if ((*p & 0xC0) != 0x80) count++;
         p++;
@@ -69,94 +79,78 @@ uint32_t come_string_len(const come_string_t* a) {
     return count;
 }
 
-int come_string_cmp(const come_string_t* a, const come_string_t* b, size_t n) {
-    if (!a || !b) return 0; // Safety
-    if (n == 0) return strcmp(a->data, b->data);
-    
-    // UTF-8 aware comparison for 'n' chars is complex, falling back to byte comparison for MVP if n is large
-    // Or we iterate n UTF-8 chars.
-    // For MVP, let's stick to simple strncmp logic but ideally we should count chars.
-    // Given the constraints, let's implement a simple char iterator.
-    
-    const char* p1 = a->data;
-    const char* p2 = b->data;
+int come_string_cmp(come_string_t a, come_string_t b, size_t n) {
+    if (n == 0) return strcmp(sdata(a), sdata(b));
+
+    const char* p1 = sdata(a);
+    const char* p2 = sdata(b);
     size_t chars = 0;
-    
+
     while (*p1 && *p2 && chars < n) {
         if (*p1 != *p2) return *p1 - *p2;
-        
-        // Advance p1
         do { p1++; } while ((*p1 & 0xC0) == 0x80);
-        // Advance p2
         do { p2++; } while ((*p2 & 0xC0) == 0x80);
-        
         chars++;
     }
-    
+
     if (chars == n) return 0;
     return *p1 - *p2;
 }
 
-int come_string_casecmp(const come_string_t* a, const come_string_t* b, size_t n) {
-    // Similar to cmp but tolower
-    if (!a || !b) return 0;
-    
-    const char* p1 = a->data;
-    const char* p2 = b->data;
+int come_string_casecmp(come_string_t a, come_string_t b, size_t n) {
+
+    const char* p1 = sdata(a);
+    const char* p2 = sdata(b);
     size_t chars = 0;
-    
+
     while (*p1 && *p2 && (n == 0 || chars < n)) {
-        if (tolower(*p1) != tolower(*p2)) return tolower(*p1) - tolower(*p2);
-        
-        // Advance p1
+        if (tolower((unsigned char)*p1) != tolower((unsigned char)*p2))
+            return tolower((unsigned char)*p1) - tolower((unsigned char)*p2);
         do { p1++; } while ((*p1 & 0xC0) == 0x80);
-        // Advance p2
         do { p2++; } while ((*p2 & 0xC0) == 0x80);
-        
         chars++;
     }
-    
+
     if (n != 0 && chars == n) return 0;
-    return tolower(*p1) - tolower(*p2);
+    return tolower((unsigned char)*p1) - tolower((unsigned char)*p2);
 }
 
-long come_string_chr(const come_string_t* a, int c) {
-    char* p = strchr(a->data, c);
-    return p ? (p - a->data) : -1;
+long come_string_chr(come_string_t a, int c) {
+    const char* p = strchr(sdata(a), c);
+    return p ? (p - sdata(a)) : -1;
 }
 
-long come_string_rchr(const come_string_t* a, int c) {
-    char* p = strrchr(a->data, c);
-    return p ? (p - a->data) : -1;
+long come_string_rchr(come_string_t a, int c) {
+    const char* p = strrchr(sdata(a), c);
+    return p ? (p - sdata(a)) : -1;
 }
 
-long come_string_memchr(const come_string_t* a, int c, size_t n) {
-    void* p = memchr(a->data, c, n > a->count ? a->count : n);
-    return p ? ((char*)p - a->data) : -1;
+long come_string_memchr(come_string_t a, int c, size_t n) {
+    const void* p = memchr(sdata(a), c, n > a.count ? a.count : n);
+    return p ? ((const char*)p - sdata(a)) : -1;
 }
 
-long come_string_find(const come_string_t* a, const char* sub) {
-    char* p = strstr(a->data, sub);
-    return p ? (p - a->data) : -1;
+long come_string_find(come_string_t a, const char* sub) {
+    const char* p = strstr(sdata(a), sub);
+    return p ? (p - sdata(a)) : -1;
 }
 
-long come_string_rfind(const come_string_t* a, const char* sub) {
-    // strrstr is not standard C, implement manually
+long come_string_rfind(come_string_t a, const char* sub) {
     size_t sub_len = strlen(sub);
-    if (sub_len > a->count) return -1;
-    
-    for (long i = a->count - sub_len; i >= 0; i--) {
-        if (strncmp(a->data + i, sub, sub_len) == 0) return i;
+    if (sub_len > a.count) return -1;
+
+    for (long i = (long)a.count - (long)sub_len; i >= 0; i--) {
+        if (strncmp(sdata(a) + i, sub, sub_len) == 0) return i;
     }
     return -1;
 }
 
-uint32_t come_string_count(const come_string_t* a, const char* sub) {
+uint32_t come_string_count(come_string_t a, const char* sub) {
     uint32_t count = 0;
-    const char* p = a->data;
+    const char* p = sdata(a);
     size_t sub_len = strlen(sub);
     if (sub_len == 0) return 0;
-    
+
     while ((p = strstr(p, sub)) != NULL) {
         count++;
         p += sub_len;
@@ -165,38 +159,36 @@ uint32_t come_string_count(const come_string_t* a, const char* sub) {
 }
 
 // Validation
-bool come_string_isdigit(const come_string_t* a) {
-    for (size_t i = 0; i < a->count; i++) {
-        if (!isdigit(a->data[i])) return false;
+bool come_string_isdigit(come_string_t a) {
+    for (size_t i = 0; i < a.count; i++) {
+        if (!isdigit((unsigned char)sdata(a)[i])) return false;
     }
     return true;
 }
 
-bool come_string_isalpha(const come_string_t* a) {
-    for (size_t i = 0; i < a->count; i++) {
-        if (!isalpha(a->data[i])) return false;
+bool come_string_isalpha(come_string_t a) {
+    for (size_t i = 0; i < a.count; i++) {
+        if (!isalpha((unsigned char)sdata(a)[i])) return false;
     }
     return true;
 }
 
-bool come_string_isalnum(const come_string_t* a) {
-    for (size_t i = 0; i < a->count; i++) {
-        if (!isalnum(a->data[i])) return false;
+bool come_string_isalnum(come_string_t a) {
+    for (size_t i = 0; i < a.count; i++) {
+        if (!isalnum((unsigned char)sdata(a)[i])) return false;
     }
     return true;
 }
 
-bool come_string_isspace(const come_string_t* a) {
-    for (size_t i = 0; i < a->count; i++) {
-        if (!isspace(a->data[i])) return false;
+bool come_string_isspace(come_string_t a) {
+    for (size_t i = 0; i < a.count; i++) {
+        if (!isspace((unsigned char)sdata(a)[i])) return false;
     }
     return true;
 }
 
-bool come_string_isascii(const come_string_t* a) {
-    if (!a) return false;
-    // Check if high bit is set
-    const unsigned char* bytes = (const unsigned char*)a->data;
+bool come_string_isascii(come_string_t a) {
+    const unsigned char* bytes = (const unsigned char*)sdata(a);
     while (*bytes) {
         if (*bytes & 0x80) return false;
         bytes++;
@@ -204,60 +196,61 @@ bool come_string_isascii(const come_string_t* a) {
     return true;
 }
 
-// Transformation
-come_string_t* come_string_upper(const come_string_t* a) {
-    come_string_t* new_str = come_string_new_len((void*)a, a->data, a->count);
-    for (size_t i = 0; i < new_str->count; i++) {
-        new_str->data[i] = toupper(new_str->data[i]);
+// Transformation (derived strings are owned by the source's context)
+come_string_t come_string_upper(come_string_t a) {
+    come_string_t s = come_string_new_len(sctx(a), sdata(a), a.count);
+    for (size_t i = 0; i < s.count; i++) {
+        s.data[i] = (char)toupper((unsigned char)s.data[i]);
     }
-    return new_str;
+    return s;
 }
 
-come_string_t* come_string_lower(const come_string_t* a) {
-    come_string_t* new_str = come_string_new_len((void*)a, a->data, a->count);
-    for (size_t i = 0; i < new_str->count; i++) {
-        new_str->data[i] = tolower(new_str->data[i]);
+come_string_t come_string_lower(come_string_t a) {
+    come_string_t s = come_string_new_len(sctx(a), sdata(a), a.count);
+    for (size_t i = 0; i < s.count; i++) {
+        s.data[i] = (char)tolower((unsigned char)s.data[i]);
     }
-    return new_str;
+    return s;
 }
 
-come_string_t* come_string_repeat(const come_string_t* a, size_t n) {
-    size_t new_len = a->count * n;
-    come_string_t* new_str = come_string_new_len((void*)a, "", new_len); // Alloc space
-    // Manually fill
+come_string_t come_string_repeat(come_string_t a, size_t n) {
+    size_t clen = a.count;
+    size_t new_len = clen * n;
+    come_string_t s = come_string_new_len(sctx(a), "", new_len);
+    if (!s.data) return s;
     for (size_t i = 0; i < n; i++) {
-        memcpy(new_str->data + (i * a->count), a->data, a->count);
+        memcpy(s.data + (i * clen), sdata(a), clen);
     }
-    new_str->data[new_len] = '\0';
-    return new_str;
+    s.data[new_len] = '\0';
+    return s;
 }
 
-come_string_t* come_string_replace(const come_string_t* a, const char* old_str, const char* new_str, size_t n) {
-    // Simple implementation: count matches, alloc new string, copy
+come_string_t come_string_replace(come_string_t a, const char* old_str, const char* new_str, size_t n) {
     size_t old_len = strlen(old_str);
     size_t new_len_part = strlen(new_str);
-    
-    if (old_len == 0) return come_string_new((void*)a, a->data); // No-op if old is empty
-    
-    // Count matches
+
+    if (old_len == 0) return come_string_new(sctx(a), sdata(a)); // No-op if old is empty
+
     size_t count = 0;
-    const char* p = a->data;
+    const char* p = sdata(a);
     while ((p = strstr(p, old_str)) != NULL) {
         count++;
         p += old_len;
         if (n > 0 && count >= n) break;
     }
-    
-    size_t final_len = a->count + count * (new_len_part - old_len);
-    come_string_t* res = come_string_new_len((void*)a, "", final_len);
-    
-    p = a->data;
-    char* dest = res->data;
+
+    size_t alen = a.count;
+    size_t final_len = alen + count * (new_len_part - old_len);
+    come_string_t res = come_string_new_len(sctx(a), "", final_len);
+    if (!res.data) return res;
+
+    p = sdata(a);
+    char* dest = res.data;
     size_t matches = 0;
     while (*p) {
         char* next_match = strstr(p, old_str);
         if (next_match && (n == 0 || matches < n)) {
-            size_t segment_len = next_match - p;
+            size_t segment_len = (size_t)(next_match - p);
             memcpy(dest, p, segment_len);
             dest += segment_len;
             memcpy(dest, new_str, new_len_part);
@@ -269,144 +262,114 @@ come_string_t* come_string_replace(const come_string_t* a, const char* old_str, 
             break;
         }
     }
-    
     return res;
 }
 
 // dup(): an independent copy of the string, owned by the
 // source string's context like the other derived strings.
-come_string_t* come_string_dup(const come_string_t* a) {
-    if (!a) return NULL;
-    return come_string_new_len((void*)a, a->data, a->count);
+come_string_t come_string_dup(come_string_t a) {
+    return come_string_new_len(a.ctx, sdata(a), a.count);
 }
 
 void come_string_chown(come_string_t* a, TALLOC_CTX* new_ctx) {
-    if (a) {
-        mem_talloc_steal(new_ctx, a);
-    }
+    if (a->data) mem_talloc_steal(new_ctx, a->data);
+    a->ctx = new_ctx;
 }
 
-// Stub for other methods to allow compilation
 // Helper for trim
 static bool is_cutset(char c, const char* cutset) {
-    if (!cutset) return isspace(c);
+    if (!cutset) return isspace((unsigned char)c);
     return strchr(cutset, c) != NULL;
 }
 
-come_string_t* come_string_trim(const come_string_t* a, const char* cutset) {
-    if (!a) return NULL;
+come_string_t come_string_trim(come_string_t a, const char* cutset) {
     size_t start = 0;
-    size_t end = a->count;
+    size_t end = a.count;
 
-    while (start < end && is_cutset(a->data[start], cutset)) start++;
-    while (end > start && is_cutset(a->data[end - 1], cutset)) end--;
+    while (start < end && is_cutset(sdata(a)[start], cutset)) start++;
+    while (end > start && is_cutset(sdata(a)[end - 1], cutset)) end--;
 
-    size_t new_len = end - start;
-    come_string_t* new_str = come_string_new_len((void*)a, a->data + start, new_len);
-    return new_str;
+    return come_string_new_len(sctx(a), sdata(a) + start, end - start);
 }
 
-come_string_t* come_string_ltrim(const come_string_t* a, const char* cutset) {
-    if (!a) return NULL;
+come_string_t come_string_ltrim(come_string_t a, const char* cutset) {
     size_t start = 0;
-    size_t end = a->count;
+    size_t end = a.count;
 
-    while (start < end && is_cutset(a->data[start], cutset)) start++;
+    while (start < end && is_cutset(sdata(a)[start], cutset)) start++;
 
-    size_t new_len = end - start;
-    come_string_t* new_str = come_string_new_len((void*)a, a->data + start, new_len);
-    return new_str;
+    return come_string_new_len(sctx(a), sdata(a) + start, end - start);
 }
 
-come_string_t* come_string_rtrim(const come_string_t* a, const char* cutset) {
-    if (!a) return NULL;
+come_string_t come_string_rtrim(come_string_t a, const char* cutset) {
     size_t start = 0;
-    size_t end = a->count;
+    size_t end = a.count;
 
-    while (end > start && is_cutset(a->data[end - 1], cutset)) end--;
+    while (end > start && is_cutset(sdata(a)[end - 1], cutset)) end--;
 
-    size_t new_len = end - start;
-    come_string_t* new_str = come_string_new_len((void*)a, a->data + start, new_len);
-    return new_str;
+    return come_string_new_len(sctx(a), sdata(a) + start, end - start);
 }
 
-come_string_list_t* come_string_split_n(const come_string_t* a, const char* sep, size_t n) {
-    if (!a || !sep) return NULL;
-    
+// Split into a fresh string list owned by the source's context;
+// elements are header values in the list's data block.
+static come_string_list_t split_collect(come_string_t a, const char* sep, size_t n) {
+    come_string_list_t list = COME_HDR_INIT(sctx(a));
     size_t sep_len = strlen(sep);
     if (sep_len == 0) {
-        come_string_list_t* list = mem_talloc_alloc((void*)a, sizeof(come_string_list_t) + sizeof(come_string_t*));
-        list->size = 1;
-        list->count = 1;
-        list->items[0] = come_string_new((void*)a, a->data);
+        come_string_t whole = come_string_new(sctx(a), sdata(a));
+        come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &whole);
         return list;
     }
-    
-    // First pass: count parts to alloc array
-    size_t count = 1;
-    const char* p = a->data;
+
+    const char* p = sdata(a);
     size_t matches = 0;
-    while ((p = strstr(p, sep)) != NULL) {
-        if (n > 0 && matches >= n - 1) break; // n parts means n-1 splits
-        count++;
-        matches++;
-        p += sep_len;
-    }
-
-    // Allocate list struct with items FAM on 'a' context
-    come_string_list_t* list = mem_talloc_alloc((void*)a, sizeof(come_string_list_t) + sizeof(come_string_t*) * count);
-    list->size = count;
-    list->count = count;
-
-    // Second pass: fill
-    p = a->data;
-    matches = 0;
-    for (size_t i = 0; i < count; i++) {
+    for (;;) {
         const char* next = strstr(p, sep);
-        size_t len;
+        come_string_t part;
         if (next && (n == 0 || matches < n - 1)) {
-            len = next - p;
-            list->items[i] = come_string_new_len(list, p, len);
+            part = come_string_new_len(sctx(a), p, (size_t)(next - p));
             p = next + sep_len;
             matches++;
         } else {
-            // Last part
-            len = strlen(p);
-            list->items[i] = come_string_new_len(list, p, len);
+            part = come_string_new(sctx(a), p);
+            come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &part);
+            break;
         }
+        come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &part);
     }
-
     return list;
 }
 
-come_string_list_t* come_string_split(const come_string_t* a, const char* sep) {
+come_string_list_t come_string_split_n(come_string_t a, const char* sep, size_t n) {
+    come_string_list_t empty = COME_HDR_INIT(sctx(a));
+    if (!sep) return empty;
+    return split_collect(a, sep, n);
+}
+
+come_string_list_t come_string_split(come_string_t a, const char* sep) {
     return come_string_split_n(a, sep, 0);
 }
 
-come_string_t* come_string_join(const come_string_list_t* list, const come_string_t* sep) {
-    if (!list || list->size == 0) return come_string_new_len(NULL, "", 0); // Context?
-    // If list is empty, return empty string. Context? Maybe list itself?
-    // If sep is NULL, assume empty separator.
-    
-    size_t sep_len = sep ? sep->count : 0;
+come_string_t come_string_join(come_string_list_t list, come_string_t sep) {
+    void* ctx = list.ctx;
+    size_t sep_len = sep.count;
     size_t total_len = 0;
-    for (size_t i = 0; i < list->size; i++) {
-        if (list->items[i]) total_len += list->items[i]->count;
-        if (i < list->size - 1) total_len += sep_len;
+    uint32_t n = list.count;
+    come_string_t* items = (come_string_t*)list.data;
+    for (size_t i = 0; i < n; i++) {
+        total_len += items[i].count;
+        if (i + 1 < n) total_len += sep_len;
     }
 
-    // Allocate on list context? Or sep context? Or new?
-    // Usually join creates a new string. Let's use list as parent.
-    come_string_t* res = come_string_new_len((void*)list, "", total_len);
-    
-    char* p = res->data;
-    for (size_t i = 0; i < list->size; i++) {
-        if (list->items[i]) {
-            memcpy(p, list->items[i]->data, list->items[i]->count);
-            p += list->items[i]->count;
-        }
-        if (i < list->size - 1 && sep) {
-            memcpy(p, sep->data, sep_len);
+    come_string_t res = come_string_new_len(ctx, "", total_len);
+    if (!res.data) return res;
+
+    char* p = res.data;
+    for (size_t i = 0; i < n; i++) {
+        memcpy(p, sdata(items[i]), items[i].count);
+        p += items[i].count;
+        if (i + 1 < n) {
+            memcpy(p, sdata(sep), sep_len);
             p += sep_len;
         }
     }
@@ -414,12 +377,9 @@ come_string_t* come_string_join(const come_string_list_t* list, const come_strin
     return res;
 }
 
-come_string_t* come_string_substr(const come_string_t* a, size_t start, size_t end) {
-    if (!a) return NULL;
-    // start/end are character indices, not bytes!
-    // Need to iterate UTF-8
-    
-    const char* p = a->data;
+come_string_t come_string_substr(come_string_t a, size_t start, size_t end) {
+    // start/end are character indices, not bytes: walk the UTF-8.
+    const char* p = sdata(a);
     size_t char_idx = 0;
     const char* start_p = NULL;
     const char* end_p = NULL;
@@ -427,141 +387,117 @@ come_string_t* come_string_substr(const come_string_t* a, size_t start, size_t e
     while (*p) {
         if (char_idx == start) start_p = p;
         if (char_idx == end) { end_p = p; break; }
-        
-        // Advance char
         do { p++; } while ((*p & 0xC0) == 0x80);
         char_idx++;
     }
-    
+
     if (char_idx == start) start_p = p; // Start at end of string
     if (!end_p) end_p = p; // End beyond string
 
     if (!start_p) start_p = end_p; // Out of bounds
     if (start_p > end_p) start_p = end_p;
 
-    size_t byte_len = end_p - start_p;
-    return come_string_new_len((void*)a, start_p, byte_len);
+    return come_string_new_len(a.ctx, start_p, (size_t)(end_p - start_p));
 }
 
-
 // Regex
-bool come_string_regex(const come_string_t* a, const char* pattern) {
-    if (!a || !pattern) return false;
+bool come_string_regex(come_string_t a, const char* pattern) {
+    if (!pattern) return false;
     regex_t regex;
     if (regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return false; }
-    
-    int ret = regexec(&regex, a->data, 0, NULL, 0);
+
+    int ret = regexec(&regex, sdata(a), 0, NULL, 0);
     regfree(&regex);
     return ret == 0;
 }
 
-come_string_list_t* come_string_regex_split(const come_string_t* a, const char* pattern, size_t n) {
-    if (!a || !pattern) return NULL;
-    
-    regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return NULL; }
+come_string_list_t come_string_regex_split(come_string_t a, const char* pattern, size_t n) {
+    come_string_list_t list = COME_HDR_INIT(sctx(a));
+    if (!pattern) return list;
 
-    // First pass: count
-    size_t count = 1;
-    const char* p = a->data;
+    regex_t regex;
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return list; }
+
+    const char* p = sdata(a);
     regmatch_t pmatch[1];
     size_t matches = 0;
-    
-    while (regexec(&regex, p, 1, pmatch, 0) == 0) {
-        if (n > 0 && matches >= n - 1) break;
-        // Avoid infinite loop on empty match
-        if (pmatch[0].rm_eo == pmatch[0].rm_so) {
-             p++; // Advance one char if empty match
-             if (*p == '\0') break;
-             continue;
-        }
-        count++;
-        matches++;
-        p += pmatch[0].rm_eo;
-    }
-    
-    come_string_list_t* list = mem_talloc_alloc((void*)a, sizeof(come_string_list_t) + sizeof(come_string_t*) * count);
-    list->size = count;
-    list->count = count;
 
-    // Second pass: fill
-    p = a->data;
-    matches = 0;
-    for (size_t i = 0; i < count; i++) {
-        if (regexec(&regex, p, 1, pmatch, 0) == 0 && (n == 0 || matches < n - 1)) {
-            size_t len = pmatch[0].rm_so;
-            list->items[i] = come_string_new_len(list, p, len);
+    for (;;) {
+        int hit = regexec(&regex, p, 1, pmatch, 0) == 0;
+        come_string_t part;
+        if (hit && (n == 0 || matches < n - 1) && pmatch[0].rm_eo > pmatch[0].rm_so) {
+            part = come_string_new_len(sctx(a), p, (size_t)pmatch[0].rm_so);
             p += pmatch[0].rm_eo;
             matches++;
+        } else if (hit && (n == 0 || matches < n - 1) && pmatch[0].rm_eo == 0) {
+            // Empty match at the end: the remainder is the last part.
+            part = come_string_new(sctx(a), p);
+            come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &part);
+            break;
         } else {
-            size_t len = strlen(p);
-            list->items[i] = come_string_new_len(list, p, len);
+            part = come_string_new(sctx(a), p);
+            come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &part);
+            break;
         }
+        come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &part);
     }
 
     regfree(&regex);
     return list;
 }
 
-come_string_list_t* come_string_regex_groups(const come_string_t* a, const char* pattern) {
-    if (!a || !pattern) return NULL;
-    
+come_string_list_t come_string_regex_groups(come_string_t a, const char* pattern) {
+    come_string_list_t list = COME_HDR_INIT(sctx(a));
+    if (!pattern) return list;
+
     regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return NULL; }
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return list; }
 
     size_t nmatch = regex.re_nsub + 1; // 0 is full match, 1..n are groups
     regmatch_t* pmatch_vals = malloc(sizeof(regmatch_t) * nmatch);
-    
-    if (regexec(&regex, a->data, nmatch, pmatch_vals, 0) == 0) {
-        come_string_list_t* list = mem_talloc_alloc((void*)a, sizeof(come_string_list_t) + sizeof(come_string_t*) * nmatch);
-        list->size = (uint32_t)nmatch;
-        list->count = (uint32_t)nmatch;
+
+    if (regexec(&regex, sdata(a), nmatch, pmatch_vals, 0) == 0) {
         for (size_t i = 0; i < nmatch; i++) {
+            come_string_t part;
             if (pmatch_vals[i].rm_so != -1) {
-                size_t len = pmatch_vals[i].rm_eo - pmatch_vals[i].rm_so;
-                list->items[i] = come_string_new_len(list, a->data + pmatch_vals[i].rm_so, len);
+                size_t len = (size_t)(pmatch_vals[i].rm_eo - pmatch_vals[i].rm_so);
+                part = come_string_new_len(sctx(a), sdata(a) + pmatch_vals[i].rm_so, len);
             } else {
-                list->items[i] = NULL; // Optional group not matched
+                // Optional group not matched: an empty string.
+                memset(&part, 0, sizeof(part));
+                part.ctx = sctx(a);
             }
+            come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &part);
         }
-        free(pmatch_vals);
-        regfree(&regex);
-        return list;
     }
 
     free(pmatch_vals);
     regfree(&regex);
-    come_string_list_t* empty = mem_talloc_alloc((void*)a, sizeof(come_string_list_t));
-    empty->size = 0;
-    empty->count = 0;
-    return empty;
+    return list;
 }
 
-come_string_t* come_string_regex_replace(const come_string_t* a, const char* pattern, const char* repl, size_t count) {
-    if (!a || !pattern) return NULL;
-    
-    regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return NULL; }
+come_string_t come_string_regex_replace(come_string_t a, const char* pattern, const char* repl, size_t count) {
+    come_string_t empty = { NULL, 0, 0, sctx(a) };
+    if (!pattern) return empty;
 
-    // We need to build the new string.
-    // Since we don't know the size, we might need a dynamic buffer or two passes.
-    // Two passes is easier.
-    
-    // Pass 1: calculate size
+    regex_t regex;
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return empty; }
+
+    // Two passes: measure, then copy.
     size_t new_len = 0;
-    const char* p = a->data;
+    const char* p = sdata(a);
     size_t matches = 0;
     regmatch_t pmatch[1];
     size_t repl_len = strlen(repl);
-    
+
     while (*p && (count == 0 || matches < count)) {
         if (regexec(&regex, p, 1, pmatch, 0) == 0) {
-            new_len += pmatch[0].rm_so; // Prefix
-            new_len += repl_len;        // Replacement
+            new_len += (size_t)pmatch[0].rm_so; // Prefix
+            new_len += repl_len;                // Replacement
             p += pmatch[0].rm_eo;
             matches++;
             if (pmatch[0].rm_eo == pmatch[0].rm_so) { // Empty match
-                if (*p) { new_len++; p++; } // Advance one char
+                if (*p) { new_len++; p++; }
             }
         } else {
             new_len += strlen(p);
@@ -569,17 +505,16 @@ come_string_t* come_string_regex_replace(const come_string_t* a, const char* pat
         }
     }
     if (matches == count && *p) new_len += strlen(p); // Remaining
-    
-    come_string_t* res = come_string_new_len((void*)a, "", new_len);
-    
-    // Pass 2: copy
-    p = a->data;
-    char* dest = res->data;
+
+    come_string_t res = come_string_new_len(a.ctx, "", new_len);
+
+    p = sdata(a);
+    char* dest = res.data;
     matches = 0;
-    
-    while (*p && (count == 0 || matches < count)) {
+
+    while (dest && *p && (count == 0 || matches < count)) {
         if (regexec(&regex, p, 1, pmatch, 0) == 0) {
-            size_t prefix_len = pmatch[0].rm_so;
+            size_t prefix_len = (size_t)pmatch[0].rm_so;
             memcpy(dest, p, prefix_len);
             dest += prefix_len;
             memcpy(dest, repl, repl_len);
@@ -595,69 +530,67 @@ come_string_t* come_string_regex_replace(const come_string_t* a, const char* pat
             break;
         }
     }
-    if (matches == count && *p) strcpy(dest, p);
-    
+    if (dest && matches == count && *p) strcpy(dest, p);
+
     regfree(&regex);
     return res;
 }
 
-uint32_t come_string_list_len(const come_string_list_t* list) {
-    if (!list) return 0;
-    return list->count;
+uint32_t come_string_list_len(come_string_list_t list) {
+    return list.count;
 }
 
-come_string_list_t* come_string_list_from_argv(TALLOC_CTX* ctx, int argc, char* argv[]) {
-    come_string_list_t* list = mem_talloc_alloc(ctx, sizeof(come_string_list_t) + sizeof(come_string_t*) * argc);
-    list->size = (uint32_t)argc;
-    list->count = (uint32_t)argc;
+come_string_list_t come_string_list_from_argv(TALLOC_CTX* ctx, int argc, char* argv[]) {
+    come_string_list_t list = COME_HDR_INIT(ctx);
     for (int i = 0; i < argc; i++) {
-        list->items[i] = come_string_new(list, argv[i]);
+        come_string_t s = come_string_new(ctx, argv[i]);
+        come_array_append_g((come_hdr_t*)&list, sizeof(come_string_t), &s);
     }
     return list;
 }
 
 // Formatting
-#include <stdarg.h>
-
-come_string_t* come_string_sprintf(TALLOC_CTX* ctx, const char* fmt, ...) {
+come_string_t come_string_sprintf(TALLOC_CTX* ctx, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    
-    // Calculate length
-    va_list args_copy;
-    va_copy(args_copy, args);
-    int len = vsnprintf(NULL, 0, fmt, args_copy);
-    va_end(args_copy);
-    
-    if (len < 0) {
-        va_end(args);
-        return NULL;
-    }
-    
-    come_string_t* s = come_string_new_len(ctx, "", len);
-    if (!s) {
-        va_end(args);
-        return NULL;
-    }
-    
-    vsnprintf(s->data, len + 1, fmt, args);
+    come_string_t s = come_string_vsprintf(ctx, fmt, args);
     va_end(args);
-    
     return s;
 }
 
-come_byte_array_t* come_string_to_byte_array(const come_string_t* a) {
-    if (!a) return NULL;
-    
-    // Allocate byte array structure with items FAM
-    come_byte_array_t* ba = mem_talloc_alloc((void*)a, sizeof(come_byte_array_t) + a->count);
-    if (!ba) return NULL;
-    
-    ba->size = a->count;
-    ba->count = a->count;
-    
-    memcpy(ba->items, a->data, a->count);
-    
+come_string_t come_string_vsprintf(TALLOC_CTX* ctx, const char* fmt, va_list args) {
+    va_list copy;
+    va_copy(copy, args);
+    int len = vsnprintf(NULL, 0, fmt, copy);
+    va_end(copy);
+    come_string_t empty = { NULL, 0, 0, ctx };
+    if (len < 0) return empty;
+    come_string_t s = come_string_new_len(ctx, "", (size_t)len);
+    if (!s.data) return s;
+    vsnprintf(s.data, (size_t)len + 1, fmt, args);
+    return s;
+}
+
+int come_string_vsscanf(come_string_t a, const char* fmt, va_list args) {
+    if (!fmt) return EOF;
+    return vsscanf(sdata(a), fmt, args);
+}
+
+int come_string_sscanf(come_string_t a, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int r = come_string_vsscanf(a, fmt, args);
+    va_end(args);
+    return r;
+}
+
+come_byte_array_t come_string_to_byte_array(come_string_t a) {
+    come_byte_array_t ba = COME_HDR_INIT(sctx(a));
+    ba.data = (uint8_t*)mem_talloc_alloc(a.ctx, a.count ? a.count : 1);
+    if (!ba.data) return ba;
+    if (a.count) memcpy(ba.data, sdata(a), a.count);
+    ba.count = a.count;
+    ba.cap = a.count;
     return ba;
 }
 
@@ -665,12 +598,12 @@ come_byte_array_t* come_string_to_byte_array(const come_string_t* a) {
 // i-th character decoded to its Unicode scalar value. An
 // out-of-bounds index (including negative) sets ERR
 // (errno = ERANGE) and yields 0, the zero wchar.
-int32_t come_string_wchar_at_e(const come_string_t* a, long index) {
-    if (!a || index < 0) {
+int32_t come_string_wchar_at_e(come_string_t a, long index) {
+    if (index < 0) {
         come_ERR_set(ERANGE, "string index out of bounds");
         return 0;
     }
-    const unsigned char* p = (const unsigned char*)a->data;
+    const unsigned char* p = (const unsigned char*)sdata(a);
     long current = 0;
     while (*p) {
         uint32_t cp;
@@ -691,45 +624,29 @@ int32_t come_string_wchar_at_e(const come_string_t* a, long index) {
     return 0;
 }
 
-// Element Access with ERR reporting (COIL-106): like come_string_at,
-// but an out-of-bounds index sets ERR (errno = ERANGE) and yields
-// the zero value for a string - an empty string - instead of NULL.
-come_string_t* come_string_at_e(const come_string_t* a, size_t index) {
-    come_string_t* r = come_string_at(a, index);
-    if (!r) {
-        come_ERR_set(ERANGE, "string index out of bounds");
-        return come_string_new_len(a ? (void*)a : NULL, "", 0);
-    }
-    return r;
-}
+// Element Access: the character at an index as a one-character
+// string. An out-of-bounds index sets ERR (errno = ERANGE) and
+// yields the zero value for a string - an empty string.
+come_string_t come_string_at(come_string_t a, size_t index) {
+    {
+        const char* p = sdata(a);
+        size_t current_idx = 0;
 
-// Element Access
-come_string_t* come_string_at(const come_string_t* a, size_t index) {
-    if (!a) return NULL;
-    
-    const char* p = a->data;
-    size_t current_idx = 0;
-    
-    while (*p) {
-        if (current_idx == index) {
-            // Found the character start
+        while (*p) {
             const char* start = p;
-            // Advance to find end
             do { p++; } while ((*p & 0xC0) == 0x80);
-            
-            size_t len = p - start;
-            return come_string_new_len((void*)a, start, len);
+            if (current_idx == index) {
+                return come_string_new_len(a.ctx, start, (size_t)(p - start));
+            }
+            current_idx++;
         }
-        
-        // Advance
-        do { p++; } while ((*p & 0xC0) == 0x80);
-        current_idx++;
     }
-    
-    return NULL; // Out of bounds
+    come_ERR_set(ERANGE, "string index out of bounds");
+    come_string_t e = { NULL, 0, 0, sctx(a) };
+    return e;
 }
 
-long come_string_tol(const come_string_t* a) {
+long come_string_tol(come_string_t a) {
     return come_string_tol_base(a, 10);
 }
 
@@ -737,39 +654,37 @@ long come_string_tol(const come_string_t* a) {
 // (0x = hex, leading 0 = octal), 2..36 as strtoll. A string
 // with no digits at all sets ERR (EINVAL); overflow sets
 // ERANGE via strtoll. (The old tol never set ERR.)
-long come_string_tol_base(const come_string_t* a, int base) {
-    if (!a) return 0;
+long come_string_tol_base(come_string_t a, int base) {
+    
     char* end = NULL;
     errno = 0;
-    long v = strtoll(a->data, &end, base);
-    if (end == a->data) come_ERR_set(EINVAL, "string is not a number");
+    long v = strtoll(sdata(a), &end, base);
+    if (end == sdata(a)) come_ERR_set(EINVAL, "string is not a number");
     return v;
 }
 
-double come_string_tod(const come_string_t* a) {
-    if (!a) return 0;
+double come_string_tod(come_string_t a) {
     char* end = NULL;
     errno = 0;
-    double v = strtod(a->data, &end);
-    if (end == a->data) come_ERR_set(EINVAL, "string is not a number");
+    double v = strtod(sdata(a), &end);
+    if (end == sdata(a)) come_ERR_set(EINVAL, "string is not a number");
     return v;
 }
 
 // Come_std.md section 5: atof/atoi/atol equivalents.
-long come_string_toi(const come_string_t* a) {
+long come_string_toi(come_string_t a) {
     return come_string_tol_base(a, 10);
 }
 
-double come_string_tof(const come_string_t* a) {
+double come_string_tof(come_string_t a) {
     return come_string_tod(a);
 }
 
 // utf8(): is the string valid UTF-8? Rejects overlong forms,
 // surrogates, and code points above U+10FFFF.
-bool come_string_utf8(const come_string_t* a) {
-    if (!a) return false;
-    const unsigned char* p = (const unsigned char*)a->data;
-    uint32_t remaining = a->count;
+bool come_string_utf8(come_string_t a) {
+    const unsigned char* p = (const unsigned char*)sdata(a);
+    uint32_t remaining = a.count;
     while (remaining > 0) {
         unsigned char c = *p;
         uint32_t cp, min_cp;
@@ -791,31 +706,4 @@ bool come_string_utf8(const come_string_t* a) {
         remaining -= (uint32_t)(extra + 1);
     }
     return true;
-}
-
-// Formatted I/O on strings (Come_string.md): the va_list forms
-// are the implementation; the variadic forms wrap them.
-come_string_t* come_string_vsprintf(TALLOC_CTX* ctx, const char* fmt, va_list args) {
-    va_list copy;
-    va_copy(copy, args);
-    int len = vsnprintf(NULL, 0, fmt, copy);
-    va_end(copy);
-    if (len < 0) return NULL;
-    come_string_t* s = come_string_new_len(ctx, "", (size_t)len);
-    if (!s) return NULL;
-    vsnprintf(s->data, (size_t)len + 1, fmt, args);
-    return s;
-}
-
-int come_string_vsscanf(const come_string_t* a, const char* fmt, va_list args) {
-    if (!a || !fmt) return EOF;
-    return vsscanf(a->data, fmt, args);
-}
-
-int come_string_sscanf(const come_string_t* a, const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int r = come_string_vsscanf(a, fmt, args);
-    va_end(args);
-    return r;
 }

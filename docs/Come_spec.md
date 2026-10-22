@@ -515,18 +515,34 @@ One rule, easy to teach: the compiler never silently discards information.
 - **No raw pointers** in user code.
 - **No manual allocation or freeing.** There is no `.alloc()` and no
   `.free()`.
-- Arrays, strings, and maps are **headered buffers**:
-  `[ size_in_bytes | element_count | data... ]`.
-- Every buffer has an **owner**: the scope or module whose lifetime bounds
-  it. When the owner dies, its buffers die with it — deterministically,
-  without a garbage collector.
+- Arrays, strings, and maps are **headered buffers**. The header —
+  data pointer, element count, capacity, and owner context — is a
+  small fixed-size value kept *inline* in the variable, struct field,
+  or array element that holds the buffer; it needs no allocation of
+  its own. Only the data block lives on the heap.
+- Every buffer has an **owner**: a scope, a module, or another buffer
+  variable whose lifetime bounds it. When the owner dies, its buffers
+  die with it — deterministically, without a garbage collector.
 - `resize(n)` is the single primitive that changes a dynamic buffer's
   size (see 7.3).
 
 ## 7.2 Ownership rules
 
-- Assignment aliases: `b = a` makes `b` a second reference to the same
-  buffer (same owner). Use `.dup()` to copy.
+- Assignment aliases: `b = a` copies the header, so `b` shares `a`'s
+  data block and owner. Writes through either variable are visible in
+  both while they share the block. Use `.dup()` to copy.
+- **Growth forks aliases.** When a buffer grows past its capacity
+  (`resize()`, `append()`, map inserts), the growing variable gets a
+  fresh data block; the old block is never moved or freed early — it
+  is reclaimed when the owner dies. An alias made before the growth
+  keeps the old block as a valid snapshot: its length and contents
+  stay as they were, and it remains fully usable. An alias is never
+  left pointing at freed memory.
+- **Parameters are header copies.** Passing a buffer to a function
+  passes its header by value: element writes within capacity are
+  shared with the caller, but growing (or shrinking) the parameter
+  changes only the callee's header, never the caller's length.
+  Return the buffer to hand a grown value back.
 - `.chown(new_owner)` explicitly re-parents a buffer (and its subtree)
   to a longer-lived owner — a composite variable or a module.
 - **A reference may not outlive its buffer's owner.** The compiler rejects
@@ -549,8 +565,8 @@ byte r[]
 
 ## 7.3 `resize()`
 
-`resize(n)` grows or shrinks a dynamic buffer in place, in the current
-memory context:
+`resize(n)` sets a dynamic buffer's length, in the buffer's owner
+context:
 
 ```come
 int dyn[]
@@ -559,8 +575,11 @@ dyn.resize(512)  // grows
 dyn.resize(0)    // releases storage
 ```
 
-- `resize(0)` releases the body but the header survives: the buffer is
-  empty, never null. Empty is a valid state, not a missing object.
+- `resize(0)` empties the buffer: the length is 0 and the buffer is
+  never null. Empty is a valid state, not a missing object. (The data
+  block itself is reclaimed when the owner dies.)
+- Growing past capacity allocates a fresh data block — see the
+  growth rule in 7.2. Shrinking never moves the block.
 - Resizing a fixed-size array (`int arr[10]`) is a compile error.
 - `resize` on strings is not applicable (strings are immutable; build new
   ones instead).
@@ -904,7 +923,7 @@ statements on one line.
 | UTF-8 | Default; character-first strings |
 | Switch | No implicit fallthrough |
 | Typing | Static, with `var` inference; no implicit narrowing |
-| Strings, Arrays, Maps | Headered-buffer objects; maps are `map{K, V}` |
+| Strings, Arrays, Maps | Headered buffers: inline header value (data pointer, count, capacity, owner) + heap data block; maps are `map{K, V}` |
 | Functions | Multiple returns via tuples; passable as arguments only |
 | Coroutines | `coroutine`/`spawn`/`colink`/`wait`; race-free by construction |
 | Errors | Global `ERR`; `ERR.fatal` for unrecoverable states; no exceptions |
