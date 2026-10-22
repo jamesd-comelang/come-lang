@@ -75,7 +75,7 @@ implements it (0 files reference `coroutine` / `spawn` / `colink`).
 
 | Story | Title | Spec | Size | Depends | Acceptance | Done |
 |-------|-------|------|------|---------|------------|------|
-| COIL-120 | Coroutines are cheap enough to spawn per task — no threads, no locks | §9.3 | XL | v0.7.0 | Two coroutines interleave deterministically under `yield` | ☐ |
+| COIL-120 | Coroutines are cheap enough to spawn per task — no threads, no locks | §9.3 | XL | v0.7.0 | Two coroutines interleave deterministically under `yield` | ☑ |
 | COIL-121 | Concurrent work starts with a single spawn statement | §9.1 | M | COIL-120 | A spawned coroutine runs to completion | ☐ |
 | COIL-122 | Coroutines cannot data-race — they share nothing by construction | §9.1, §7 | M | COIL-121 | Violations are compile errors; ownership moves verified in tests | ☐ |
 | COIL-123 | Coroutines hand data to each other with ownership attached | §9.2, §6.7 | L | COIL-120, COIL-122 | Ping-pong example passes; write-after-close sets `ERR` | ☐ |

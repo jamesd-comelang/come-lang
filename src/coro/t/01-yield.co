@@ -1,0 +1,48 @@
+module coro_test
+import std
+
+// COIL-120: yield hands the turn to the next coroutine and
+// comes back with locals, arrays and strings intact.
+
+coroutine counter(int n, int expect) {
+    int total = 0
+    int i = 1
+    while (i <= n) {
+        total = total + i
+        yield
+        i = i + 1
+    }
+    if (total != expect) {
+        std.out.printf("FAIL: counter total %d, want %d\n", total, expect)
+    }
+}
+
+coroutine builder() {
+    int vals[]
+    int i = 0
+    while (i < 4) {
+        vals.append(i * i)
+        yield
+        i = i + 1
+    }
+    string label = "builder"
+    if (vals.length() != 4 || vals[3] != 9) {
+        std.out.printf("FAIL: builder vals\n")
+    }
+    if (label != "builder") {
+        std.out.printf("FAIL: builder label\n")
+    }
+}
+
+int main() {
+    spawn counter(5, 15)
+    spawn builder()
+    spawn counter(3, 6)
+    int k = 0
+    while (k < 12) {
+        yield
+        k = k + 1
+    }
+    std.out.printf("PASS: 01-yield\n")
+    return 0
+}

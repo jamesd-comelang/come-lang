@@ -1,6 +1,6 @@
 TOP_DIR=../
 # Subdirectories to build if they have Makefiles (core modules that don't need CO compiler)
-SUB_DIRS := core mem array map
+SUB_DIRS := core mem array map coro
 
 include $(TOP_DIR)/Makefile.inc
 

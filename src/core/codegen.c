@@ -437,7 +437,70 @@ static void collect_module_fns(ASTNode* ast) {
         }
     }
 }
+// Coroutines declared in the file being generated (COIL-120):
+// spawn sites look the declaration up here for its parameters.
+static ASTNode* g_coroutines[64];
+static int g_coroutine_count = 0;
+
+static void collect_coroutines(ASTNode* ast) {
+    g_coroutine_count = 0;
+    if (!ast || ast->type != AST_PROGRAM) return;
+    for (int i = 0; i < ast->child_count && g_coroutine_count < 64; i++) {
+        ASTNode* ch = ast->children[i];
+        if (ch && ch->type == AST_FUNCTION && ch->is_coroutine) {
+            g_coroutines[g_coroutine_count++] = ch;
+        }
+    }
+}
+
+static ASTNode* find_coroutine(const char* name) {
+    for (int i = 0; i < g_coroutine_count; i++) {
+        if (strcmp(g_coroutines[i]->text, name) == 0) return g_coroutines[i];
+    }
+    return NULL;
+}
+
+// Parameter count of a function/coroutine node: children are
+// [ret, params..., body].
+static int fn_param_count(ASTNode* fn) {
+    int n = 0;
+    for (int i = 1; i < fn->child_count; i++) {
+        if (fn->children[i]->type == AST_BLOCK) break;
+        n++;
+    }
+    return n;
+}
+
 static int is_fn_type(const char* t) { return t && strncmp(t, "fn:", 3) == 0; }
+
+// The C type of a coroutine parameter, as stored in the args
+// struct (COIL-120). Mirrors the function prototype mapping:
+// strings and collections travel as pointers.
+static void emit_coro_field_type(FILE* f, const char* type_text) {
+    if (is_fn_type(type_text)) {
+        codegen_error("coroutine parameters cannot be functions in v1");
+        fprintf(f, "void*");
+    } else if (strstr(type_text, "[]")) {
+        char raw[64];
+        size_t n = strlen(type_text);
+        if (n >= 2 && n - 2 < sizeof(raw)) {
+            memcpy(raw, type_text, n - 2);
+            raw[n - 2] = 0;
+            if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t*");
+            else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t*");
+            else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t*");
+            else fprintf(f, "come_array_t*");
+        } else {
+            fprintf(f, "come_array_t*");
+        }
+    } else if (strcmp(type_text, "string") == 0) {
+        fprintf(f, "come_string_t*");
+    } else if (strncmp(type_text, "map{", 4) == 0) {
+        fprintf(f, "come_map_t*");
+    } else {
+        fprintf(f, "%s", type_text);
+    }
+}
 // Split a comma-separated type list at nesting depth 0.
 static int split_types(const char* s, char parts[][160], int max_parts) {
     int n = 0, depth = 0;
@@ -2172,7 +2235,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             current_function_return_type[sizeof(current_function_return_type) - 1] = '\0';
         }
         
-        int is_main = (strcmp(node->text, "main") == 0);
+        int is_main = (strcmp(node->text, "main") == 0 && !node->is_coroutine);
         char func_name[8192];
         // Rule: come_MMM__FFF
         if (is_main && strcmp(current_module, "main") == 0) {
@@ -2216,8 +2279,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
 
 
+        if (node->is_coroutine) strcat(func_name, "__impl");
+
         emit_indent(f, indent);
-        
+
         // Return type
         // Handle "byte" etc alias?? no, just print text
         fprintf(f, "%s %s(", ret_type->text, func_name);
@@ -2289,7 +2354,29 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, ";\n");
         }
 
-        
+        if (node->is_coroutine) {
+            // Scheduler entry point (COIL-120): unpacks the
+            // args struct and calls the implementation.
+            fprintf(f, "void come_%s__%s__entry(void* come_args) {\n", current_module, node->text);
+            if (fn_param_count(node) > 0) {
+                fprintf(f, "    come_%s__%s__args_t* a = (come_%s__%s__args_t*)come_args;\n",
+                        current_module, node->text, current_module, node->text);
+                fprintf(f, "    %s(", func_name);
+                int first = 1;
+                for (int i = 1; i < body_idx; i++) {
+                    ASTNode* arg = node->children[i];
+                    if (arg->type != AST_VAR_DECL) continue;
+                    if (!first) fprintf(f, ", ");
+                    fprintf(f, "a->%s", arg->text);
+                    first = 0;
+                }
+                fprintf(f, ");\n");
+            } else {
+                fprintf(f, "    %s();\n", func_name);
+            }
+            fprintf(f, "}\n");
+        }
+
         return;
     }
     
@@ -2605,6 +2692,60 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             generate_block_children(f, node, indent + 1);
             emit_indent(f, indent);
             fprintf(f, "}\n");
+            break;
+        }
+
+        case AST_SPAWN: {
+            // spawn name(args) (COIL-120, spec 9.1): build the
+            // args block in the new coroutine's own context and
+            // make it runnable. It runs when someone yields,
+            // blocks, or returns.
+            emit_line_directive(f, node);
+            ASTNode* coro = find_coroutine(node->text);
+            if (!coro) {
+                codegen_error("spawn: '%s' is not a coroutine declared in this module", node->text);
+                emit_indent(f, indent);
+                fprintf(f, "/* spawn of unknown coroutine '%s' */\n", node->text);
+                break;
+            }
+            int want = fn_param_count(coro);
+            if (node->child_count != want) {
+                codegen_error("spawn: coroutine '%s' takes %d argument(s), %d given",
+                              node->text, want, node->child_count);
+            }
+            emit_indent(f, indent);
+            fprintf(f, "{\n");
+            emit_indent(f, indent + 4);
+            fprintf(f, "come_coro_t* co = come_coro_create(come_%s__%s__entry, &come_%s__ctx);\n",
+                    current_module, node->text, current_module);
+            if (want > 0) {
+                emit_indent(f, indent + 4);
+                fprintf(f, "come_%s__%s__args_t* a = (come_%s__%s__args_t*)come_coro_args(co, sizeof(come_%s__%s__args_t));\n",
+                        current_module, node->text, current_module, node->text,
+                        current_module, node->text);
+                for (int i = 0; i < node->child_count && i < want; i++) {
+                    ASTNode* param = coro->children[1 + i];
+                    emit_indent(f, indent + 4);
+                    fprintf(f, "a->%s = ", param->text);
+                    if (strcmp(param->children[1]->text, "string") == 0) {
+                        emit_string_expr(f, node->children[i]);
+                    } else {
+                        generate_expression(f, node->children[i]);
+                    }
+                    fprintf(f, ";\n");
+                }
+            }
+            emit_indent(f, indent + 4);
+            fprintf(f, "come_coro_start(co);\n");
+            emit_indent(f, indent);
+            fprintf(f, "}\n");
+            break;
+        }
+
+        case AST_YIELD: {
+            emit_line_directive(f, node);
+            emit_indent(f, indent);
+            fprintf(f, "come_coro_yield();\n");
             break;
         }
 
@@ -3024,6 +3165,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "#include \"come_string.h\"\n");
     fprintf(f, "#include \"come_array.h\"\n");
     fprintf(f, "#include \"come_map.h\"\n");
+    fprintf(f, "#include \"come_coro.h\"\n");
     fprintf(f, "#include \"come_types.h\"\n");
     fprintf(f, "#include \"mem/talloc.h\"\n");
     fprintf(f, "#include <errno.h>\n");
@@ -3158,6 +3300,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "    COME_CTX = mem_talloc_new_ctx(NULL);\n");
         fprintf(f, "    if (!COME_CTX) { fprintf(stderr, \"OOM\\n\"); return 1; }\n");
         
+        fprintf(f, "    come_coro_init();\n");
         fprintf(f, "    come_%s__init();\n", current_module);
         fprintf(f, "    \n");
         
@@ -3205,6 +3348,9 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "    static bool initialized = false;\n");
     fprintf(f, "    if (initialized) return;\n");
     fprintf(f, "    initialized = true;\n");
+    // Register this module's memory context with the coroutine
+    // scheduler (COIL-120): context switches swap it per coroutine.
+    fprintf(f, "    come_coro_register_ctx(&come_%s__ctx);\n", current_module);
     for (int i = 0; i < chain_count; i++) {
         fprintf(f, "    come_%s__init();\n", chain_imports[i]);
     }
@@ -3325,6 +3471,23 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     for (int i=0; i<ast->child_count; i++) {
         ASTNode* child = ast->children[i];
         if (child->type == AST_FUNCTION) {
+             if (child->is_coroutine) {
+                 // Coroutine (COIL-120): other code in the module
+                 // needs the args struct type and the scheduler
+                 // entry point, not a callable prototype.
+                 fprintf(f, "typedef struct {\n");
+                 for (int j = 1; j < child->child_count; j++) {
+                     ASTNode* arg = child->children[j];
+                     if (arg->type == AST_BLOCK) break;
+                     if (arg->type != AST_VAR_DECL) continue;
+                     fprintf(f, "    ");
+                     emit_coro_field_type(f, arg->children[1]->text);
+                     fprintf(f, " %s;\n", arg->text);
+                 }
+                 fprintf(f, "} come_%s__%s__args_t;\n", current_module, child->text);
+                 fprintf(f, "void come_%s__%s__entry(void*);\n", current_module, child->text);
+                 continue;
+             }
              if (strcmp(child->text, "main") == 0) continue; // Skip main prototype
              if (g_verbose) printf("DEBUG: Mapping prototype for %s\n", child->text);
              // But `add` error requires it.
@@ -3415,6 +3578,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
             strncpy(current_module, ast->text, 255);
         }
         collect_module_fns(ast); // COIL-109
+        collect_coroutines(ast); // COIL-120
         generate_program(f, ast);
     } else {
         generate_node(f, ast, 0);

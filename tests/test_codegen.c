@@ -757,5 +757,67 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-119 examples codegen test passed!\033[0m\n");
+
+    // COIL-120: a coroutine declaration produces an args struct
+    // and a scheduler entry; spawn builds the args block through
+    // the runtime; yield reaches come_coro_yield. Spawning a
+    // plain function, or with the wrong arity, is an error.
+    {
+        const char* src120 =
+            "module m120\nimport std\n\n"
+            "coroutine worker(string tag, int n) {\n"
+            "    yield\n"
+            "}\n"
+            "int main() {\n"
+            "    spawn worker(\"A\", 3)\n"
+            "    yield\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil120.co", src120)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-120: coroutine program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of120 = fopen("build/tests/coil120.co.c", "r");
+        if (!of120) { printf("COIL-120: output file missing\n"); return 1; }
+        static char buf120[262144];
+        size_t blen120 = fread(buf120, 1, sizeof(buf120) - 1, of120);
+        fclose(of120);
+        buf120[blen120] = 0;
+        if (!strstr(buf120, "come_m120__worker__args_t")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-120: args struct missing\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf120, "come_coro_create(come_m120__worker__entry")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-120: spawn must create via the scheduler entry\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf120, "come_coro_yield()")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-120: yield must reach the runtime\033[0m\n");
+            return 1;
+        }
+        const char* bad120a =
+            "module m120b\nimport std\n\n"
+            "int helper() { return 1 }\n"
+            "int main() {\n"
+            "    spawn helper()\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil120bad.co", bad120a)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-120: spawning a plain function must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad120b =
+            "module m120c\nimport std\n\n"
+            "coroutine w(int n) { yield }\n"
+            "int main() {\n"
+            "    spawn w(1, 2)\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil120bad2.co", bad120b)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-120: spawn with wrong arity must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-120 coroutine codegen test passed!\033[0m\n");
     return 0;
 }

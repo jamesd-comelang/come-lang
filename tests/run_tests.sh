@@ -24,12 +24,16 @@ gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_std.c src/std/std.c src
 gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_array.c src/array/array.c src/string/string.c src/mem/memory.c src/core/utils.c -o build/tests/test_array
 ./build/tests/test_array
 
+gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_coro.c src/coro/coro.c src/mem/memory.c src/core/utils.c -o build/tests/test_coro
+./build/tests/test_coro
+
 gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_oob.c src/array/array.c src/string/string.c src/mem/memory.c src/core/utils.c -o build/tests/test_oob
 ./build/tests/test_oob
 
 bash tests/run_module_project.sh
 bash tests/run_extern_test.sh
 bash tests/run_proc_test.sh
+bash tests/run_coro_test.sh
 
 # Examples are documentation that must run (COIL-119): every
 # example at the top level of examples/ builds and exits 0.

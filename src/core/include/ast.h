@@ -48,6 +48,8 @@ typedef enum {
     AST_CAST,
     AST_TERNARY,
     AST_MAP_PAIR,  // key: value entry inside a map literal (COIL-102)
+    AST_SPAWN,     // spawn name(args) statement (COIL-120)
+    AST_YIELD,     // yield statement (COIL-120)
     AST_TYPE_END
 } ASTNodeType;
 
@@ -61,6 +63,7 @@ typedef struct ASTNode {
     int layout_packed; // For struct decls: 1 = packed (no padding) (COIL-104)
     int layout_align;  // For struct decls: required alignment, 0 = default (COIL-104)
     int is_extern;     // For function decls: extern "C" (COIL-111)
+    int is_coroutine;  // For function decls: coroutine (COIL-120)
 } ASTNode;
 ASTNode* ast_new(ASTNodeType type);
 void ast_free(ASTNode* node);

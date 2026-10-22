@@ -107,6 +107,7 @@ ASTNode* ast_new(ASTNodeType type) {
     n->layout_packed = 0;
     n->layout_align = 0;
     n->is_extern = 0;
+    n->is_coroutine = 0;
     return n;
 }
 
@@ -991,6 +992,28 @@ static ASTNode* parse_statement() {
         case TOKEN_DO: return parse_do_while_statement();
         case TOKEN_FOR: return parse_for_statement();
         case TOKEN_RETURN: return parse_return_statement();
+        case TOKEN_SPAWN: {
+            // spawn name(args) — a statement (spec 9.1)
+            advance();
+            ASTNode* node = ast_new(AST_SPAWN);
+            if (expect(TOKEN_IDENTIFIER)) {
+                strcpy(node->text, tokens.tokens[pos - 1].text);
+            }
+            expect(TOKEN_LPAREN);
+            while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                node->children[node->child_count++] = parse_expression();
+                if (!match(TOKEN_COMMA)) break;
+            }
+            expect(TOKEN_RPAREN);
+            if (current()->type == TOKEN_SEMICOLON) advance();
+            return node;
+        }
+        case TOKEN_YIELD: {
+            advance();
+            ASTNode* node = ast_new(AST_YIELD);
+            if (current()->type == TOKEN_SEMICOLON) advance();
+            return node;
+        }
         case TOKEN_LBRACE: return parse_block();
         case TOKEN_METHOD: return parse_method_statement();
         case TOKEN_ALIAS: return parse_alias_statement();
@@ -1429,8 +1452,87 @@ static void parse_alias(ASTNode* program) {
     }
 }
 
+// Coroutine declaration (COIL-120, spec 9.1):
+//   coroutine name(params) { ... }
+// Produces an AST_FUNCTION marked is_coroutine with return type
+// "void" (coroutines return no value). Parameter parsing mirrors
+// the ordinary function path, minus fn-declarator parameters.
+static void parse_coroutine_decl(ASTNode* program) {
+    advance(); // 'coroutine'
+    if (!expect(TOKEN_IDENTIFIER)) {
+        printf("Error: coroutine needs a name\n");
+        return;
+    }
+    ASTNode* func = ast_new(AST_FUNCTION);
+    func->is_coroutine = 1;
+    strcpy(func->text, tokens.tokens[pos - 1].text);
+
+    ASTNode* ret_node = ast_new(AST_IDENTIFIER);
+    strcpy(ret_node->text, "void");
+    func->children[func->child_count++] = ret_node;
+
+    expect(TOKEN_LPAREN);
+    while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+        if (current()->type == TOKEN_COMMA) { advance(); continue; }
+        if (current()->type == TOKEN_CONST) advance();
+
+        char arg_type[256];
+        if (current()->type == TOKEN_STRUCT) {
+            advance();
+            snprintf(arg_type, sizeof(arg_type), "struct %s", current()->text);
+            advance();
+        } else {
+            strcpy(arg_type, current()->text);
+            advance();
+        }
+        int psize1 = peek_array_size();
+        if (match(TOKEN_LBRACKET)) {
+            while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+            expect(TOKEN_RBRACKET);
+            strcat(arg_type, "[]");
+        }
+        if (strcmp(arg_type, "map") == 0 && current()->type == TOKEN_LBRACE) {
+            parse_map_braces_text(arg_type, sizeof(arg_type));
+        }
+        if (current()->type == TOKEN_IDENTIFIER) {
+            ASTNode* arg = ast_new(AST_VAR_DECL);
+            strcpy(arg->text, current()->text);
+            advance();
+            int psize2 = peek_array_size();
+            if (match(TOKEN_LBRACKET)) {
+                while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+                expect(TOKEN_RBRACKET);
+                strcat(arg_type, "[]");
+            }
+            ASTNode* at = ast_new(AST_IDENTIFIER);
+            strcpy(at->text, arg_type);
+            at->array_size = psize2 ? psize2 : psize1;
+            arg->children[arg->child_count++] = NULL; // No init
+            arg->children[arg->child_count++] = at;
+            func->children[func->child_count++] = arg;
+        } else {
+            printf("Error: coroutine parameter needs a name\n");
+            advance();
+        }
+    }
+    expect(TOKEN_RPAREN);
+
+    if (current()->type == TOKEN_LBRACE) {
+        ASTNode* body = parse_block();
+        func->children[func->child_count++] = body;
+        program->children[program->child_count++] = func;
+    } else {
+        printf("Error: coroutine '%s' needs a body\n", func->text);
+    }
+}
+
 static void parse_top_level_decl(ASTNode* program) {
     Token* t = current();
+
+    if (t->type == TOKEN_COROUTINE) {
+        parse_coroutine_decl(program);
+        return;
+    }
     
     char type_name[256] = {0};
     int is_method = 0;
