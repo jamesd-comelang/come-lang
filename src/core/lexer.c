@@ -3,7 +3,12 @@
 #include <ctype.h>
 #include "lexer.h"
 
+// Lexical errors that must fail the build (COIL-129):
+// lex_file returns nonzero when any occurred.
+static int lex_errors = 0;
+
 int lex_file(const char* filename, TokenList* out) {
+    lex_errors = 0;
     FILE* f = fopen(filename, "r");
     if (!f) { perror("Cannot open file"); return 1; }
     out->count = 0;
@@ -191,8 +196,8 @@ int lex_file(const char* filename, TokenList* out) {
                 tok.text[i] = '\0'; 
                 tok.type = TOKEN_NUMBER; 
             }
-            else if(*p=='"'){ int i=0; tok.text[i++]=*p++; while(*p && *p!='"') tok.text[i++]=*p++; if(*p=='"') tok.text[i++]=*p++; tok.text[i]='\0'; tok.type=TOKEN_STRING_LITERAL; }
-            else if(*p=='\''){ int i=0; tok.text[i++]=*p++; while(*p && *p!='\'') tok.text[i++]=*p++; if(*p=='\'') tok.text[i++]=*p++; tok.text[i]='\0'; tok.type=TOKEN_CHAR_LITERAL; } // Changed to CHAR_LITERAL default, distinction handled in parsing?
+            else if(*p=='"'){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='"' && *p!='\n') tok.text[i++]=*p++; if(*p=='"'){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_STRING_LITERAL; if(!closed){ printf("Error: unterminated string literal at line %d - close it with '\"' on the same line\n", line_num); lex_errors++; } }
+            else if(*p=='\''){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='\'' && *p!='\n') tok.text[i++]=*p++; if(*p=='\''){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_CHAR_LITERAL; if(!closed){ printf("Error: unterminated character literal at line %d - close it with a single quote on the same line\n", line_num); lex_errors++; } } // Changed to CHAR_LITERAL default, distinction handled in parsing?
             
             else if(isalpha(*p) || *p=='_'){ int i=0; while(isalnum(*p)||*p=='_') tok.text[i++]=*p++; tok.text[i]='\0'; tok.type=TOKEN_IDENTIFIER; }
             else { p++; continue; }
@@ -203,5 +208,5 @@ int lex_file(const char* filename, TokenList* out) {
     fclose(f);
     Token eof={TOKEN_EOF,"", line_num};
     out->tokens[out->count++]=eof;
-    return 0;
+    return lex_errors > 0 ? 1 : 0;
 }

@@ -38,6 +38,9 @@ int main() {
 
     tcpport_t port = 8080
     if (port != 8080) { std.out.printf("FAIL: type alias\n"); return 1 }
+    // A call-shaped use of a type alias is a cast (COIL-129).
+    tcpport_t casted = tcpport_t(8081)
+    if (casted != 8081) { std.out.printf("FAIL: alias cast\n"); return 1 }
     int arr[MAX_ARRAY]
     if (arr.length() != 5) { std.out.printf("FAIL: const alias size\n"); return 1 }
     mybyte mb = 3

@@ -630,8 +630,93 @@ static int is_module_var(const char* name) {
     return 0;
 }
 
+// Module-level constants and enum names of the file being
+// generated (COIL-129): in expressions they are plain
+// identifiers, and assigning to one is an error. Collected
+// in the same pre-pass style as the module variables.
+static char g_const_names[256][128];
+static int g_const_name_count = 0;
+
+static void collect_const_names(ASTNode* ast) {
+    g_const_name_count = 0;
+    if (!ast || ast->type != AST_PROGRAM) return;
+    for (int i = 0; i < ast->child_count; i++) {
+        ASTNode* ch = ast->children[i];
+        if (!ch) continue;
+        if (ch->type == AST_CONST_DECL && g_const_name_count < 256) {
+            snprintf(g_const_names[g_const_name_count++], 128, "%s", ch->text);
+        } else if (ch->type == AST_CONST_GROUP) {
+            for (int j = 0; j < ch->child_count && g_const_name_count < 256; j++) {
+                if (ch->children[j] && ch->children[j]->text[0])
+                    snprintf(g_const_names[g_const_name_count++], 128, "%s", ch->children[j]->text);
+            }
+        }
+    }
+}
+
+static int is_const_name(const char* name) {
+    for (int i = 0; i < g_const_name_count; i++) {
+        if (strcmp(g_const_names[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+// Constants declared inside the function being generated:
+// registered as their declarations are generated (source
+// order), reset per function.
+static char g_fn_const_names[128][128];
+static int g_fn_const_count = 0;
+
+static int is_fn_const_name(const char* name) {
+    for (int i = 0; i < g_fn_const_count; i++) {
+        if (strcmp(g_fn_const_names[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+// Symbols of a directory module's OTHER files (COIL-129):
+// the driver registers every function, global, and
+// constant name of the group before generating any file,
+// so a cross-file reference is not mistaken for an
+// undefined name. Keyed by module; a fresh registration
+// replaces the old one.
+typedef struct { char module[128]; char names[512][128]; int count; } GroupSymbols;
+static GroupSymbols g_group_symbols[16];
+static int g_group_symbol_modules = 0;
+
+void codegen_register_group_symbols(const char* module, const char** names, int count) {
+    GroupSymbols* slot = NULL;
+    for (int i = 0; i < g_group_symbol_modules; i++) {
+        if (strcmp(g_group_symbols[i].module, module) == 0) slot = &g_group_symbols[i];
+    }
+    if (!slot) {
+        if (g_group_symbol_modules >= 16) return;
+        slot = &g_group_symbols[g_group_symbol_modules++];
+        snprintf(slot->module, sizeof(slot->module), "%s", module);
+    }
+    slot->count = 0;
+    for (int i = 0; i < count && slot->count < 512; i++)
+        snprintf(slot->names[slot->count++], 128, "%s", names[i]);
+}
+
+static int is_group_symbol(const char* name) {
+    for (int m = 0; m < g_group_symbol_modules; m++) {
+        if (strcmp(g_group_symbols[m].module, current_module) != 0) continue;
+        for (int i = 0; i < g_group_symbols[m].count; i++) {
+            if (strcmp(g_group_symbols[m].names[i], name) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
 // 1 while generating a coroutine body (COIL-122).
 static int g_in_coroutine = 0;
+
+// Loop/switch nesting while generating a function body
+// (COIL-129): break and continue outside any loop used to
+// surface as C compiler errors. Reset per function.
+static int g_break_depth = 0;
+static int g_continue_depth = 0;
 
 // Buffer types transfer ownership on spawn (spec 9.1/7);
 // value types are simply copied into the args struct.
@@ -1355,6 +1440,19 @@ static void generate_expression(FILE* f, ASTNode* node) {
             !get_local_variable_type(node->text)) {
             codegen_error("coroutine cannot access module variable '%s' (spec 9.1: a coroutine sees only its own locals and parameters)", node->text);
         }
+        // An unknown name used to emit raw and fail in the C
+        // compiler as an "undeclared" error against a mangled
+        // function (COIL-129). Known names: locals and
+        // parameters, module variables and constants, the
+        // other files of a directory module, functions used
+        // as values, and the legacy null.
+        if (strcmp(node->text, "null") != 0 && !expr_is_fn_value(node) &&
+            !get_local_variable_type(node->text) &&
+            !is_module_var(node->text) && !is_const_name(node->text) &&
+            !is_fn_const_name(node->text) &&
+            !is_group_symbol(node->text)) {
+            codegen_error("'%s' is not defined: no variable, constant, or parameter has that name here - check the spelling, or declare it before use", node->text);
+        }
         if (strcmp(node->text, "null") == 0) fprintf(f, "NULL");
         else if (expr_is_fn_value(node)) {
             // A named function used as a value: its code reference
@@ -1373,6 +1471,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
         ASTNode* base = node->children[0];
         char mkt[160], mvt[160];
         const char* bt = (base->type == AST_IDENTIFIER) ? get_local_variable_type(base->text) : NULL;
+        // Indexing a scalar used to generate garbage C with
+        // pointer-cast warnings (COIL-129).
+        if (bt && (num_info(bt) || strcmp(bt, "bool") == 0)) {
+            codegen_error("cannot index '%s' of type %s: only arrays, strings, and maps can be indexed", base->text, bt);
+        }
         if ((bt && strcmp(bt, "string") == 0) || base->type == AST_STRING_LITERAL) {
             // String indexing (COIL-110, spec 6.5): s[i] is the i-th
             // character as a wchar. The runtime helper reports
@@ -2368,6 +2471,34 @@ static void generate_expression(FILE* f, ASTNode* node) {
              }
              return;
         }
+        // An unknown callee used to emit a mangled call and
+        // fail in the LINKER ("undefined reference to
+        // come_<module>__<name>") (COIL-129). Known callees:
+        // this module's functions (with an argument-count
+        // check), tuple functions, externs, function-typed
+        // locals, the other files of a directory module, and
+        // already-mangled internal names.
+        {
+            const char* csig = find_module_fn_sig(node->text);
+            const char* clocal = get_local_variable_type(node->text);
+            int known = csig || find_tuple_fn(node->text) ||
+                        is_extern_fn(node->text) || is_group_symbol(node->text) ||
+                        (clocal && is_fn_type(clocal)) ||
+                        strncmp(node->text, "come_", 5) == 0 ||
+                        strncmp(node->text, "std_", 4) == 0;
+            if (!known) {
+                codegen_error("call to undefined function '%s': no function with that name is declared in this module - check the spelling, define it, or import its module and call it as module.function", node->text);
+            } else if (csig) {
+                char pbuf[32][160];
+                int np = call_param_types(node, pbuf, 32);
+                const char* lp = strchr(csig, '(');
+                const char* rp = strrchr(csig, ')');
+                if (lp && rp && rp == lp + 1) np = 0; // "()" takes none
+                if (np != node->child_count) {
+                    codegen_error("function '%s' takes %d argument(s), %d given", node->text, np, node->child_count);
+                }
+            }
+        }
         char mangled_name[8192];
         // Heuristic: if contains '.', it's fully qualified? No, AST_CALL text usually simple.
         // If it starts with "come_", assume already mangled/internal?
@@ -2606,6 +2737,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         emit_line_directive(f, node);
 
         reset_local_variables();
+        g_fn_const_count = 0; // COIL-129
+        g_break_depth = 0;
+        g_continue_depth = 0;
         // Register arguments
         // Children: 0=ret, 1..=args (until block)
         for (int i = 1; i < node->child_count; i++) {
@@ -3373,6 +3507,32 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 
         case AST_ASSIGN: {
             emit_line_directive(f, node);  // Emit #line for assignment
+            // Assigning to a constant (COIL-129): a module
+            // constant is not a variable, and the first-
+            // assignment rule below would otherwise shadow it
+            // with a fresh local and silently "work".
+            if (node->child_count >= 1 &&
+                node->children[0]->type == AST_IDENTIFIER &&
+                !get_local_variable_type(node->children[0]->text) &&
+                (is_const_name(node->children[0]->text) ||
+                 is_fn_const_name(node->children[0]->text))) {
+                codegen_error("cannot assign to '%s': it is a constant (spec 4) - declare a variable if the value must change", node->children[0]->text);
+                break;
+            }
+            // Assigning to a name nothing declares (COIL-129):
+            // compound assignments (+=, ...) cannot declare,
+            // and a plain '=' to a group sibling's global is
+            // fine - but a plain '=' to a wholly unknown name
+            // is the first-assignment declaration below, so
+            // only the compound forms are errors here.
+            if (strcmp(node->text, "=") != 0 && node->child_count >= 1 &&
+                node->children[0]->type == AST_IDENTIFIER &&
+                !get_local_variable_type(node->children[0]->text) &&
+                !is_module_var(node->children[0]->text) &&
+                !is_group_symbol(node->children[0]->text)) {
+                codegen_error("'%s' is not defined: '%s' needs a variable declared before it - declare it with a type first", node->children[0]->text, node->text);
+                break;
+            }
             // First assignment to an undeclared name declares
             // it with the inferred type (COIL-126; spec 9.1,
             // 9.2 and 10.1). The type locks at this assignment;
@@ -3514,6 +3674,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
 
         case AST_CONST_DECL: {
+            // Remember the name for this function: assigning
+            // to a constant is an error wherever it was
+            // declared (COIL-129).
+            if (node->text[0] && !is_const_name(node->text) &&
+                !is_fn_const_name(node->text) && g_fn_const_count < 128) {
+                snprintf(g_fn_const_names[g_fn_const_count++], 128, "%s", node->text);
+            }
             emit_indent(f, indent);
             if (node->child_count > 0 && node->children[0]->type == AST_ENUM_DECL) {
                 // Enum
@@ -3561,9 +3728,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, "switch (");
             generate_expression(f, node->children[0]);
             fprintf(f, ") {\n");
+            g_break_depth++;
             for (int i=1; i < node->child_count; i++) {
                 generate_node(f, node->children[i], indent+4);
             }
+            g_break_depth--;
             emit_indent(f, indent);
             fprintf(f, "}\n");
             break;
@@ -3612,6 +3781,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, "while (");
             generate_expression(f, node->children[0]);
             fprintf(f, ") {\n");
+            g_break_depth++;
+            g_continue_depth++;
             // Body is a block usually?
             ASTNode* body = node->children[1];
             if (body->type == AST_BLOCK) {
@@ -3619,21 +3790,27 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             } else {
                  generate_node(f, body, indent+4);
             }
+            g_break_depth--;
+            g_continue_depth--;
             emit_indent(f, indent);
             fprintf(f, "}\n");
             break;
         }
-        
+
         case AST_DO_WHILE: {
             emit_line_directive(f, node);
             emit_indent(f, indent);
             fprintf(f, "do {\n");
+            g_break_depth++;
+            g_continue_depth++;
              ASTNode* body = node->children[0];
             if (body->type == AST_BLOCK) {
                  for(int i=0; i<body->child_count; i++) generate_node(f, body->children[i], indent+4);
             } else {
                  generate_node(f, body, indent+4);
             }
+            g_break_depth--;
+            g_continue_depth--;
             emit_indent(f, indent);
             fprintf(f, "} while (");
             generate_expression(f, node->children[1]);
@@ -3667,6 +3844,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     // Actually let's assume it's common.
                     ASTNode* decl = node->children[0];
                     ASTNode* type = decl->children[1];
+                    // Register the loop variable: the body
+                    // refers to it by name (COIL-129).
+                    add_local_variable(decl->text, type->text);
                     fprintf(f, "%s %s = ", type->text, decl->text);
                     generate_expression(f, decl->children[0]);
                 } else {
@@ -3688,6 +3868,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, ") ");
 
             // children[3]: body
+            g_break_depth++;
+            g_continue_depth++;
             ASTNode* body = node->children[3];
             if (body->type == AST_BLOCK) {
                 fprintf(f, "{\n");
@@ -3700,15 +3882,23 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 fprintf(f, "\n");
                 generate_node(f, body, indent + 4);
             }
+            g_break_depth--;
+            g_continue_depth--;
             break;
         }
 
         case AST_BREAK: {
+            if (g_break_depth == 0) {
+                codegen_error("'break' has no loop or switch to break out of - it is only allowed inside a for, while, do-while, or switch body");
+            }
             emit_indent(f, indent);
             fprintf(f, "break;\n");
             break;
         }
         case AST_CONTINUE: {
+            if (g_continue_depth == 0) {
+                codegen_error("'continue' has no loop to continue - it is only allowed inside a for, while, or do-while body");
+            }
             emit_indent(f, indent);
             fprintf(f, "continue;\n");
             break;
@@ -4231,6 +4421,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         collect_module_vars(ast); // COIL-122
         collect_structs(ast); // COIL-127
         collect_tuple_fns(ast); // COIL-127
+        collect_const_names(ast); // COIL-129
         generate_program(f, ast);
     } else {
         generate_node(f, ast, 0);

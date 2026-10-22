@@ -26,4 +26,9 @@ extern int g_codegen_system_module;
 // rejects cross-module calls to symbols the module did not
 // export. A module with no export statement stays open.
 void codegen_register_module_exports(const char* module, const char** names, int count);
+// COIL-129: the driver registers every symbol (function,
+// global, constant) of a directory module's files before
+// generating any of them, so cross-file references are
+// not mistaken for undefined names.
+void codegen_register_group_symbols(const char* module, const char** names, int count);
 #endif

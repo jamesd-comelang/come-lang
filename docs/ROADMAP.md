@@ -94,7 +94,7 @@ Theme: v1 is the spec, fully — verified, documented, packaged.
 |-------|-------|------|------|---------|------------|------|
 | COIL-127 | Every section of the spec is proven by a test — or corrected | all | L | v0.9.0 | Coverage checklist in `docs/draft/TESTING.md` is complete | ☑ |
 | COIL-128 | The published grammar accepts exactly what the compiler accepts | §16 | M | COIL-127 | Grammar and parser accept the same language on the test corpus | ☑ |
-| COIL-129 | Compiler errors name the rule and show the fix | — | M | COIL-127 | Top-20 error cases reviewed by hand | ☐ |
+| COIL-129 | Compiler errors name the rule and show the fix | — | M | COIL-127 | Top-20 error cases reviewed by hand | ☑ |
 | COIL-130 | v1.0 installs from a package and runs on a clean machine | — | S | COIL-127–129 | Clean-machine install runs `hello.co` | ☐ |
 | COIL-131 | The README describes the language as it actually is | — | S | COIL-127 | No pre-v2 claims remain in README | ☐ |
 

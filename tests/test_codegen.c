@@ -1193,5 +1193,62 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-128 grammar-surface codegen test passed!\033[0m\n");
+
+    // COIL-129: the classic mistakes fail at the Come level
+    // (the exact messages are pinned by run_errors_test.sh):
+    // undefined variable, undefined function, wrong argument
+    // count, assignment to a constant, break outside a loop.
+    {
+        const char* hdr129 = "module m129\nimport std\n\n";
+        char src129[1024];
+        snprintf(src129, sizeof(src129), "%sint main() {\n    return missing + 1\n}\n", hdr129);
+        if (!gen_fail("build/tests/coil129a.co", src129)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-129: undefined variable must fail generation\033[0m\n");
+            return 1;
+        }
+        snprintf(src129, sizeof(src129), "%sint main() {\n    return nosuchfn(3)\n}\n", hdr129);
+        if (!gen_fail("build/tests/coil129b.co", src129)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-129: undefined function must fail generation\033[0m\n");
+            return 1;
+        }
+        snprintf(src129, sizeof(src129), "%sint add(int a, int b) {\n    return a + b\n}\n\nint main() {\n    return add(1)\n}\n", hdr129);
+        if (!gen_fail("build/tests/coil129c.co", src129)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-129: wrong argument count must fail generation\033[0m\n");
+            return 1;
+        }
+        snprintf(src129, sizeof(src129), "%sconst K = 5\n\nint main() {\n    K = 6\n    return K\n}\n", hdr129);
+        if (!gen_fail("build/tests/coil129d.co", src129)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-129: assigning to a constant must fail generation\033[0m\n");
+            return 1;
+        }
+        snprintf(src129, sizeof(src129), "%sint main() {\n    break\n    return 0\n}\n", hdr129);
+        if (!gen_fail("build/tests/coil129e.co", src129)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-129: break outside a loop must fail generation\033[0m\n");
+            return 1;
+        }
+        // And the alias cast generates a C cast, not a call.
+        const char* cast129 =
+            "module m129f\nimport std\n\n"
+            "alias tcpport_t = ushort\n\n"
+            "int main() {\n"
+            "    tcpport_t p = tcpport_t(8080)\n"
+            "    return p\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil129f.co", cast129)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-129: alias cast must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of129 = fopen("build/tests/coil129f.co.c", "r");
+        if (!of129) { printf("COIL-129: output file missing\n"); return 1; }
+        static char buf129[262144];
+        size_t blen129 = fread(buf129, 1, sizeof(buf129) - 1, of129);
+        fclose(of129);
+        buf129[blen129] = 0;
+        if (!strstr(buf129, "(tcpport_t)") || strstr(buf129, "come_m129f__tcpport_t")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-129: alias cast must emit (tcpport_t), not a mangled call\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-129 error-quality codegen test passed!\033[0m\n");
     return 0;
 }

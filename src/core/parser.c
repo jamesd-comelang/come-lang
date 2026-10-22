@@ -37,6 +37,29 @@ static void register_alias(const char* name, ASTNode* replacement) {
     }
 }
 
+// Type-alias names (spec 5.1). Type aliases live in the
+// AST as typedefs, not in the substitution table above, so
+// their names are kept here for one reason: a call-shaped
+// use of a type-alias name is a cast - tcpport_t(8080) -
+// not a function call (COIL-129; it used to emit a call to
+// a nonexistent come_<module>__tcpport_t and fail in the
+// linker).
+static char type_alias_names[MAX_ALIASES][256];
+static int type_alias_name_count = 0;
+
+static void register_type_alias(const char* name) {
+    for (int i = 0; i < type_alias_name_count; i++)
+        if (strcmp(type_alias_names[i], name) == 0) return;
+    if (type_alias_name_count < MAX_ALIASES)
+        strcpy(type_alias_names[type_alias_name_count++], name);
+}
+
+static int is_type_alias_name(const char* name) {
+    for (int i = 0; i < type_alias_name_count; i++)
+        if (strcmp(type_alias_names[i], name) == 0) return 1;
+    return 0;
+}
+
 // Macro aliases (spec 5.3): alias SQUARE(x) = ((x) * (x)).
 // The body is stored as a template AST; a call site expands
 // to a clone with the arguments substituted for the
@@ -118,9 +141,37 @@ static int match(TokenType type) {
     return 0;
 }
 
+// Human-readable token names for error messages (COIL-129:
+// "Expected token type 25, got 32" told the user nothing).
+static const char* token_name(TokenType type) {
+    switch (type) {
+        case TOKEN_EOF: return "end of file";
+        case TOKEN_IDENTIFIER: return "a name";
+        case TOKEN_NUMBER: return "a number";
+        case TOKEN_STRING: return "a string";
+        case TOKEN_LPAREN: return "'('";
+        case TOKEN_RPAREN: return "')'";
+        case TOKEN_LBRACE: return "'{'";
+        case TOKEN_RBRACE: return "'}'";
+        case TOKEN_LBRACKET: return "'['";
+        case TOKEN_RBRACKET: return "']'";
+        case TOKEN_COMMA: return "','";
+        case TOKEN_SEMICOLON: return "';'";
+        case TOKEN_COLON: return "':'";
+        case TOKEN_DOT: return "'.'";
+        case TOKEN_ASSIGN: return "'='";
+        default: return "a token";
+    }
+}
+
 static int expect(TokenType type) {
     if (match(type)) return 1;
-    printf("Expected token type %d, got %d ('%s')\n", type, current()->type, current()->text);
+    // A failed expectation is a parse error (COIL-129): it
+    // used to print and recover, so programs with missing
+    // brackets built successfully with pieces missing.
+    printf("Error: expected %s but found '%s' at line %d\n",
+           token_name(type), current()->text, current()->line);
+    g_parse_errors++;
     return 0;
 }
 
@@ -327,6 +378,28 @@ static ASTNode* parse_primary() {
         cast->children[cast->child_count++] = tnode;
         cast->children[cast->child_count++] = parse_expression();
         expect(TOKEN_RPAREN);
+        node = cast;
+    }
+
+    if (node && node->type == AST_IDENTIFIER && is_type_alias_name(node->text) &&
+        current()->type == TOKEN_LPAREN &&
+        current()->line == tokens.tokens[pos - 1].line) {
+        // Cast through a type alias: tcpport_t(8080) is
+        // T(value) with T an alias (spec 6.8, COIL-129).
+        ASTNode* cast = ast_new(AST_CAST);
+        ASTNode* tnode = ast_new(AST_IDENTIFIER);
+        strcpy(tnode->text, node->text);
+        cast->children[cast->child_count++] = tnode;
+        advance(); // (
+        cast->children[cast->child_count++] = parse_expression();
+        if (current()->type == TOKEN_COMMA) {
+            printf("Error: cast '%s(value)' takes exactly one value at line %d\n",
+                   node->text, current()->line);
+            g_parse_errors++;
+            while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) advance();
+        }
+        expect(TOKEN_RPAREN);
+        free(node);
         node = cast;
     }
 
@@ -635,8 +708,22 @@ static ASTNode* parse_if_statement() {
             cond = op_node;
     }
     
+    if (current()->type == TOKEN_ASSIGN) {
+        // The classic slip: '=' assigns, it does not compare
+        // (COIL-129). Recover by consuming the assignment so
+        // the rest of the statement still parses; the counted
+        // error fails the build.
+        printf("Error: '=' does not compare in a condition at line %d - use '==' to compare, or move the assignment out of the condition\n",
+               current()->line);
+        g_parse_errors++;
+        advance(); // '='
+        parse_expression(); // discard the assigned value
+    }
+
     if (!match(TOKEN_RPAREN)) {
-            printf("Expected RPAREN after IF condition, got %d ('%s')\n", current()->type, current()->text);
+            printf("Error: expected ')' after the if condition but found '%s' at line %d\n",
+                   current()->text, current()->line);
+            g_parse_errors++;
     }
     
     ASTNode* node = ast_new(AST_IF);
@@ -1616,7 +1703,8 @@ static void parse_single_alias(ASTNode* program) {
                   // Type Alias
                   ASTNode* node = ast_new(AST_TYPE_ALIAS);
                   strcpy(node->text, name);
-                  
+                  register_type_alias(name);
+
                   ASTNode* typeNode = ast_new(AST_IDENTIFIER);
                   
                   if (current()->type == TOKEN_STRUCT) {
@@ -1730,6 +1818,7 @@ static void parse_alias(ASTNode* program) {
                 }
                 ASTNode* node = ast_new(AST_TYPE_ALIAS);
                 strcpy(node->text, names[i]);
+                register_type_alias(names[i]);
                 ASTNode* typeNode = ast_new(AST_IDENTIFIER);
                 strcpy(typeNode->text, types[i]);
                 node->children[0] = typeNode;

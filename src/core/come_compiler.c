@@ -396,10 +396,29 @@ static void compile_group(char paths[][PATH_MAX], int count, const char *module_
     int has_init = 0, has_exit = 0;
     const char *imports[64];
     int import_count = 0;
+    // Every symbol the group's files declare (COIL-129):
+    // registered with codegen so cross-file references are
+    // not mistaken for undefined names.
+    const char *symbols[1024];
+    int symbol_count = 0;
     for (int i = 0; i < count; i++) {
         ASTNode *ast = NULL;
         if (parse_file(paths[i], &ast) != 0 || !ast) {
             die("Parsing failed: %s", paths[i]);
+        }
+        for (int j = 0; j < ast->child_count; j++) {
+            ASTNode *ch = ast->children[j];
+            if (!ch) continue;
+            if ((ch->type == AST_FUNCTION || ch->type == AST_VAR_DECL ||
+                 ch->type == AST_CONST_DECL) && ch->text[0] &&
+                symbol_count < 1024) {
+                symbols[symbol_count++] = strdup(ch->text);
+            } else if (ch->type == AST_CONST_GROUP) {
+                for (int k = 0; k < ch->child_count && symbol_count < 1024; k++) {
+                    if (ch->children[k] && ch->children[k]->text[0])
+                        symbols[symbol_count++] = strdup(ch->children[k]->text);
+                }
+            }
         }
         if (ast->text[0] && strcmp(ast->text, module_name) != 0) {
             die("%s declares module '%s' but sits in the '%s' module directory - "
@@ -430,6 +449,7 @@ static void compile_group(char paths[][PATH_MAX], int count, const char *module_
         }
         ast_free(ast);
     }
+    codegen_register_group_symbols(module_name, symbols, symbol_count);
     for (int i = 0; i < count; i++) {
         ModuleGroup g;
         g.is_group = 1;
@@ -497,7 +517,11 @@ static void compile_import(const char *import_name, const char *current_file, in
             return;
         }
     }
-    die("Could not resolve import: %s in %s", import_name, current_file);
+    die("Could not resolve import: %s in %s - no module named '%s' was found "
+        "(looked for %s.co and a %s/ directory beside the importing file, under "
+        "modules/, under src/, and in the system depot; spec 3.2). Check the "
+        "spelling, or place the module in one of those locations.",
+        import_name, current_file, import_name, import_name, import_name);
 }
 
 
