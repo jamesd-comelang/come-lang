@@ -1,0 +1,87 @@
+module array_test
+import std
+
+// COIL-106: out-of-bounds access reports an error instead of
+// crashing or corrupting memory. Per Come_array.md section 2:
+// an OOB read returns the zero value and sets ERR; an OOB write
+// does not occur and sets ERR. (ERR is checked in its own
+// statement - argument evaluation order is unspecified.)
+
+int main() {
+    int a[] = {1, 2, 3}
+
+    // OOB read: zero value + ERR.
+    ERR.clear()
+    int r = a[100]
+    int e1 = ERR.no()
+    if (r != 0 || e1 == 0) {
+        std.out.printf("FAIL: OOB read must give 0 and set ERR (got %d, ERR %d)\n", r, e1)
+        return 1
+    }
+
+    // OOB write: discarded + ERR; the array is untouched.
+    ERR.clear()
+    a[100] = 9
+    int e2 = ERR.no()
+    if (e2 == 0 || a.length() != 3 || a[0] != 1 || a[1] != 2 || a[2] != 3) {
+        std.out.printf("FAIL: OOB write must be discarded and set ERR\n")
+        return 1
+    }
+
+    // Negative index: also out of bounds.
+    ERR.clear()
+    int rn = a[0 - 1]
+    int e3 = ERR.no()
+    if (rn != 0 || e3 == 0) {
+        std.out.printf("FAIL: negative index must read 0 and set ERR\n")
+        return 1
+    }
+
+    // In-bounds access is unaffected.
+    ERR.clear()
+    a[1] = 42
+    if (a[1] != 42 || ERR.no() != 0) {
+        std.out.printf("FAIL: in-bounds access broken\n")
+        return 1
+    }
+
+    // Byte arrays follow the same rule.
+    byte buf[] = {10, 20}
+    ERR.clear()
+    buf[7] = 1
+    int e4 = ERR.no()
+    if (e4 == 0 || buf[0] != 10 || buf[1] != 20) {
+        std.out.printf("FAIL: byte OOB write must be discarded and set ERR\n")
+        return 1
+    }
+
+    // String lists: OOB element reads as an empty string + ERR.
+    string words[] = {"x", "y"}
+    ERR.clear()
+    string w = words[9]
+    int e5 = ERR.no()
+    if (w.length() != 0 || e5 == 0) {
+        std.out.printf("FAIL: string list OOB must give empty string and ERR\n")
+        return 1
+    }
+
+    // String indexing: in-bounds gives the character; OOB gives an
+    // empty string + ERR. (s[i] yields a 1-char string today; the
+    // wchar form is COIL-110.)
+    string s = "abc"
+    string ch = s[1]
+    if (ch.cmp("b") != 0) {
+        std.out.printf("FAIL: s[1] must be 'b'\n")
+        return 1
+    }
+    ERR.clear()
+    string none = s[99]
+    int e6 = ERR.no()
+    if (none.length() != 0 || e6 == 0) {
+        std.out.printf("FAIL: string OOB must give empty string and ERR\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 06-oob\n")
+    return 0
+}

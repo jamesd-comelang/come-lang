@@ -47,12 +47,30 @@ come_byte_array_t* come_byte_array_slice(come_byte_array_t* a, uint32_t start, u
 come_string_list_t* come_string_list_slice(come_string_list_t* a, uint32_t start, uint32_t end);
 
 // Generic Accessor
+// Out-of-bounds scratch slots (COIL-106): each call zeroes the slot
+// and sets ERR (errno = ERANGE). An OOB read therefore yields the
+// element type's zero value; an OOB write lands in the slot and is
+// discarded by the next call. Declared here, defined in array.c.
+int* come_oob_slot_int(void);
+uint8_t* come_oob_slot_byte(void);
+struct come_string_t** come_oob_slot_string(void);
+void* come_oob_slot_bytes(void);
+
+// Bounds-checked element access (COIL-106). In-bounds this is the
+// plain items[] access, as an lvalue, so arr[i] = v keeps working.
+// Note: arr and idx are each evaluated twice in the expansion -
+// do not use side-effecting expressions as an index.
+// Strings are NOT routed through this macro (GCC type-checks every
+// _Generic branch, and the default branch is invalid for strings);
+// codegen emits come_string_at_e for string indexing instead.
 #define COME_ARR_GET(arr, idx) _Generic((arr), \
-    come_string_list_t*: ((come_string_list_t*)(arr))->items[(idx)], \
-    const come_string_list_t*: ((const come_string_list_t*)(arr))->items[(idx)], \
-    struct come_string_t*: come_string_at((struct come_string_t*)(arr), (idx)), \
-    const struct come_string_t*: come_string_at((const struct come_string_t*)(arr), (idx)), \
-    default: (arr)->items[(idx)] \
+    come_string_list_t*: *((uint32_t)(idx) < ((come_string_list_t*)(arr))->count ? ((come_string_list_t*)(arr))->items + (idx) : come_oob_slot_string()), \
+    const come_string_list_t*: *((uint32_t)(idx) < ((const come_string_list_t*)(arr))->count ? ((const come_string_list_t*)(arr))->items + (idx) : come_oob_slot_string()), \
+    come_int_array_t*: *((uint32_t)(idx) < ((come_int_array_t*)(arr))->count ? ((come_int_array_t*)(arr))->items + (idx) : come_oob_slot_int()), \
+    const come_int_array_t*: *((uint32_t)(idx) < ((const come_int_array_t*)(arr))->count ? ((const come_int_array_t*)(arr))->items + (idx) : come_oob_slot_int()), \
+    come_byte_array_t*: *((uint32_t)(idx) < ((come_byte_array_t*)(arr))->count ? ((come_byte_array_t*)(arr))->items + (idx) : come_oob_slot_byte()), \
+    const come_byte_array_t*: *((uint32_t)(idx) < ((const come_byte_array_t*)(arr))->count ? ((const come_byte_array_t*)(arr))->items + (idx) : come_oob_slot_byte()), \
+    default: *((uint32_t)(idx) < (arr)->count ? (arr)->items + (idx) : (__typeof__((arr)->items + 0))come_oob_slot_bytes()) \
 )
 
 // Generic Size

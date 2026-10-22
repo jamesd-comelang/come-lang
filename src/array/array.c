@@ -1,8 +1,41 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "come_array.h"
 #include "mem/talloc.h"
+
+// Out-of-bounds scratch slots (COIL-106). Every call zeroes the slot
+// and records the error, so an OOB read sees the zero value and an
+// OOB write is discarded (the next call wipes it).
+int* come_oob_slot_int(void) {
+    static int slot;
+    slot = 0;
+    errno = ERANGE;
+    return &slot;
+}
+
+uint8_t* come_oob_slot_byte(void) {
+    static uint8_t slot;
+    slot = 0;
+    errno = ERANGE;
+    return &slot;
+}
+
+struct come_string_t** come_oob_slot_string(void) {
+    static struct come_string_t* slot;
+    static struct { uint32_t size; uint32_t count; char data[1]; } empty = { 9, 0, { 0 } };
+    slot = (struct come_string_t*)&empty;
+    errno = ERANGE;
+    return &slot;
+}
+
+void* come_oob_slot_bytes(void) {
+    static uint8_t slot[4096];
+    memset(slot, 0, sizeof(slot));
+    errno = ERANGE;
+    return slot;
+}
 
 // Generic allocation
 void* come_array_alloc(TALLOC_CTX* ctx, size_t elem_size, uint32_t count) {

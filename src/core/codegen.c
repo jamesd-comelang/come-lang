@@ -330,7 +330,16 @@ static void generate_expression(FILE* f, ASTNode* node) {
         ASTNode* base = node->children[0];
         char mkt[160], mvt[160];
         const char* bt = (base->type == AST_IDENTIFIER) ? get_local_variable_type(base->text) : NULL;
-        if (bt && map_type_parts(bt, mkt, sizeof(mkt), mvt, sizeof(mvt))) {
+        if ((bt && strcmp(bt, "string") == 0) || base->type == AST_STRING_LITERAL) {
+            // String indexing (COIL-106): the runtime helper reports
+            // out-of-bounds via ERR and yields an empty string. (Not
+            // COME_ARR_GET - its _Generic cannot take strings.)
+            fprintf(f, "come_string_at_e(");
+            emit_string_expr(f, base);
+            fprintf(f, ", ");
+            generate_expression(f, node->children[1]);
+            fprintf(f, ")");
+        } else if (bt && map_type_parts(bt, mkt, sizeof(mkt), mvt, sizeof(mvt))) {
             // Typed map read (COIL-102): the value, or V's zero value
             // when the key is absent.
             if (!map_combo_supported(mkt, mvt)) map_combo_error(mkt, mvt);
@@ -593,6 +602,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
                               const char* at = get_local_variable_type(arr->text);
                               char mkt[160], mvt[160];
                               if (at && strcmp(at, "string[]") == 0) {
+                                  is_str = 1;
+                              } else if (at && strcmp(at, "string") == 0) {
+                                  // s[i] yields a 1-char string (COIL-106)
                                   is_str = 1;
                               } else if (at && map_type_parts(at, mkt, sizeof(mkt), mvt, sizeof(mvt)) && strcmp(mvt, "string") == 0) {
                                   is_str = 1;

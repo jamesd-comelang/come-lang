@@ -1,5 +1,6 @@
 #include "come_string.h"
 #include "mem/talloc.h"
+#include <errno.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -636,6 +637,18 @@ come_byte_array_t* come_string_to_byte_array(const come_string_t* a) {
     memcpy(ba->items, a->data, a->count);
     
     return ba;
+}
+
+// Element Access with ERR reporting (COIL-106): like come_string_at,
+// but an out-of-bounds index sets ERR (errno = ERANGE) and yields
+// the zero value for a string - an empty string - instead of NULL.
+come_string_t* come_string_at_e(const come_string_t* a, size_t index) {
+    come_string_t* r = come_string_at(a, index);
+    if (!r) {
+        errno = ERANGE;
+        return come_string_new_len(a ? (void*)a : NULL, "", 0);
+    }
+    return r;
 }
 
 // Element Access

@@ -15,3 +15,6 @@ gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/t
 gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_mem.c src/mem/memory.c -o build/tests/test_mem
 ./build/tests/test_mem
 
+gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_oob.c src/array/array.c src/string/string.c src/mem/memory.c src/core/utils.c -o build/tests/test_oob
+./build/tests/test_oob
+
