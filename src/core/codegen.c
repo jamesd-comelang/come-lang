@@ -892,6 +892,84 @@ static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const c
     }
 }
 
+// String methods whose runtime parameters are C strings
+// (COIL-117): the runtime takes `const char*` for separators,
+// patterns and cutsets, so a string argument must be emitted as
+// its byte buffer, not as the string object. (Passing the object
+// was the long-standing split/join-with-variable-separator
+// crash.) These methods are emitted here in full.
+static int is_cstr_param_string_method(const char* m) {
+    return strcmp(m, "find") == 0 || strcmp(m, "rfind") == 0 ||
+           strcmp(m, "count") == 0 || strcmp(m, "replace") == 0 ||
+           strcmp(m, "trim") == 0 || strcmp(m, "ltrim") == 0 ||
+           strcmp(m, "rtrim") == 0 || strcmp(m, "split") == 0 ||
+           strcmp(m, "split_n") == 0 || strcmp(m, "regex") == 0 ||
+           strcmp(m, "regex_split") == 0 || strcmp(m, "regex_groups") == 0 ||
+           strcmp(m, "regex_replace") == 0;
+}
+
+static void emit_string_obj(FILE* f, ASTNode* e) {
+    if (e && e->type == AST_STRING_LITERAL) {
+        fprintf(f, "come_string_new(COME_CTX, ");
+        generate_expression(f, e);
+        fprintf(f, ")");
+    } else {
+        generate_expression(f, e);
+    }
+}
+
+static void emit_cstr_arg(FILE* f, ASTNode* e) {
+    if (!e) { fprintf(f, "NULL"); return; }
+    if (e->type == AST_STRING_LITERAL) { generate_expression(f, e); return; }
+    fprintf(f, "(");
+    generate_expression(f, e);
+    fprintf(f, " ? ");
+    generate_expression(f, e);
+    fprintf(f, "->data : \"\")");
+}
+
+static void emit_cstr_string_method(FILE* f, ASTNode* node, const char* method) {
+    ASTNode* receiver = node->children[0];
+    ASTNode* a1 = node->child_count > 1 ? node->children[1] : NULL;
+    ASTNode* a2 = node->child_count > 2 ? node->children[2] : NULL;
+    ASTNode* a3 = node->child_count > 3 ? node->children[3] : NULL;
+    fprintf(f, "come_string_%s(", method);
+    emit_string_obj(f, receiver);
+    if (strcmp(method, "trim") == 0 || strcmp(method, "ltrim") == 0 || strcmp(method, "rtrim") == 0) {
+        fprintf(f, ", ");
+        if (a1) emit_cstr_arg(f, a1);
+        else fprintf(f, "NULL");
+    } else if (strcmp(method, "find") == 0 || strcmp(method, "rfind") == 0 ||
+               strcmp(method, "count") == 0 || strcmp(method, "split") == 0 ||
+               strcmp(method, "regex") == 0 || strcmp(method, "regex_groups") == 0) {
+        fprintf(f, ", ");
+        emit_cstr_arg(f, a1);
+    } else if (strcmp(method, "split_n") == 0 || strcmp(method, "regex_split") == 0) {
+        fprintf(f, ", ");
+        emit_cstr_arg(f, a1);
+        fprintf(f, ", ");
+        if (a2) generate_expression(f, a2);
+        else fprintf(f, "0");
+    } else if (strcmp(method, "replace") == 0) {
+        fprintf(f, ", ");
+        emit_cstr_arg(f, a1);
+        fprintf(f, ", ");
+        emit_cstr_arg(f, a2);
+        fprintf(f, ", ");
+        if (a3) generate_expression(f, a3);
+        else fprintf(f, "0");
+    } else if (strcmp(method, "regex_replace") == 0) {
+        fprintf(f, ", ");
+        emit_cstr_arg(f, a1);
+        fprintf(f, ", ");
+        emit_cstr_arg(f, a2);
+        fprintf(f, ", ");
+        if (a3) generate_expression(f, a3);
+        else fprintf(f, "0");
+    }
+    fprintf(f, ")");
+}
+
 // Emit one map store statement (ends with a newline). Int values are
 // boxed in a cell owned by the current context; string values are
 // stored as the string object itself.
@@ -1078,6 +1156,40 @@ static void generate_expression(FILE* f, ASTNode* node) {
                      else codegen_error("std.qsort: '%s' is not a function of this module", cb->text);
                  } else {
                      codegen_error("std.qsort expects a comparator function name (spec 8.3)");
+                 }
+                 fprintf(f, ")");
+                 return;
+            }
+
+            // string.sprintf(fmt, ...) / string.sscanf(str, fmt,
+            // ...) (COIL-117, Come_string.md): sprintf's format
+            // and string arguments go as byte buffers (the
+            // runtime formats with vsnprintf); sscanf's remaining
+            // arguments are pointers, passed as written.
+            if (strcmp(receiver->text, "string")==0 && strcmp(method, "sprintf")==0) {
+                 fprintf(f, "come_string_sprintf(COME_CTX, ");
+                 if (node->child_count > 1) emit_cstr_arg(f, node->children[1]);
+                 for (int i = 2; i < node->child_count; i++) {
+                     fprintf(f, ", ");
+                     ASTNode* a = node->children[i];
+                     if (a->type == AST_IDENTIFIER && get_local_variable_type(a->text) &&
+                         strcmp(get_local_variable_type(a->text), "string") == 0) {
+                         emit_cstr_arg(f, a);
+                     } else {
+                         generate_expression(f, a);
+                     }
+                 }
+                 fprintf(f, ")");
+                 return;
+            }
+            if (strcmp(receiver->text, "string")==0 && strcmp(method, "sscanf")==0) {
+                 fprintf(f, "come_string_sscanf(");
+                 if (node->child_count > 1) emit_string_obj(f, node->children[1]);
+                 fprintf(f, ", ");
+                 if (node->child_count > 2) emit_cstr_arg(f, node->children[2]);
+                 for (int i = 3; i < node->child_count; i++) {
+                     fprintf(f, ", ");
+                     generate_expression(f, node->children[i]);
                  }
                  fprintf(f, ")");
                  return;
@@ -1478,6 +1590,20 @@ static void generate_expression(FILE* f, ASTNode* node) {
              }
              return;
         }
+        // String methods with C-string parameters (COIL-117):
+        // separators, patterns and cutsets reach the runtime as
+        // byte buffers. Receivers: a string variable, a literal,
+        // or a call/index that produced a string.
+        else if (is_cstr_param_string_method(method) &&
+                 (receiver->type == AST_STRING_LITERAL ||
+                  receiver->type == AST_METHOD_CALL ||
+                  receiver->type == AST_ARRAY_ACCESS ||
+                  (receiver->type == AST_IDENTIFIER &&
+                   get_local_variable_type(receiver->text) &&
+                   strcmp(get_local_variable_type(receiver->text), "string") == 0))) {
+             emit_cstr_string_method(f, node, method);
+             return;
+        }
         // Detect String methods (including len/length which are shared)
         else if (strcmp(method, "length") == 0 || strcmp(method, "len") == 0 ||
                  strcmp(method, "cmp") == 0 || strcmp(method, "casecmp") == 0 ||
@@ -1492,7 +1618,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  strcmp(method, "repeat") == 0 || strcmp(method, "split_n") == 0 ||
                  strcmp(method, "regex") == 0 || strncmp(method, "regex_", 6) == 0 ||
                  strcmp(method, "chown") == 0 ||
-                 strcmp(method, "tol") == 0 ||
+                 strcmp(method, "tol") == 0 || strcmp(method, "tod") == 0 ||
+                 strcmp(method, "toi") == 0 || strcmp(method, "tof") == 0 ||
+                 strcmp(method, "utf8") == 0 ||
                  strcmp(method, "byte_array") == 0) {
             
             // Check if receiver is a map for len() - maps also have len()
@@ -1547,7 +1675,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 }
                 strcpy(c_func, plain_string ? "come_string_len" : "come_string_list_len");
             }
-            else if (strcmp(method, "tol") == 0) strcpy(c_func, "come_string_tol");
+            else if (strcmp(method, "tol") == 0) strcpy(c_func, node->child_count > 1 ? "come_string_tol_base" : "come_string_tol");
             else snprintf(c_func, sizeof(c_func), "come_string_%s", method);
         }
         // Detect Array methods
@@ -1745,6 +1873,38 @@ static void generate_expression(FILE* f, ASTNode* node) {
         // The parser handles alias.
         
         check_call_args(node); // COIL-109 (spec 8.3)
+        // sprintf / sscanf are the string module's free functions
+        // (COIL-117, Come_string.md). A user function of the same
+        // name in this module shadows them.
+        if ((strcmp(node->text, "sprintf") == 0 || strcmp(node->text, "sscanf") == 0) &&
+            !find_module_fn_sig(node->text)) {
+             if (strcmp(node->text, "sprintf") == 0) {
+                 fprintf(f, "come_string_sprintf(COME_CTX, ");
+                 if (node->child_count > 0) emit_cstr_arg(f, node->children[0]);
+                 for (int i = 1; i < node->child_count; i++) {
+                     fprintf(f, ", ");
+                     ASTNode* a = node->children[i];
+                     if (a->type == AST_IDENTIFIER && get_local_variable_type(a->text) &&
+                         strcmp(get_local_variable_type(a->text), "string") == 0) {
+                         emit_cstr_arg(f, a);
+                     } else {
+                         generate_expression(f, a);
+                     }
+                 }
+                 fprintf(f, ")");
+             } else {
+                 fprintf(f, "come_string_sscanf(");
+                 if (node->child_count > 0) emit_string_obj(f, node->children[0]);
+                 fprintf(f, ", ");
+                 if (node->child_count > 1) emit_cstr_arg(f, node->children[1]);
+                 for (int i = 2; i < node->child_count; i++) {
+                     fprintf(f, ", ");
+                     generate_expression(f, node->children[i]);
+                 }
+                 fprintf(f, ")");
+             }
+             return;
+        }
         char mangled_name[8192];
         // Heuristic: if contains '.', it's fully qualified? No, AST_CALL text usually simple.
         // If it starts with "come_", assume already mangled/internal?

@@ -191,6 +191,62 @@ void test_wchar_at() {
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mWchar-at (COIL-110) tests passed\033[0m\n");
 }
 
+static int call_vsprintf_check(TALLOC_CTX* ctx, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    come_string_t* s = come_string_vsprintf(ctx, fmt, ap);
+    va_end(ap);
+    return s && strcmp(s->data, "x=3") == 0;
+}
+static int call_vsscanf_check(come_string_t* s, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = come_string_vsscanf(s, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+void test_coil117() {
+    TALLOC_CTX* ctx = mem_talloc_new_ctx(NULL);
+    // utf8 validation
+    assert(come_string_utf8(come_string_new(ctx, "plain ascii")));
+    assert(come_string_utf8(come_string_new(ctx, "héllo 🙂")));
+    assert(come_string_utf8(come_string_new(ctx, "")));
+    come_string_t* bad1 = come_string_new_len(ctx, "\xC3\x28", 2);   // bad continuation
+    assert(!come_string_utf8(bad1));
+    come_string_t* bad2 = come_string_new_len(ctx, "\xC0\x80", 2);   // overlong NUL
+    assert(!come_string_utf8(bad2));
+    come_string_t* bad3 = come_string_new_len(ctx, "\xED\xA0\x80", 3); // surrogate
+    assert(!come_string_utf8(bad3));
+    come_string_t* bad4 = come_string_new_len(ctx, "\xE2\x82", 2);   // truncated
+    assert(!come_string_utf8(bad4));
+    // conversions
+    assert(come_string_tol(come_string_new(ctx, "42")) == 42);
+    assert(come_string_tol_base(come_string_new(ctx, "ff"), 16) == 255);
+    assert(come_string_tol_base(come_string_new(ctx, "0x1F"), 0) == 31);
+    errno = 0;
+    assert(come_string_tol(come_string_new(ctx, "abc")) == 0);
+    assert(errno == EINVAL);
+    double d = come_string_tod(come_string_new(ctx, "3.5"));
+    assert(d > 3.4 && d < 3.6);
+    errno = 0;
+    assert(come_string_tod(come_string_new(ctx, "zz")) == 0);
+    assert(errno == EINVAL);
+    assert(come_string_toi(come_string_new(ctx, "17")) == 17);
+    double fv = come_string_tof(come_string_new(ctx, "2.25"));
+    assert(fv > 2.2 && fv < 2.3);
+    // formatted I/O
+    come_string_t* f1 = come_string_sprintf(ctx, "%s-%d", "n", 7);
+    assert(f1 && strcmp(f1->data, "n-7") == 0);
+    assert(call_vsprintf_check(ctx, "x=%d", 3));
+    int v = 0;
+    assert(come_string_sscanf(come_string_new(ctx, "123"), "%d", &v) == 1 && v == 123);
+    v = 0;
+    assert(call_vsscanf_check(come_string_new(ctx, "77"), "%d", &v) == 1 && v == 77);
+    mem_talloc_free(ctx);
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-117 string toolbox (C) tests passed\033[0m\n");
+}
+
 int main() {
     test_basic();
     test_search();
@@ -200,5 +256,6 @@ int main() {
     test_split_join();
     test_regex();
     test_wchar_at();
+    test_coil117();
     return 0;
 }

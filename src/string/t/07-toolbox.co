@@ -1,0 +1,70 @@
+// COIL-117: the full documented string toolbox (Come_string.md)
+// exercised end to end - with variable separators, patterns and
+// cutsets, not just literals (the old codegen passed the string
+// object where the runtime expects bytes and crashed).
+module main
+import std
+import string
+int main() {
+    string csv = "apple,banana,cherry"
+    string sep = ","
+    string parts[] = csv.split(sep)
+    if (parts.length() != 3 || parts[1] != "banana") { std.out.printf("FAIL split var sep\n"); return 1 }
+    string joined = "|".join(parts)
+    if (joined != "apple|banana|cherry") { std.out.printf("FAIL join\n"); return 1 }
+    string jsep = "-"
+    string joined2 = jsep.join(parts)
+    if (joined2 != "apple-banana-cherry") { std.out.printf("FAIL join var sep\n"); return 1 }
+    string s = "  Hello World  "
+    string t = s.trim()
+    if (t != "Hello World") { std.out.printf("FAIL trim '%s'\n", t); return 1 }
+    string lt = s.ltrim()
+    if (lt != "Hello World  ") { std.out.printf("FAIL ltrim\n"); return 1 }
+    string rt = s.rtrim()
+    if (rt != "  Hello World") { std.out.printf("FAIL rtrim\n"); return 1 }
+    string cs = "xx"
+    string ct = "xyxzyx".trim(cs)
+    if (ct != "yxzy") { std.out.printf("FAIL trim cutset '%s'\n", ct); return 1 }
+    string rep = "aaa".replace("a", "bb")
+    if (rep != "bbbbbb") { std.out.printf("FAIL replace '%s'\n", rep); return 1 }
+    string old = "a"
+    string rep2 = "aaa".replace(old, "c", 2)
+    if (rep2 != "cca") { std.out.printf("FAIL replace n '%s'\n", rep2); return 1 }
+    if ("hello world".find("world") != 6) { std.out.printf("FAIL find\n"); return 1 }
+    string needle = "world"
+    if ("hello world".find(needle) != 6) { std.out.printf("FAIL find var\n"); return 1 }
+    if ("hello world hello".rfind("hello") != 12) { std.out.printf("FAIL rfind\n"); return 1 }
+    if ("a.b.c".count(".") != 2) { std.out.printf("FAIL count\n"); return 1 }
+    string sn[] = "a,b,c,d".split_n(",", 2)
+    if (sn.length() != 2 || sn[1] != "b,c,d") { std.out.printf("FAIL split_n\n"); return 1 }
+    string sub = "hello".substr(1, 4)
+    if (sub != "ell") { std.out.printf("FAIL substr\n"); return 1 }
+    if (!"abc123".isalnum() || !"123".isdigit() || !"abc".isalpha() || !" ".isspace()) { std.out.printf("FAIL is*\n"); return 1 }
+    if (!"héllo".utf8()) { std.out.printf("FAIL utf8 valid\n"); return 1 }
+    if ("42".tol() != 42) { std.out.printf("FAIL tol\n"); return 1 }
+    if ("ff".tol(16) != 255) { std.out.printf("FAIL tol base\n"); return 1 }
+    if ("0x1F".tol(0) != 31) { std.out.printf("FAIL tol auto\n"); return 1 }
+    ERR.clear()
+    long bad = "abc".tol()
+    if (bad != 0 || !ERR.set()) { std.out.printf("FAIL tol ERR\n"); return 1 }
+    double d = "3.5".tod()
+    if (d < 3.4 || d > 3.6) { std.out.printf("FAIL tod\n"); return 1 }
+    if ("17".toi() != 17) { std.out.printf("FAIL toi\n"); return 1 }
+    double fv = "2.25".tof()
+    if (fv < 2.2 || fv > 2.3) { std.out.printf("FAIL tof\n"); return 1 }
+    string fmt = sprintf("%s-%d", "n", 7)
+    if (fmt != "n-7") { std.out.printf("FAIL sprintf '%s'\n", fmt); return 1 }
+    string who = "world"
+    string fmt2 = sprintf("hello %s", who)
+    if (fmt2 != "hello world") { std.out.printf("FAIL sprintf var\n"); return 1 }
+    int v = 0
+    int n = sscanf("123", "%d", &v)
+    if (n != 1 || v != 123) { std.out.printf("FAIL sscanf n=%d v=%d\n", n, v); return 1 }
+    if (!"abc123".regex("[0-9]+")) { std.out.printf("FAIL regex\n"); return 1 }
+    string rp = "a1b2".regex_replace("[0-9]", "#")
+    if (rp != "a#b#") { std.out.printf("FAIL regex_replace '%s'\n", rp); return 1 }
+    string rg[] = "key=val".regex_groups("([a-z]+)=([a-z]+)")
+    if (rg.length() < 3 || rg[1] != "key") { std.out.printf("FAIL regex_groups\n"); return 1 }
+    std.out.printf("PASS: 07-toolbox\n")
+    return 0
+}

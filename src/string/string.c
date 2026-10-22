@@ -708,6 +708,92 @@ come_string_t* come_string_at(const come_string_t* a, size_t index) {
 }
 
 long come_string_tol(const come_string_t* a) {
+    return come_string_tol_base(a, 10);
+}
+
+// tol with an explicit base (COIL-117): base 0 auto-detects
+// (0x = hex, leading 0 = octal), 2..36 as strtoll. A string
+// with no digits at all sets ERR (EINVAL); overflow sets
+// ERANGE via strtoll. (The old tol never set ERR.)
+long come_string_tol_base(const come_string_t* a, int base) {
     if (!a) return 0;
-    return strtol(a->data, NULL, 10);
+    char* end = NULL;
+    errno = 0;
+    long v = strtoll(a->data, &end, base);
+    if (end == a->data) errno = EINVAL;
+    return v;
+}
+
+double come_string_tod(const come_string_t* a) {
+    if (!a) return 0;
+    char* end = NULL;
+    errno = 0;
+    double v = strtod(a->data, &end);
+    if (end == a->data) errno = EINVAL;
+    return v;
+}
+
+// Come_std.md section 5: atof/atoi/atol equivalents.
+long come_string_toi(const come_string_t* a) {
+    return come_string_tol_base(a, 10);
+}
+
+double come_string_tof(const come_string_t* a) {
+    return come_string_tod(a);
+}
+
+// utf8(): is the string valid UTF-8? Rejects overlong forms,
+// surrogates, and code points above U+10FFFF.
+bool come_string_utf8(const come_string_t* a) {
+    if (!a) return false;
+    const unsigned char* p = (const unsigned char*)a->data;
+    uint32_t remaining = a->count;
+    while (remaining > 0) {
+        unsigned char c = *p;
+        uint32_t cp, min_cp;
+        int extra;
+        if (c < 0x80) { cp = c; extra = 0; min_cp = 0; }
+        else if ((c & 0xE0) == 0xC0) { cp = c & 0x1F; extra = 1; min_cp = 0x80; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; extra = 2; min_cp = 0x800; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; extra = 3; min_cp = 0x10000; }
+        else return false;
+        if (remaining < (uint32_t)(extra + 1)) return false;
+        for (int i = 1; i <= extra; i++) {
+            if ((p[i] & 0xC0) != 0x80) return false;
+            cp = (cp << 6) | (uint32_t)(p[i] & 0x3F);
+        }
+        if (cp < min_cp) return false;                    // overlong
+        if (cp >= 0xD800 && cp <= 0xDFFF) return false;   // surrogate
+        if (cp > 0x10FFFF) return false;
+        p += extra + 1;
+        remaining -= (uint32_t)(extra + 1);
+    }
+    return true;
+}
+
+// Formatted I/O on strings (Come_string.md): the va_list forms
+// are the implementation; the variadic forms wrap them.
+come_string_t* come_string_vsprintf(TALLOC_CTX* ctx, const char* fmt, va_list args) {
+    va_list copy;
+    va_copy(copy, args);
+    int len = vsnprintf(NULL, 0, fmt, copy);
+    va_end(copy);
+    if (len < 0) return NULL;
+    come_string_t* s = come_string_new_len(ctx, "", (size_t)len);
+    if (!s) return NULL;
+    vsnprintf(s->data, (size_t)len + 1, fmt, args);
+    return s;
+}
+
+int come_string_vsscanf(const come_string_t* a, const char* fmt, va_list args) {
+    if (!a || !fmt) return EOF;
+    return vsscanf(a->data, fmt, args);
+}
+
+int come_string_sscanf(const come_string_t* a, const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int r = come_string_vsscanf(a, fmt, args);
+    va_end(args);
+    return r;
 }

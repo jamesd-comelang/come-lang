@@ -686,5 +686,39 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-116 array codegen test passed!\033[0m\n");
+
+    // COIL-117: string methods with C-string parameters emit the
+    // argument's byte buffer (->data), not the string object;
+    // sprintf is the string module's free function.
+    {
+        const char* src117 =
+            "module m117\nimport std\nimport string\n\n"
+            "int main() {\n"
+            "    string csv = \"a,b\"\n"
+            "    string sep = \",\"\n"
+            "    string parts[] = csv.split(sep)\n"
+            "    string out = sprintf(\"%d\", 3)\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil117.co", src117)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-117: string toolbox program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of117 = fopen("build/tests/coil117.co.c", "r");
+        if (!of117) { printf("COIL-117: output file missing\n"); return 1; }
+        static char buf117[262144];
+        size_t blen117 = fread(buf117, 1, sizeof(buf117) - 1, of117);
+        fclose(of117);
+        buf117[blen117] = 0;
+        if (!strstr(buf117, "come_string_split(csv, (sep ? sep->data : \"\"))")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-117: split must pass the separator's bytes, not the object\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf117, "come_string_sprintf(COME_CTX,")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-117: sprintf must reach the string runtime\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-117 string codegen test passed!\033[0m\n");
     return 0;
 }

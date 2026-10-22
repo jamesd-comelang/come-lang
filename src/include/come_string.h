@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include "come_array.h"
 
 // Forward declaration for talloc context
@@ -92,4 +93,12 @@ come_string_t* come_string_sprintf(TALLOC_CTX* ctx, const char* fmt, ...);
 come_byte_array_t* come_string_to_byte_array(const come_string_t* a);
 
 long come_string_tol(const come_string_t* a);
+long come_string_tol_base(const come_string_t* a, int base);
+double come_string_tod(const come_string_t* a);
+long come_string_toi(const come_string_t* a);
+double come_string_tof(const come_string_t* a);
+bool come_string_utf8(const come_string_t* a);
+come_string_t* come_string_vsprintf(TALLOC_CTX* ctx, const char* fmt, va_list args);
+int come_string_sscanf(const come_string_t* a, const char* fmt, ...);
+int come_string_vsscanf(const come_string_t* a, const char* fmt, va_list args);
 #endif // COME_STRING_MODULE_H

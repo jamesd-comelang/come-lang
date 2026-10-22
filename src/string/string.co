@@ -31,6 +31,7 @@ export (
     bool isalnum(),
     bool isspace(),
     bool isascii(),
+    bool utf8(),
 
     // Transformation
     string upper(),
@@ -64,5 +65,11 @@ export (
     // Conversions
     byte[] byte_array(),
     long tol(ubyte base = 10),
-    double tod()
+    double tod(),
+    long toi(),
+    double tof(),
+
+    // Formatted I/O (free functions of this module)
+    string sprintf(string fmt, ...),
+    int sscanf(string str, string fmt, ...)
 )
