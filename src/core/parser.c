@@ -1681,7 +1681,7 @@ static void parse_single_alias(ASTNode* program) {
             int pc = 0;
             while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
                 if (current()->type == TOKEN_COMMA) { advance(); continue; }
-                if (pc < 8) snprintf(params[pc++], 64, "%s", current()->text);
+                if (pc < 8) snprintf(params[pc++], 64, "%.*s", 63, current()->text);
                 advance();
             }
             expect(TOKEN_RPAREN);
@@ -1783,7 +1783,7 @@ static void parse_alias(ASTNode* program) {
                 // so a name may arrive as a type token: record
                 // that; it can only re-declare itself.
                 name_is_ident[name_count] = current()->type == TOKEN_IDENTIFIER;
-                snprintf(names[name_count++], 64, "%s", current()->text);
+                snprintf(names[name_count++], 64, "%.*s", 63, current()->text);
             }
             advance();
         }
@@ -2144,7 +2144,7 @@ static void parse_top_level_decl(ASTNode* program) {
                           // The type is recorded as fn:<ret>(<types>).
                           if (current()->type == TOKEN_LPAREN) {
                               char fn_type[512];
-                              snprintf(fn_type, sizeof(fn_type), "fn:%s(", at->text);
+                              snprintf(fn_type, sizeof(fn_type), "fn:%.*s(", (int)sizeof(fn_type) - 5, at->text);
                               advance(); // (
                               int first = 1;
                               while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {

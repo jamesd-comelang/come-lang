@@ -1188,7 +1188,7 @@ int main() {
         if (!strstr(buf128, "&") || !strstr(buf128, "<<") ||
             !strstr(buf128, "%=") || !strstr(buf128, "++") ||
             !strstr(buf128, "--")) {
-            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-128: bitwise, shift, %=, or prefix ++/-- missing from generated C\033[0m\n");
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-128: bitwise, shift, %%=, or prefix ++/-- missing from generated C\033[0m\n");
             return 1;
         }
     }

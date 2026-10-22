@@ -570,14 +570,14 @@ static void collect_structs(ASTNode* ast) {
             for (int j = 0; j < ch->child_count; j++) {
                 if (ch->children[j]->type == AST_VAR_DECL) fields++;
             }
-            snprintf(g_struct_names[g_struct_count], 128, "%s", ch->text);
+            snprintf(g_struct_names[g_struct_count], 128, "%.*s", 127, ch->text);
             g_struct_fields[g_struct_count] = fields;
             for (int j = 0; j < ch->child_count && g_sfield_count < 512; j++) {
                 ASTNode* fd = ch->children[j];
                 if (fd && fd->type == AST_VAR_DECL && fd->child_count >= 2 && fd->children[1]) {
-                    snprintf(g_sfield_struct[g_sfield_count], 128, "%s", ch->text);
-                    snprintf(g_sfield_name[g_sfield_count], 128, "%s", fd->text);
-                    snprintf(g_sfield_type[g_sfield_count], 160, "%s", fd->children[1]->text);
+                    snprintf(g_sfield_struct[g_sfield_count], 128, "%.*s", 127, ch->text);
+                    snprintf(g_sfield_name[g_sfield_count], 128, "%.*s", 127, fd->text);
+                    snprintf(g_sfield_type[g_sfield_count], 160, "%.*s", 159, fd->children[1]->text);
                     g_sfield_count++;
                 }
             }
@@ -615,7 +615,7 @@ static void collect_module_fns(ASTNode* ast) {
             if (isupper((unsigned char)ch->text[0]) && strchr(ch->text, '_'))
                 continue; // struct method (Rect_area): needs a receiver
             FnSig* e = &g_module_fns[g_module_fn_count++];
-            snprintf(e->name, sizeof(e->name), "%s", ch->text);
+            snprintf(e->name, sizeof(e->name), "%.*s", (int)sizeof(e->name) - 1, ch->text);
             e->is_extern = ch->is_extern;
             build_fn_sig(ch, e->sig, sizeof(e->sig));
         }
@@ -655,7 +655,7 @@ static void collect_module_vars(ASTNode* ast) {
     for (int i = 0; i < ast->child_count && g_module_var_count < 128; i++) {
         ASTNode* ch = ast->children[i];
         if (ch && ch->type == AST_VAR_DECL) {
-            snprintf(g_module_vars[g_module_var_count++], 128, "%s", ch->text);
+            snprintf(g_module_vars[g_module_var_count++], 128, "%.*s", 127, ch->text);
         }
     }
 }
@@ -681,11 +681,11 @@ static void collect_const_names(ASTNode* ast) {
         ASTNode* ch = ast->children[i];
         if (!ch) continue;
         if (ch->type == AST_CONST_DECL && g_const_name_count < 256) {
-            snprintf(g_const_names[g_const_name_count++], 128, "%s", ch->text);
+            snprintf(g_const_names[g_const_name_count++], 128, "%.*s", 127, ch->text);
         } else if (ch->type == AST_CONST_GROUP) {
             for (int j = 0; j < ch->child_count && g_const_name_count < 256; j++) {
                 if (ch->children[j] && ch->children[j]->text[0])
-                    snprintf(g_const_names[g_const_name_count++], 128, "%s", ch->children[j]->text);
+                    snprintf(g_const_names[g_const_name_count++], 128, "%.*s", 127, ch->children[j]->text);
             }
         }
     }
@@ -877,7 +877,7 @@ static void collect_tuple_fns(ASTNode* ast) {
         char inner[600];
         snprintf(inner, sizeof(inner), "%.*s", (int)strlen(ret) - 2, ret + 1);
         TupleFn* tf = &g_tuple_fns[g_tuple_fn_count];
-        snprintf(tf->name, sizeof(tf->name), "%s", ch->text);
+        snprintf(tf->name, sizeof(tf->name), "%.*s", (int)sizeof(tf->name) - 1, ch->text);
         tf->count = split_types(inner, tf->elems, 8);
         for (int j = 0; j < tf->count; j++) {
             // Trim surrounding spaces from each element type.
@@ -1265,23 +1265,23 @@ static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const c
         return;
     }
     if (strcmp(method, "remove") == 0) {
-        fprintf(f, "(come_array_remove_g((come_hdr_t*)&(");
+        fprintf(f, "({ come_array_remove_g((come_hdr_t*)&(");
         generate_expression(f, receiver);
         fprintf(f, "), sizeof(%s), ", et);
         if (a1) generate_expression(f, a1);
-        fprintf(f, "), ");
+        fprintf(f, "); ");
         generate_expression(f, receiver);
-        fprintf(f, ")");
+        fprintf(f, "; })");
         return;
     }
     if (strcmp(method, "cpy") == 0) {
-        fprintf(f, "(come_array_cpy_g((come_hdr_t*)&(");
+        fprintf(f, "({ come_array_cpy_g((come_hdr_t*)&(");
         generate_expression(f, receiver);
         fprintf(f, "), sizeof(%s), ", et);
         if (a1) generate_expression(f, a1);
-        fprintf(f, "), ");
+        fprintf(f, "); ");
         generate_expression(f, receiver);
-        fprintf(f, ")");
+        fprintf(f, "; })");
         return;
     }
     if (strcmp(method, "sort") == 0) {
@@ -1471,7 +1471,7 @@ static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
         }
         return NULL;
     }
-    if (e->type == AST_CALL && e->text) {
+    if (e->type == AST_CALL) {
         const char* nm = strrchr(e->text, '.');
         nm = nm ? nm + 1 : e->text;
         const char* sig = find_module_fn_sig(nm);
@@ -1909,7 +1909,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                             (strcmp(method, "puts") == 0 || strcmp(method, "printf") == 0);
                  if (!fast) {
                      char recv_c[64];
-                     snprintf(recv_c, sizeof(recv_c), "std_%s", receiver->text);
+                     snprintf(recv_c, sizeof(recv_c), "std_%.*s", (int)sizeof(recv_c) - 5, receiver->text);
                      if (emit_file_method_call(f, recv_c, node)) return;
                      codegen_error("FILE has no method '%s' (Come_std.md section 2)", method);
                      fprintf(f, "0");
@@ -1948,20 +1948,24 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  // Loop args
                  char* fmt_modified = NULL;
                  int* bool_args = NULL;
+                char* spec_args = NULL;
                  int arg_count = node->child_count;
                  
                  // Pre-scan for format string modification
                  if (arg_count > 1 && node->children[1]->type == AST_STRING_LITERAL) {
                      bool_args = calloc(arg_count + 1, sizeof(int)); // +1 safety
+                     spec_args = calloc(arg_count + 1, sizeof(char));
                      char* raw_fmt = node->children[1]->text; 
                      fmt_modified = calloc(strlen(raw_fmt) * 2 + 100, 1);
                      
                      char* src = raw_fmt;
                      char* dst = fmt_modified;
                      int current_arg_idx = 2; // Arrrgs buffer index (2, 3...)
+                     int len_mod = 0; // a length modifier (l, z, ...) was seen
                      
                      while (*src) {
                          if (*src == '%' && *(src+1) != '%') {
+                             len_mod = 0;
                              *dst++ = *src++; // Copy %
                              
                              // Flags
@@ -1979,7 +1983,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                              }
                              
                              // Length
-                             while (*src && strchr("hljzL", *src)) *dst++ = *src++;
+                             while (*src && strchr("hljzL", *src)) { len_mod = 1; *dst++ = *src++; }
                              
                              // Specifier
                              if (*src == 't') {
@@ -1991,7 +1995,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
                                  *dst++ = 's'; // Replace with %s
                                  src++;
                              } else {
-                                 if (*src) *dst++ = *src++;
+                                 if (*src) {
+                                     if (current_arg_idx < arg_count && !len_mod)
+                                         spec_args[current_arg_idx] = *src;
+                                     *dst++ = *src++;
+                                 }
                              }
                              current_arg_idx++;
                          } else {
@@ -2081,6 +2089,16 @@ static void generate_expression(FILE* f, ASTNode* node) {
                          fprintf(f, ").data ? (");
                          generate_expression(f, arg);
                          fprintf(f, ").data : \"NULL\")");
+                     } else if (spec_args && i < arg_count &&
+                                (arg->type == AST_METHOD_CALL || arg->type == AST_CALL) &&
+                                (spec_args[i] == 'd' || spec_args[i] == 'i' ||
+                                 spec_args[i] == 'u')) {
+                         // Runtime helpers commonly return long;
+                         // match the conversion so generated code
+                         // compiles without -Wformat noise.
+                         fprintf(f, spec_args[i] == 'u' ? "(unsigned int)(" : "(int)(");
+                         generate_expression(f, arg);
+                         fprintf(f, ")");
                      } else {
                          generate_expression(f, arg);
                      }
@@ -4124,7 +4142,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // declared (COIL-129).
             if (node->text[0] && !is_const_name(node->text) &&
                 !is_fn_const_name(node->text) && g_fn_const_count < 128) {
-                snprintf(g_fn_const_names[g_fn_const_count++], 128, "%s", node->text);
+                snprintf(g_fn_const_names[g_fn_const_count++], 128, "%.*s", 127, node->text);
             }
             emit_indent(f, indent);
             if (node->child_count > 0 && node->children[0]->type == AST_ENUM_DECL) {
