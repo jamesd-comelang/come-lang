@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdarg.h>
 #include "codegen_sym.h"
 #include <ctype.h>
 #include "codegen.h"
@@ -14,6 +15,65 @@ typedef come_map_t* map;
 /* small helper: write indentation spaces */
 static void emit_indent(FILE* f, int indent_spaces) {
     for (int i = 0; i < indent_spaces; i++) fputc(' ', f);
+}
+
+// Semantic errors found during generation (COIL-101). Generation
+// continues so the user can see every error, but generate_c_from_ast
+// returns nonzero when any occurred and the driver refuses the output.
+static int g_codegen_errors = 0;
+static void codegen_error(const char* fmt, ...) {
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "Error: %s\n", buf);
+    g_codegen_errors++;
+}
+
+// Come array types are strings like "int[5]" (fixed) or "int[]"
+// (dynamic). A fixed array's length is part of its type.
+static int type_is_array(const char* t) {
+    return t && strchr(t, '[') != NULL;
+}
+static int type_is_fixed_array(const char* t) {
+    if (!type_is_array(t)) return 0;
+    const char* lb = strchr(t, '[');
+    return lb[1] >= '0' && lb[1] <= '9';
+}
+static int type_fixed_size(const char* t) {
+    const char* lb = t ? strchr(t, '[') : NULL;
+    return lb ? atoi(lb + 1) : 0;
+}
+
+// Register a variable's type for later lookups. For a fixed array the
+// parser records the size on the type node (array_size); fold it back
+// into the type string ("int[5]") so fixed and dynamic arrays stay
+// distinguishable - the plain type text is always "int[]" (COIL-101).
+static void register_local_type(const char* name, ASTNode* type_node) {
+    if (type_node->array_size > 0 && type_is_array(type_node->text)) {
+        char eff[300];
+        size_t bl = strlen(type_node->text);
+        if (bl >= 2 && strcmp(type_node->text + bl - 2, "[]") == 0) bl -= 2;
+        snprintf(eff, sizeof(eff), "%.*s[%d]", (int)bl, type_node->text, type_node->array_size);
+        add_local_variable(name, eff);
+        return;
+    }
+    add_local_variable(name, type_node->text);
+}
+
+// Fixed arrays stay fixed (COIL-101): no promotion to dynamic, no
+// conversion between fixed sizes, in either direction.
+static void check_array_transfer(const char* verb, const char* dst_name, const char* dst_type,
+                                 const char* src_name, const char* src_type) {
+    if (!type_is_array(dst_type) || !type_is_array(src_type)) return;
+    int df = type_is_fixed_array(dst_type), sf = type_is_fixed_array(src_type);
+    if (df != sf || (df && sf && type_fixed_size(dst_type) != type_fixed_size(src_type))) {
+        codegen_error("array type mismatch: %s array '%s' (%s) cannot %s %s array '%s' (%s) - "
+                      "fixed arrays stay fixed and are never promoted; use matching types or copy element by element",
+                      sf ? "fixed" : "dynamic", src_name, src_type, verb,
+                      df ? "fixed" : "dynamic", dst_name, dst_type);
+    }
 }
 
 static void emit_c_string_literal(FILE* f, const char* s) {
@@ -161,6 +221,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
         generate_expression(f, node->children[1]);
         fprintf(f, ")");
     } else if (node->type == AST_ASSIGN) {
+        if (node->children[0]->type == AST_IDENTIFIER && node->children[1]->type == AST_IDENTIFIER) {
+            const char* lt = get_local_variable_type(node->children[0]->text);
+            const char* rt = get_local_variable_type(node->children[1]->text);
+            if (lt && rt) check_array_transfer("be assigned to", node->children[0]->text, lt, node->children[1]->text, rt);
+        }
         generate_expression(f, node->children[0]);
         fprintf(f, " %s ", node->text);
         generate_expression(f, node->children[1]);
@@ -508,6 +573,12 @@ static void generate_expression(FILE* f, ASTNode* node) {
         }
         // Detect Array methods
         else if (strcmp(method, "bytesize") == 0 || strcmp(method, "resize") == 0 || strcmp(method, "free") == 0 || strcmp(method, "slice") == 0) {
+             if (strcmp(method, "resize") == 0 && receiver->type == AST_IDENTIFIER) {
+                 const char* rt = get_local_variable_type(receiver->text);
+                 if (type_is_fixed_array(rt)) {
+                     codegen_error("cannot resize fixed array '%s' (%s): resize() is dynamic-only - declare a dynamic array (T[]) when the length must change", receiver->text, rt);
+                 }
+             }
              if (strcmp(method, "free") == 0) strcpy(c_func, "come_free");
              else if (strcmp(method, "bytesize") == 0) strcpy(c_func, "come_array_bytesize");
              else if (strcmp(method, "slice") == 0) strcpy(c_func, "come_array_slice");
@@ -865,7 +936,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
              ASTNode* child = node->children[i];
              if (child->type == AST_VAR_DECL) {
                  if (child->child_count > 1) {
-                     add_local_variable(child->text, child->children[1]->text);
+                     register_local_type(child->text, child->children[1]);
                  }
              }
              if (child->type == AST_BLOCK) break;
@@ -1020,9 +1091,14 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
     case AST_VAR_DECL: {
         emit_line_directive(f, node);  // Emit #line for variable declaration
         ASTNode* type_node = node->children[1];
-        add_local_variable(node->text, type_node->text);
+        register_local_type(node->text, type_node);
 
         ASTNode* init_expr = node->children[0];
+
+        if (init_expr && init_expr->type == AST_IDENTIFIER && type_is_array(type_node->text)) {
+            const char* src_type = get_local_variable_type(init_expr->text);
+            if (src_type) check_array_transfer("initialize", node->text, type_node->text, init_expr->text, src_type);
+        }
         
         emit_indent(f, indent);
             if (strcmp(type_node->text, "string") == 0) {
@@ -1338,6 +1414,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_ASSIGN: {
             emit_line_directive(f, node);  // Emit #line for assignment
             emit_indent(f, indent);
+            if (node->children[0]->type == AST_IDENTIFIER && node->children[1]->type == AST_IDENTIFIER) {
+                const char* lt = get_local_variable_type(node->children[0]->text);
+                const char* rt = get_local_variable_type(node->children[1]->text);
+                if (lt && rt) check_array_transfer("be assigned to", node->children[0]->text, lt, node->children[1]->text, rt);
+            }
             generate_expression(f, node->children[0]);
             fprintf(f, " %s ", node->text);
             generate_expression(f, node->children[1]);
@@ -1599,6 +1680,8 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     // Reset imports tracker
     for (int i=0; i<current_import_count; i++) free(current_imports[i]);
     current_import_count = 0;
+
+    g_codegen_errors = 0;
 
     // First collect module name and imports
     if (ast->type == AST_PROGRAM) {
@@ -1927,5 +2010,5 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     }
 
     fclose(f);
-    return 0;
+    return g_codegen_errors > 0 ? 1 : 0;
 }

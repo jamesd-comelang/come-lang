@@ -51,6 +51,7 @@ static ASTNode* ast_clone(ASTNode* node) {
     ASTNode* copy = ast_new(node->type);
     strcpy(copy->text, node->text);
     copy->source_line = node->source_line;
+    copy->array_size = node->array_size;
     copy->child_count = node->child_count;
     for (int i = 0; i < node->child_count; i++) {
         copy->children[i] = ast_clone(node->children[i]);
@@ -81,12 +82,25 @@ static int expect(TokenType type) {
     return 0;
 }
 
+// Peek at an array declarator starting at the current token: when it
+// is '[' NUMBER ']', return the fixed size; otherwise 0 (dynamic).
+// The size used to be discarded while skipping the brackets, which
+// made fixed arrays indistinguishable from dynamic ones (COIL-101).
+static int peek_array_size() {
+    if (current()->type == TOKEN_LBRACKET && pos + 1 < tokens.count &&
+        tokens.tokens[pos + 1].type == TOKEN_NUMBER) {
+        return atoi(tokens.tokens[pos + 1].text);
+    }
+    return 0;
+}
+
 ASTNode* ast_new(ASTNodeType type) {
     ASTNode* n = malloc(sizeof(ASTNode));
     n->type = type;
     n->child_count = 0;
     n->text[0] = '\0';
     n->source_line = (pos < tokens.count) ? tokens.tokens[pos].line : 0;
+    n->array_size = 0;
     return n;
 }
 
@@ -392,6 +406,7 @@ static ASTNode* parse_var_decl() {
     }
     
     // Check for array type: int[] x
+    int type_arr_size = peek_array_size();
     while (match(TOKEN_LBRACKET)) {
          while(current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
          expect(TOKEN_RBRACKET);
@@ -401,8 +416,9 @@ static ASTNode* parse_var_decl() {
     if (match(TOKEN_IDENTIFIER)) {
         char var_name[64];
         strcpy(var_name, tokens.tokens[pos-1].text);
-        
+
         int is_array = 0;
+        int name_arr_size = peek_array_size();
         if (match(TOKEN_LBRACKET)) {
             while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();
             expect(TOKEN_RBRACKET);
@@ -428,6 +444,7 @@ static ASTNode* parse_var_decl() {
          ASTNode* type_node = ast_new(AST_IDENTIFIER);
          strcpy(type_node->text, type_name);
          if (is_array) strcat(type_node->text, "[]"); // Mark as array
+         type_node->array_size = name_arr_size ? name_arr_size : type_arr_size;
          decl->children[decl->child_count++] = type_node;
          
          if (current()->type == TOKEN_SEMICOLON) advance();
@@ -691,29 +708,31 @@ static ASTNode* parse_identifier_statement() {
          
          // Check array
          int is_array = 0;
+         int arr_size = peek_array_size();
          if (match(TOKEN_LBRACKET)) {
              while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();
              expect(TOKEN_RBRACKET);
              is_array = 1;
          }
-         
+
          ASTNode* decl = ast_new(AST_VAR_DECL);
          strcpy(decl->text, var_name);
-         
+
          // Init
          if (match(TOKEN_ASSIGN)) {
              decl->children[decl->child_count++] = parse_expression();
          } else {
              // Default init 0
              ASTNode* dummy = ast_new(AST_NUMBER);
-             strcpy(dummy->text, "0"); 
+             strcpy(dummy->text, "0");
              decl->children[decl->child_count++] = dummy;
          }
-         
+
          // Type
          ASTNode* type_node = ast_new(AST_IDENTIFIER);
          strcpy(type_node->text, type_name);
          if (is_array) strcat(type_node->text, "[]");
+         type_node->array_size = arr_size;
          decl->children[decl->child_count++] = type_node;
          if (current()->type == TOKEN_SEMICOLON) advance();
          return decl;
@@ -1340,10 +1359,11 @@ static void parse_top_level_decl(ASTNode* program) {
                           advance();
                       }
                       // brackets?
-                      if (match(TOKEN_LBRACKET)) { 
+                      int psize1 = peek_array_size();
+                      if (match(TOKEN_LBRACKET)) {
                           while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();
-                          expect(TOKEN_RBRACKET); 
-                          strcat(arg_type, "[]"); 
+                          expect(TOKEN_RBRACKET);
+                          strcat(arg_type, "[]");
                       }
                       
                       if (current()->type == TOKEN_IDENTIFIER) {
@@ -1360,13 +1380,15 @@ static void parse_top_level_decl(ASTNode* program) {
                           
                           // Check array after name
                           int is_arr = 0;
+                          int psize2 = peek_array_size();
                           if (match(TOKEN_LBRACKET)) {
                               while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();
-                              expect(TOKEN_RBRACKET); 
+                              expect(TOKEN_RBRACKET);
                               is_arr = 1;
                           }
-                          
+
                           if (is_arr) strcat(at->text, "[]"); // array param
+                          at->array_size = psize2 ? psize2 : psize1;
                           arg->children[arg->child_count++] = NULL; // No init
                           arg->children[arg->child_count++] = at;
                           
@@ -1407,15 +1429,16 @@ static void parse_top_level_decl(ASTNode* program) {
                  ASTNode* type_node = ast_new(AST_IDENTIFIER);
                  strcpy(type_node->text, type_name);
                  // check array
+                 int top_arr_size = peek_array_size();
                  if (match(TOKEN_LBRACKET)) {
                      if (current()->type != TOKEN_RBRACKET) {
                           // int arr[10]
-                          // size?
                           while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();
                      }
                      expect(TOKEN_RBRACKET);
                      strcat(type_node->text, "[]");
                  }
+                 type_node->array_size = top_arr_size;
                  var->children[var->child_count++] = type_node;
                  program->children[program->child_count++] = var;
                  match(TOKEN_SEMICOLON); // optional ;

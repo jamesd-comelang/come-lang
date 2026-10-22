@@ -56,6 +56,7 @@ typedef struct ASTNode {
     struct ASTNode* children[1024];
     int child_count;
     int source_line;  // Line number in original COME source file
+    int array_size;   // For array type nodes: fixed size (T[N]), 0 = dynamic/not an array (COIL-101)
 } ASTNode;
 ASTNode* ast_new(ASTNodeType type);
 void ast_free(ASTNode* node);

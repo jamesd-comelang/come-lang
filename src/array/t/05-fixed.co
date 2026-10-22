@@ -1,0 +1,69 @@
+module array_test
+import std
+
+// COIL-101: fixed arrays stay fixed - and keep working as arrays.
+// (Rejection of resize/promotion is covered by tests/test_codegen.c;
+// a fixed array must still do everything else.)
+
+int total_of(int p[]) {
+    int t = 0
+    for (int i = 0; i < p.length(); i++) {
+        t += p[i]
+    }
+    return t
+}
+
+int main() {
+    int fixed[5] = {1, 2, 3, 4, 5}
+
+    if (fixed.length() != 5) {
+        std.out.printf("FAIL: fixed length, expected 5, got %d\n", fixed.length())
+        return 1
+    }
+    if (fixed.bytesize() != 20) {
+        std.out.printf("FAIL: fixed bytesize, expected 20, got %d\n", fixed.bytesize())
+        return 1
+    }
+
+    // Element write/read keeps working.
+    fixed[0] = 10
+    if (fixed[0] != 10) {
+        std.out.printf("FAIL: fixed element write lost\n")
+        return 1
+    }
+    fixed[0] = 1
+
+    // Fixed -> fixed of the same size is a plain assignment.
+    int same[5]
+    same = fixed
+    if (same[4] != 5) {
+        std.out.printf("FAIL: fixed-to-fixed assignment lost data\n")
+        return 1
+    }
+
+    // Passing a fixed array to a function leaves it unchanged.
+    if (total_of(fixed) != 15) {
+        std.out.printf("FAIL: fixed array total wrong\n")
+        return 1
+    }
+    if (fixed.length() != 5) {
+        std.out.printf("FAIL: fixed array changed by being passed\n")
+        return 1
+    }
+
+    // The legal way to get a dynamic array from a fixed one: copy
+    // element by element, then resize the copy freely.
+    int dyn[]
+    dyn.resize(fixed.length())
+    for (int i = 0; i < fixed.length(); i++) {
+        dyn[i] = fixed[i]
+    }
+    dyn.resize(10)
+    if (dyn.length() != 10 || dyn[4] != 5) {
+        std.out.printf("FAIL: copied dynamic array wrong\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 05-fixed\n")
+    return 0
+}
