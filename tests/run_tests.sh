@@ -38,6 +38,7 @@ bash tests/run_spec_test.sh
 bash tests/run_grammar_test.sh
 bash tests/run_errors_test.sh
 bash tests/run_install_test.sh
+bash tests/run_readme_test.sh
 
 # Examples are documentation that must run (COIL-119): every
 # example at the top level of examples/ builds and exits 0.

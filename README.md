@@ -1,20 +1,110 @@
-**Come(C Object and Module Extensions)** is a C-inspired **systems language** with:
+# Come
 
-* No raw pointers in user code
-* Explicit, hierarchical ownership via arenas
-* Headered dynamic arrays/strings as first-class objects
-* Static typing with local inference (`var`)
-* Modules as the only compilation unit
-* Minimal syntax drift from C
+**Come (C Object and Module Extensions)** is a C-inspired systems
+language that transpiles to C. It keeps the C mental model — static
+types, explicit control flow, no hidden machinery — and removes the
+parts that bite: no raw pointers in user code, no implicit narrowing,
+no fallthrough by default, and memory that is owned, hierarchical,
+and freed with its owner.
 
-The design consistently favors:
+**Status: v1.0.0.** The specification, the published grammar, and the
+compiler agree, and one command proves it: `make test` (see
+[Testing](#testing)).
 
-* **Predictability over magic**
-* **Compile-time guarantees**
-* **Explicitness in memory & visibility**
-* **C mental model without C footguns**
+## Quickstart
 
----
+Install the Debian package (Ubuntu/Debian, amd64):
+
+```sh
+sudo dpkg -i come_1.0.0_amd64.deb
+```
+
+or build from source (needs gcc and make):
+
+```sh
+make            # builds build/come and the examples
+```
+
+Write `hello.co`:
+
+```text
+module main
+import std
+
+main() {
+    std.out.printf("Hello world!\n")
+}
+```
+
+Build and run it:
+
+```sh
+come build hello.co
+./hello
+```
+
+## The language in brief
+
+- **Modules are the only compilation unit.** Each file declares one
+  `module`; a module is one file or a directory of files. Modules
+  have private memory contexts and optional `module_init` /
+  `module_exit` hooks that run in dependency order.
+- **Visibility is explicit.** A module with an `export (...)` list
+  exposes exactly those names; calling anything else from outside
+  is a compile error. A module with no export list is open.
+- **No raw pointers in user code.** Arrays, strings, and maps are
+  headered buffer objects:
+
+  ```text
+  [ capacity | count | data... ]
+  ```
+
+  Every buffer answers `.length()`, `.bytesize()`, `.owner()`,
+  `.chown()`, `.dup()`, and `.type()`.
+- **Ownership is hierarchical.** Buffers live in a memory context
+  and die with their owner; `.chown()` re-parents a buffer,
+  `.dup()` deep-copies, `.dup(0)` makes a reference copy.
+  `resize(n)` is the only memory primitive — there is no
+  `alloc`/`free` in user code. Fixed arrays (`int a[5]`) stay
+  fixed; dynamic arrays (`int a[]`) can resize.
+- **Strings are immutable and character-first.** `s[i]` is the
+  i-th character (a `wchar`), `.length()` counts characters,
+  `+` concatenates.
+- **Static typing with local inference.** `var` infers from the
+  first assignment and locks. There is **no implicit narrowing**:
+  storing a `double` in an `int` is a compile error unless you
+  write the cast, `int(x)`.
+- **Errors are values, not exceptions.** A global `ERR` object
+  reports failure: `ERR.no()`, `ERR.str()`, `ERR.set()` is a
+  boolean "did the last call fail" predicate, and `ERR.fatal(msg)`
+  stops the program.
+- **Multiple returns via tuples**, destructured on assignment:
+  `(sum, cmp) = add_n_compare(5, 3)`.
+- **Coroutines and links** (spec §9). `coroutine` declares a
+  cooperative task, `spawn` starts one, and `colink()` channels
+  pass buffers — ownership included — between them. A coroutine
+  sees only its own locals and parameters.
+- **Control flow is C-shaped, with the traps removed.** `switch`
+  does not fall through unless a case ends in `fallthrough`.
+  A newline ends a statement; `;` separates statements on one
+  line.
+
+System modules (the compiler's own `std`, `string`, and friends)
+are the one place `extern "C"` may appear; they are implemented
+in C and declare their Come surface in `.co` files.
+
+## Documentation
+
+- [Language specification](docs/Come_spec.md) — syntax and core
+  semantics (§1–§17)
+- [Grammar (EBNF)](docs/grammar.ebnf) — the published grammar;
+  a conformance test checks it against the compiler
+- [Types summary](docs/Come_types.md) — the type table (the
+  authority when documents disagree)
+- [Arrays](docs/Come_array.md), [Strings](docs/Come_string.md),
+  [Maps](docs/Come_map.md), [Standard library](docs/Come_std.md)
+- [Project layout](docs/Come_project_layout.md)
+- [Roadmap](docs/ROADMAP.md) — how v1.0.0 was built, story by story
 
 ## Testing
 
@@ -25,123 +115,13 @@ make test
 ```
 
 It builds the compiler and examples, runs the C unit suites and
-the end-to-end project tests (`tests/run_tests.sh`), compiles and
-runs every Come-language test under `src/**/t/` (auto-discovered —
-a new test joins the suite just by being added there), and runs
-the examples as smoke tests. Anything failing stops the run.
+the end-to-end project tests (`tests/run_tests.sh` — including
+the spec, grammar, top-20 error-message, and clean-room install
+checks), compiles and runs every Come-language test under
+`src/**/t/` (auto-discovered — a new test joins the suite just by
+being added there), and runs the examples as smoke tests.
+Anything failing stops the run.
 
-## Core pillars
+## License
 
-### 1. Modules = isolation + lifecycle
-
-Each file declares exactly one module.
-Local modules:
-
-* Have private memory contexts
-* Optional `module_init` / `module_exit`
-* Deterministic init/exit ordering
-
-System modules:
-
-* API-only
-* No memory or lifecycle
-
-This is a clean separation between *code* and *runtime authority*. Good.
-
----
-
-### 2. Memory model (very clear)
-
-* No pointers in user code
-* Arrays & strings are **headered buffers**
-* Ownership is hierarchical:
-
-  * Parent frees children
-  * `.chown()` explicitly re-parents
-* Fixed arrays stay fixed — no promotion to dynamic
-* Buffers die with their owner; `resize(n)` is the only memory primitive
-
-This feels like a **manual-but-safe arena system**, closer to:
-
-> C + Rust ownership + Zig-style explicit allocation
-> but without borrow checking or lifetimes exposed to the user.
-
----
-
-### 3. Arrays & strings as unified objects
-
-```text
-[ size_in_bytes | element_count | data... ]
-```
-
-Key points:
-
-* Strings are UTF-8 by default
-* Arrays & strings share:
-
-  * `.length()`
-  * `.size()`
-  * `.owner()`
-  * `.chown()`
-
-Memory rules are explicit and compiler-guaranteed, which avoids the usual “hidden heap allocation” problem found in higher-level languages.
-
----
-
-### 4. Type system
-
-* Fully static
-* `var` is *inference*, not dynamic typing
-* First assignment locks type
-* No implicit imports
-* Symbols are private by default
-
-This encourages **intentional API design** and discourages global leakage.
-
----
-
-### 5. Control flow safety
-
-* `switch` has **no implicit fallthrough**
-* `fallthrough` is explicit
-* Semicolons are optional but meaningful
-
-This removes one of C’s most common logic bugs without adding complexity.
-
----
-
-### 6. Functions & returns
-
-* Multiple return values via tuples
-* Assignment destructuring is explicit
-* No magic unpacking
-
-This is clean, readable, and predictable.
-
----
-
-## Early strengths (purely observational)
-
-These stand out as *very well thought-through*:
-
-1. **Memory rules are explicit**
-
-   * Huge improvement over C, Go, and even Rust ergonomics-wise
-
-2. **Ownership is visible but not verbose**
-
-   * `.chown()` is rare but powerful
-   * Default behavior is safe
-
-3. **Module-private memory contexts**
-
-   * Excellent for large systems and embedded use
-
-4. **No pointer syntax at all**
-
-   * Forces better abstractions without pretending memory doesn’t exist
-
-5. **Enum-as-generator inside `const`**
-
-   * Simple, expressive, zero extra syntax
-
+Apache 2.0 — see [LICENSE](LICENSE).
