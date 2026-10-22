@@ -1523,6 +1523,45 @@ static void parse_top_level_decl(ASTNode* program) {
                           }
 
                           if (is_arr) strcat(at->text, "[]"); // array param
+                          // Function-declarator parameter (COIL-109,
+                          // spec 8.3): int compare(int a, int b).
+                          // The type is recorded as fn:<ret>(<types>).
+                          if (current()->type == TOKEN_LPAREN) {
+                              char fn_type[512];
+                              snprintf(fn_type, sizeof(fn_type), "fn:%s(", at->text);
+                              advance(); // (
+                              int first = 1;
+                              while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                                  if (current()->type == TOKEN_COMMA) { advance(); continue; }
+                                  if (current()->type == TOKEN_CONST) advance();
+                                  char pt[160];
+                                  if (current()->type == TOKEN_STRUCT) {
+                                      advance();
+                                      snprintf(pt, sizeof(pt), "struct %s", current()->text);
+                                      advance();
+                                  } else {
+                                      snprintf(pt, sizeof(pt), "%s", current()->text);
+                                      advance();
+                                  }
+                                  if (match(TOKEN_LBRACKET)) {
+                                      while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+                                      expect(TOKEN_RBRACKET);
+                                      strcat(pt, "[]");
+                                  }
+                                  if (current()->type == TOKEN_IDENTIFIER) advance(); // inner param name
+                                  if (match(TOKEN_LBRACKET)) {
+                                      while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+                                      expect(TOKEN_RBRACKET);
+                                      strcat(pt, "[]");
+                                  }
+                                  if (!first) strcat(fn_type, ",");
+                                  strcat(fn_type, pt);
+                                  first = 0;
+                              }
+                              expect(TOKEN_RPAREN);
+                              strcat(fn_type, ")");
+                              strcpy(at->text, fn_type);
+                          }
                           at->array_size = psize2 ? psize2 : psize1;
                           arg->children[arg->child_count++] = NULL; // No init
                           arg->children[arg->child_count++] = at;

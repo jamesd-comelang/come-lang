@@ -1,0 +1,64 @@
+module core_test
+import std
+
+// COIL-109: functions as arguments (spec 8.3). A parameter written
+// in function-declaration shape receives a named function; the
+// callee invokes it like a function. The rejection cases are
+// compile errors asserted by the C suite.
+
+int ascending(int a, int b) {
+    if (a < b) return -1
+    if (a > b) return 1
+    return 0
+}
+
+int descending(int a, int b) {
+    return 0 - ascending(a, b)
+}
+
+// The spec's own example shape.
+void sort(int data[], int compare(int a, int b)) {
+    int n = data.length()
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j + 1 < n - i; j++) {
+            if (compare(data[j], data[j + 1]) > 0) {
+                int tmp = data[j]
+                data[j] = data[j + 1]
+                data[j + 1] = tmp
+            }
+        }
+    }
+}
+
+// The atexit shape: a zero-argument void handler.
+int g_cleanups = 0
+
+void cleanup() {
+    g_cleanups = g_cleanups + 1
+}
+
+void run_at_exit(void handler()) {
+    handler()
+}
+
+int main() {
+    int nums[] = {5, 2, 9, 1, 7}
+    sort(nums, ascending)
+    if (nums[0] != 1 || nums[1] != 2 || nums[2] != 5 || nums[3] != 7 || nums[4] != 9) {
+        std.out.printf("FAIL: ascending sort wrong: %d %d %d %d %d\n", nums[0], nums[1], nums[2], nums[3], nums[4])
+        return 1
+    }
+    sort(nums, descending)
+    if (nums[0] != 9 || nums[1] != 7 || nums[2] != 5 || nums[3] != 2 || nums[4] != 1) {
+        std.out.printf("FAIL: descending sort wrong\n")
+        return 1
+    }
+    run_at_exit(cleanup)
+    run_at_exit(cleanup)
+    if (g_cleanups != 2) {
+        std.out.printf("FAIL: handler must run once per call (ran %d)\n", g_cleanups)
+        return 1
+    }
+    std.out.printf("PASS: 09-fnargs\n")
+    return 0
+}

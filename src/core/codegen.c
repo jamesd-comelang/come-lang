@@ -377,12 +377,164 @@ static void check_numeric_store(const char* target_type, ASTNode* expr,
         codegen_error("implicit narrowing: cannot store %s in %s '%s' - use an explicit cast %s(value)",
                       from, target_type, target_name, target_type);
 }
+// ---- COIL-109: functions as arguments (spec 8.3) ----
+// A table of the current module's functions with their signatures
+// in the parser's fn: form ("fn:RET(T1,T2)"), built once per file.
+// Struct methods (Rect.area style) are excluded: they need a
+// receiver and cannot be passed as bare names.
+typedef struct { char name[128]; char sig[600]; } FnSig;
+static FnSig g_module_fns[256];
+static int g_module_fn_count = 0;
+
+static void build_fn_sig(ASTNode* fn, char* out, size_t n) {
+    const char* ret = "void";
+    if (fn->child_count > 0 && fn->children[0] && fn->children[0]->text[0] != '(')
+        ret = fn->children[0]->text;
+    char params[512] = "";
+    int first = 1;
+    for (int i = 1; i < fn->child_count; i++) {
+        ASTNode* p = fn->children[i];
+        if (!p || p->type == AST_BLOCK) break;
+        if (p->type != AST_VAR_DECL || p->child_count < 2) continue;
+        const char* pt = p->children[1]->text;
+        char eff[300];
+        if (p->children[1]->array_size > 0) {
+            size_t bl = strlen(pt);
+            if (bl >= 2 && strcmp(pt + bl - 2, "[]") == 0) bl -= 2;
+            snprintf(eff, sizeof(eff), "%.*s[%d]", (int)bl, pt, p->children[1]->array_size);
+            pt = eff;
+        }
+        if (!first) strncat(params, ",", sizeof(params) - strlen(params) - 1);
+        strncat(params, pt, sizeof(params) - strlen(params) - 1);
+        first = 0;
+    }
+    snprintf(out, n, "fn:%s(%s)", ret, params);
+}
+static const char* find_module_fn_sig(const char* name) {
+    for (int i = 0; i < g_module_fn_count; i++)
+        if (strcmp(g_module_fns[i].name, name) == 0) return g_module_fns[i].sig;
+    return NULL;
+}
+static void collect_module_fns(ASTNode* ast) {
+    g_module_fn_count = 0;
+    if (!ast || ast->type != AST_PROGRAM) return;
+    for (int i = 0; i < ast->child_count && g_module_fn_count < 256; i++) {
+        ASTNode* ch = ast->children[i];
+        if (ch && ch->type == AST_FUNCTION) {
+            if (isupper((unsigned char)ch->text[0]) && strchr(ch->text, '_'))
+                continue; // struct method (Rect_area): needs a receiver
+            FnSig* e = &g_module_fns[g_module_fn_count++];
+            snprintf(e->name, sizeof(e->name), "%s", ch->text);
+            build_fn_sig(ch, e->sig, sizeof(e->sig));
+        }
+    }
+}
+static int is_fn_type(const char* t) { return t && strncmp(t, "fn:", 3) == 0; }
+// Split a comma-separated type list at nesting depth 0.
+static int split_types(const char* s, char parts[][160], int max_parts) {
+    int n = 0, depth = 0;
+    const char* start = s;
+    for (const char* p = s; ; p++) {
+        char c = *p;
+        if (c == '(' || c == '[' || c == '{') depth++;
+        else if (c == ')' || c == ']' || c == '}') depth--;
+        if ((c == ',' && depth == 0) || c == 0) {
+            if (n < max_parts) {
+                size_t len = (size_t)(p - start);
+                if (len > 159) len = 159;
+                memcpy(parts[n], start, len);
+                parts[n][len] = 0;
+                n++;
+            }
+            start = p + 1;
+            if (c == 0) break;
+        }
+    }
+    return n;
+}
+// Emit a C function-pointer parameter: RET (*name)(ARGS) from a
+// fn: type text. `name` may be NULL for prototypes. Array argument
+// types map to the runtime array types, as for ordinary parameters.
+static void emit_fn_param(FILE* f, const char* fn_text, const char* name) {
+    const char* lp = strchr(fn_text, '(');
+    const char* rp = strrchr(fn_text, ')');
+    if (!lp || !rp) { fprintf(f, "void* %s", name ? name : ""); return; }
+    char ret[96];
+    snprintf(ret, sizeof(ret), "%.*s", (int)(lp - (fn_text + 3)), fn_text + 3);
+    char inner[512];
+    snprintf(inner, sizeof(inner), "%.*s", (int)(rp - lp - 1), lp + 1);
+    fprintf(f, "%s (*%s)(", ret, name ? name : "");
+    if (inner[0] == 0) {
+        fprintf(f, "void");
+    } else {
+        char parts[32][160];
+        int np = split_types(inner, parts, 32);
+        for (int i = 0; i < np; i++) {
+            if (i) fprintf(f, ", ");
+            size_t L = strlen(parts[i]);
+            if (L >= 2 && strcmp(parts[i] + L - 2, "[]") == 0) {
+                char raw[128];
+                snprintf(raw, sizeof(raw), "%.*s", (int)(L - 2), parts[i]);
+                if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t*");
+                else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t*");
+                else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t*");
+                else fprintf(f, "come_array_t*");
+            } else {
+                fprintf(f, "%s", parts[i]);
+            }
+        }
+    }
+    fprintf(f, ")");
+}
+// Check a call's arguments against 8.3: a function name may appear
+// only where the callee declares a function parameter, and then
+// its signature must match the declarator exactly. Callees the
+// compiler does not know (other modules, methods) are unchecked.
+static void check_call_args(ASTNode* call) {
+    const char* csig = find_module_fn_sig(call->text);
+    if (!csig) return;
+    const char* lp = strchr(csig, '(');
+    const char* rp = strrchr(csig, ')');
+    if (!lp || !rp) return;
+    char inner[512];
+    snprintf(inner, sizeof(inner), "%.*s", (int)(rp - lp - 1), lp + 1);
+    char parts[32][160];
+    int np = inner[0] ? split_types(inner, parts, 32) : 0;
+    for (int i = 0; i < call->child_count && i < np; i++) {
+        ASTNode* arg = call->children[i];
+        int wants_fn = is_fn_type(parts[i]);
+        const char* arg_sig = NULL;
+        if (arg->type == AST_IDENTIFIER) {
+            arg_sig = find_module_fn_sig(arg->text);
+            if (arg_sig && get_local_variable_type(arg->text)) arg_sig = NULL; // a local shadows the function
+        }
+        if (wants_fn) {
+            if (!arg_sig)
+                codegen_error("argument %d of '%s' must be a named function matching %s",
+                              i + 1, call->text, parts[i]);
+            else if (strcmp(arg_sig, parts[i]) != 0)
+                codegen_error("function '%s' (%s) does not match the declared signature %s for argument %d of '%s'",
+                              arg->text, arg_sig, parts[i], i + 1, call->text);
+        } else if (arg_sig) {
+            codegen_error("function '%s' can only be passed where a function parameter is declared (spec 8.3)",
+                          arg->text);
+        }
+    }
+}
+// An expression that IS a bare function name, in a value position.
+static int expr_is_fn_value(ASTNode* e) {
+    return e && e->type == AST_IDENTIFIER && find_module_fn_sig(e->text) &&
+           !get_local_variable_type(e->text);
+}
+
 // The store check for an assignment node (identifier or array
 // element target).
 static void check_assign_store(ASTNode* assign) {
     if (!assign || assign->child_count < 2) return;
     ASTNode* lhs = assign->children[0];
     ASTNode* rhs = assign->children[1];
+    if (expr_is_fn_value(rhs))
+        codegen_error("functions can only be passed as arguments (spec 8.3): '%s' cannot be stored", rhs->text);
     if (lhs->type == AST_IDENTIFIER) {
         const char* lt = get_local_variable_type(lhs->text);
         if (lt) check_numeric_store(lt, rhs, lhs->text);
@@ -491,6 +643,12 @@ static void generate_expression(FILE* f, ASTNode* node) {
         fprintf(f, "%s", node->text);
     } else if (node->type == AST_IDENTIFIER) {
         if (strcmp(node->text, "null") == 0) fprintf(f, "NULL");
+        else if (expr_is_fn_value(node)) {
+            // A named function used as a value: its code reference
+            // (spec 8.3 - legal as a call argument; the store and
+            // call checks reject other positions).
+            fprintf(f, "come_%s__%s", current_module, node->text);
+        }
         else fprintf(f, "%s", node->text);
     } else if (node->type == AST_UNARY_OP) {
         fprintf(f, "(%s", node->text);
@@ -1168,10 +1326,16 @@ static void generate_expression(FILE* f, ASTNode* node) {
         // `printf` is usually a macro or extern.
         // The parser handles alias.
         
+        check_call_args(node); // COIL-109 (spec 8.3)
         char mangled_name[8192];
         // Heuristic: if contains '.', it's fully qualified? No, AST_CALL text usually simple.
         // If it starts with "come_", assume already mangled/internal?
-        if (strncmp(node->text, "come_", 5) == 0 || strncmp(node->text, "std_", 4) == 0) {
+        const char* callee_local = get_local_variable_type(node->text);
+        if (callee_local && is_fn_type(callee_local)) {
+             // Calling through a function parameter: the parameter
+             // itself is the C function pointer (COIL-109).
+             strcpy(mangled_name, node->text);
+        } else if (strncmp(node->text, "come_", 5) == 0 || strncmp(node->text, "std_", 4) == 0) {
              strcpy(mangled_name, node->text);
         } else {
              // Local function call
@@ -1442,9 +1606,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (arg->type == AST_VAR_DECL) {
                 // int x
                 ASTNode* type = arg->children[1];
-                
+
+                if (is_fn_type(type->text)) {
+                    // Function parameter (COIL-109): RET (*name)(ARGS)
+                    emit_fn_param(f, type->text, arg->text);
                 // array?
-                if (strstr(type->text, "[]")) {
+                } else if (strstr(type->text, "[]")) {
                     // int input[] -> come_int_array_t* input
                      char raw[64];
                      strncpy(raw, type->text, strlen(type->text)-2);
@@ -1513,6 +1680,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (src_type) check_array_transfer("initialize", node->text, type_node->text, init_expr->text, src_type);
         }
         if (init_expr) check_numeric_store(type_node->text, init_expr, node->text); // COIL-107
+        if (init_expr && expr_is_fn_value(init_expr))
+            codegen_error("functions can only be passed as arguments (spec 8.3): '%s' cannot initialize '%s'", init_expr->text, node->text);
         
         emit_indent(f, indent);
             if (strcmp(type_node->text, "string") == 0) {
@@ -1795,6 +1964,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_RETURN: {
             emit_line_directive(f, node);
             emit_indent(f, indent);
+            if (node->child_count > 0 && expr_is_fn_value(node->children[0]))
+                codegen_error("functions cannot be returned (spec 8.3): '%s'", node->children[0]->text);
             if (strcmp(current_function_return_type, "void") == 0) {
                  fprintf(f, "return;\n");
             } else {
@@ -2495,8 +2666,10 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                  ASTNode* arg = child->children[j];
                  if (arg->type == AST_VAR_DECL) {
                      ASTNode* type = arg->children[1];
+                     if (is_fn_type(type->text)) {
+                            emit_fn_param(f, type->text, NULL); // COIL-109
                      // Array check
-                       if (strstr(type->text, "[]")) {
+                     } else if (strstr(type->text, "[]")) {
                             char raw[64];
                             strncpy(raw, type->text, strlen(type->text)-2);
                             raw[strlen(type->text)-2] = 0;
@@ -2524,6 +2697,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         if (ast->text[0] != 0) {
             strncpy(current_module, ast->text, 255);
         }
+        collect_module_fns(ast); // COIL-109
         generate_program(f, ast);
     } else {
         generate_node(f, ast, 0);

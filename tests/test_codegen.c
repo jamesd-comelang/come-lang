@@ -227,6 +227,68 @@ int main() {
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
 
+    // COIL-109: functions as arguments (spec 8.3). The declarator
+    // parameter must generate a C function pointer, the call must
+    // pass the mangled function name, and signature mismatches,
+    // non-function arguments and function values in stores must
+    // all be compile errors.
+    {
+        const char* ok109 =
+            "module main\nimport std\n\n"
+            "int ascending(int a, int b) {\n    return a - b\n}\n"
+            "void sort(int data[], int compare(int a, int b)) {\n}\n"
+            "int main() {\n    int nums[] = {1}\n    sort(nums, ascending)\n    return 0\n}\n";
+        if (!gen_ok("build/tests/coil109_ok.co", ok109)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-109: the spec sort example must generate\033[0m\n");
+            return 1;
+        }
+        static char buf109[262144];
+        FILE* of109 = fopen("build/tests/coil109_ok.co.c", "r");
+        size_t bl109 = fread(buf109, 1, sizeof(buf109) - 1, of109);
+        fclose(of109);
+        buf109[bl109] = 0;
+        if (!strstr(buf109, "int (*compare)(int, int)") ||
+            !strstr(buf109, "come_main__ascending")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-109: declarator / function reference missing in generated C\033[0m\n");
+            return 1;
+        }
+        const char* bad109a =
+            "module main\nimport std\n\n"
+            "int wrong(string a, string b) {\n    return 0\n}\n"
+            "void sort(int data[], int compare(int a, int b)) {\n}\n"
+            "int main() {\n    int nums[] = {1}\n    sort(nums, wrong)\n    return 0\n}\n";
+        if (!gen_fail("build/tests/coil109_a.co", bad109a)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-109: mismatched signature must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad109b =
+            "module main\nimport std\n\n"
+            "int ascending(int a, int b) {\n    return 0\n}\n"
+            "int main() {\n    int x = ascending\n    return x\n}\n";
+        if (!gen_fail("build/tests/coil109_b.co", bad109b)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-109: storing a function in a variable must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad109c =
+            "module main\nimport std\n\n"
+            "void sort(int data[], int compare(int a, int b)) {\n}\n"
+            "int main() {\n    int nums[] = {1}\n    sort(nums, 42)\n    return 0\n}\n";
+        if (!gen_fail("build/tests/coil109_c.co", bad109c)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-109: a non-function argument must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad109d =
+            "module main\nimport std\n\n"
+            "int ascending(int a, int b) {\n    return 0\n}\n"
+            "int take(int v) {\n    return v\n}\n"
+            "int main() {\n    return take(ascending)\n}\n";
+        if (!gen_fail("build/tests/coil109_d.co", bad109d)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-109: passing a function to a value parameter must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-109 function arguments test passed!\033[0m\n");
+
     // COIL-108: directory-module codegen. A non-primary file must
     // not define the module singletons; the primary's chain must
     // call the group hook even when its own file defines none; the
