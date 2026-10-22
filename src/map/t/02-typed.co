@@ -1,0 +1,67 @@
+module map_test
+import std
+
+// COIL-102: map{K, V} is statically typed. Literals use {key: value},
+// reads/writes go through m[key], and the compiler checks key and
+// value types (the rejection cases live in tests/test_codegen.c).
+
+int main() {
+    map{string, int} scores = {"alice": 90, "bob": 85}
+
+    if (scores["alice"] != 90) {
+        std.out.printf("FAIL: literal read alice, got %d\n", scores["alice"])
+        return 1
+    }
+    if (scores["bob"] != 85) {
+        std.out.printf("FAIL: literal read bob, got %d\n", scores["bob"])
+        return 1
+    }
+
+    // Missing key reads as the zero value.
+    if (scores["nobody"] != 0) {
+        std.out.printf("FAIL: missing int key must read 0, got %d\n", scores["nobody"])
+        return 1
+    }
+
+    // Index write: new key, then overwrite.
+    scores["carol"] = 77
+    scores["alice"] = 95
+    if (scores["carol"] != 77 || scores["alice"] != 95) {
+        std.out.printf("FAIL: index write lost (carol=%d alice=%d)\n", scores["carol"], scores["alice"])
+        return 1
+    }
+
+    // Keys may be variables.
+    string key = "bob"
+    if (scores[key] != 85) {
+        std.out.printf("FAIL: variable key read, got %d\n", scores[key])
+        return 1
+    }
+
+    // String values.
+    map{string, string} labels = {"host": "localhost", "env": "prod"}
+    if (labels["host"].cmp("localhost") != 0) {
+        std.out.printf("FAIL: string value read wrong\n")
+        return 1
+    }
+    if (labels["missing"].length() != 0) {
+        std.out.printf("FAIL: missing string key must read as empty\n")
+        return 1
+    }
+    labels["env"] = "dev"
+    if (labels["env"].cmp("dev") != 0) {
+        std.out.printf("FAIL: string value overwrite wrong\n")
+        return 1
+    }
+
+    // Declared empty, filled later.
+    map{string, int} empty
+    empty["x"] = 1
+    if (empty["x"] != 1) {
+        std.out.printf("FAIL: empty map write/read wrong\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 02-typed\n")
+    return 0
+}

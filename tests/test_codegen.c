@@ -79,5 +79,43 @@ int main() {
         remove(cases[i].path);
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-101 fixed-array test passed!\033[0m\n");
+
+    // COIL-102: typed maps. Generation must SUCCEED for a well-typed
+    // map{string, int} program and FAIL for a mixed-type literal and
+    // for a wrong key type.
+    struct { const char* path; const char* src; int should_fail; const char* what; } mcases[3] = {
+        { "build/tests/coil102_good.co",
+          "module main\nimport std\n\nint main() {\n    map{string, int} m = {\"a\": 1, \"b\": 2}\n    m[\"c\"] = 3\n    return m[\"a\"] + m[\"c\"]\n}\n",
+          0, "well-typed map{string, int} program" },
+        { "build/tests/coil102_mixed.co",
+          "module main\nimport std\n\nint main() {\n    map{string, int} m = {\"a\": 1, \"b\": \"two\"}\n    return 0\n}\n",
+          1, "mixed-type map literal" },
+        { "build/tests/coil102_badkey.co",
+          "module main\nimport std\n\nint main() {\n    map{string, int} m = {7: 1}\n    return 0\n}\n",
+          1, "int key in a string-keyed map literal" },
+    };
+    for (int i = 0; i < 3; i++) {
+        FILE* cf = fopen(mcases[i].path, "w");
+        if (!cf) { printf("Codegen test setup failed (cannot write temp file)\n"); return 1; }
+        fputs(mcases[i].src, cf);
+        fclose(cf);
+        ASTNode* ast = NULL;
+        if (parse_file(mcases[i].path, &ast) != 0 || !ast) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-102: parse failed for case: %s\033[0m\n", mcases[i].what);
+            return 1;
+        }
+        int rc = generate_c_from_ast(ast, "build/tests/coil102_out.c", mcases[i].path, 0);
+        if (mcases[i].should_fail && rc == 0) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-102: generation succeeded but must fail: %s\033[0m\n", mcases[i].what);
+            return 1;
+        }
+        if (!mcases[i].should_fail && rc != 0) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-102: generation failed but must succeed: %s\033[0m\n", mcases[i].what);
+            return 1;
+        }
+        ast_free(ast);
+        remove(mcases[i].path);
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-102 typed-map test passed!\033[0m\n");
     return 0;
 }

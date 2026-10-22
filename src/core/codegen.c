@@ -185,6 +185,106 @@ static const char* infer_const_type(ASTNode* node) {
 }
 
 
+// ---- Typed maps: map{K, V} (COIL-102) ----
+
+// Split "map{K, V}" into K and V (nested-map aware). Returns 1 on success.
+static int map_type_parts(const char* t, char* k, size_t ksz, char* v, size_t vsz) {
+    if (!t || strncmp(t, "map{", 4) != 0) return 0;
+    const char* s = t + 4;
+    size_t len = strlen(s);
+    if (len == 0 || s[len - 1] != '}') return 0;
+    int depth = 0;
+    const char* comma = NULL;
+    for (const char* p = s; p < s + len - 1; p++) {
+        if (*p == '{') depth++;
+        else if (*p == '}') depth--;
+        else if (*p == ',' && depth == 0) { comma = p; break; }
+    }
+    if (!comma) return 0;
+    size_t klen = (size_t)(comma - s);
+    while (klen > 0 && s[klen - 1] == ' ') klen--;
+    if (klen >= ksz) klen = ksz - 1;
+    memcpy(k, s, klen);
+    k[klen] = 0;
+    const char* vs = comma + 1;
+    while (*vs == ' ') vs++;
+    size_t vlen = (size_t)((s + len - 1) - vs);
+    while (vlen > 0 && vs[vlen - 1] == ' ') vlen--;
+    if (vlen >= vsz) vlen = vsz - 1;
+    memcpy(v, vs, vlen);
+    v[vlen] = 0;
+    return 1;
+}
+
+// The combinations the runtime supports today: string keys (the
+// runtime hashes key contents) with int or string values.
+static int map_combo_supported(const char* k, const char* v) {
+    return strcmp(k, "string") == 0 && (strcmp(v, "int") == 0 || strcmp(v, "string") == 0);
+}
+
+static void map_combo_error(const char* k, const char* v) {
+    codegen_error("map{%s, %s} is not supported yet: v1 maps currently use string keys with int or string values", k, v);
+}
+
+// Coarse static type of an expression for map checks: "string", "int",
+// an identifier's declared type, or "" when not statically known
+// (unchecked - method calls, subexpressions, ...).
+static void expr_coarse_type(ASTNode* e, char* out, size_t n) {
+    out[0] = 0;
+    if (!e) return;
+    switch (e->type) {
+        case AST_STRING_LITERAL: snprintf(out, n, "string"); break;
+        case AST_NUMBER: snprintf(out, n, "int"); break;
+        case AST_BOOL_LITERAL: snprintf(out, n, "bool"); break;
+        case AST_IDENTIFIER: {
+            const char* t = get_local_variable_type(e->text);
+            if (t) snprintf(out, n, "%s", t);
+            break;
+        }
+        default: break;
+    }
+}
+
+static void check_map_expr_type(const char* want, ASTNode* expr, const char* what) {
+    char got[300];
+    expr_coarse_type(expr, got, sizeof(got));
+    if (got[0] == 0) return;
+    if (strcmp(got, want) != 0) {
+        codegen_error("map %s type mismatch: expected %s, got %s", what, want, got);
+    }
+}
+
+// Emit an expression in a position that needs a come_string_t*:
+// string literals need an explicit come_string_new wrap there.
+static void emit_string_expr(FILE* f, ASTNode* e) {
+    if (e && e->type == AST_STRING_LITERAL) {
+        fprintf(f, "come_string_new(COME_CTX, ");
+        generate_expression(f, e);
+        fprintf(f, ")");
+    } else {
+        generate_expression(f, e);
+    }
+}
+
+// Emit one map store statement (ends with a newline). Int values are
+// boxed in a cell owned by the current context; string values are
+// stored as the string object itself.
+static void emit_map_put(FILE* f, const char* map_var, const char* vtype, ASTNode* key_expr, ASTNode* val_expr) {
+    if (strcmp(vtype, "int") == 0) {
+        fprintf(f, "{ int* _vp = (int*)mem_talloc_alloc(COME_CTX, sizeof(int)); *_vp = (");
+        generate_expression(f, val_expr);
+        fprintf(f, "); come_map_put(&%s, ", map_var);
+        emit_string_expr(f, key_expr);
+        fprintf(f, ", _vp); }\n");
+    } else {
+        fprintf(f, "come_map_put(&%s, ", map_var);
+        emit_string_expr(f, key_expr);
+        fprintf(f, ", ");
+        emit_string_expr(f, val_expr);
+        fprintf(f, ");\n");
+    }
+}
+
 static void generate_expression(FILE* f, ASTNode* node) {
     if (!node) {
         fprintf(f, "/* AST ERROR: NULL NODE */ 0");
@@ -214,12 +314,29 @@ static void generate_expression(FILE* f, ASTNode* node) {
         generate_expression(f, node->children[0]);
         fprintf(f, ")");
     } else if (node->type == AST_ARRAY_ACCESS) {
-        // COME_ARR_GET(arr, index)
-        fprintf(f, "COME_ARR_GET(");
-        generate_expression(f, node->children[0]);
-        fprintf(f, ", ");
-        generate_expression(f, node->children[1]);
-        fprintf(f, ")");
+        ASTNode* base = node->children[0];
+        char mkt[160], mvt[160];
+        const char* bt = (base->type == AST_IDENTIFIER) ? get_local_variable_type(base->text) : NULL;
+        if (bt && map_type_parts(bt, mkt, sizeof(mkt), mvt, sizeof(mvt))) {
+            // Typed map read (COIL-102): the value, or V's zero value
+            // when the key is absent.
+            if (!map_combo_supported(mkt, mvt)) map_combo_error(mkt, mvt);
+            check_map_expr_type(mkt, node->children[1], "key");
+            fprintf(f, "({ void* _p = come_map_get(%s, ", base->text);
+            emit_string_expr(f, node->children[1]);
+            if (strcmp(mvt, "int") == 0) {
+                fprintf(f, "); _p ? *(int*)_p : 0; })");
+            } else {
+                fprintf(f, "); _p ? (come_string_t*)_p : come_string_new(COME_CTX, \"\"); })");
+            }
+        } else {
+            // COME_ARR_GET(arr, index)
+            fprintf(f, "COME_ARR_GET(");
+            generate_expression(f, node->children[0]);
+            fprintf(f, ", ");
+            generate_expression(f, node->children[1]);
+            fprintf(f, ")");
+        }
     } else if (node->type == AST_ASSIGN) {
         if (node->children[0]->type == AST_IDENTIFIER && node->children[1]->type == AST_IDENTIFIER) {
             const char* lt = get_local_variable_type(node->children[0]->text);
@@ -409,10 +526,18 @@ static void generate_expression(FILE* f, ASTNode* node) {
                                is_str = 1;
                            }
                      } else if (arg->type == AST_ARRAY_ACCESS) {
-                         // parts[0], groups[1] etc assuming array of strings
+                         // String element access: string[] element or a
+                         // map{string, string} read (COIL-102). The old
+                         // hardcoded name list stays as a fallback.
                          ASTNode* arr = arg->children[0];
                          if (arr->type == AST_IDENTIFIER) {
-                              if (strcmp(arr->text, "parts")==0 || strcmp(arr->text, "groups")==0 || strcmp(arr->text, "regex_parts")==0 || strcmp(arr->text, "args")==0) {
+                              const char* at = get_local_variable_type(arr->text);
+                              char mkt[160], mvt[160];
+                              if (at && strcmp(at, "string[]") == 0) {
+                                  is_str = 1;
+                              } else if (at && map_type_parts(at, mkt, sizeof(mkt), mvt, sizeof(mvt)) && strcmp(mvt, "string") == 0) {
+                                  is_str = 1;
+                              } else if (strcmp(arr->text, "parts")==0 || strcmp(arr->text, "groups")==0 || strcmp(arr->text, "regex_parts")==0 || strcmp(arr->text, "args")==0) {
                                   is_str = 1;
                               }
                          }
@@ -1144,6 +1269,36 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 // Mark as potentially unused to avoid warnings
                 emit_indent(f, indent);
                 fprintf(f, "(void)%s;\n", node->text);
+            } else if (strncmp(type_node->text, "map{", 4) == 0) {
+                // Typed map declaration (COIL-102)
+                char mkt[160], mvt[160];
+                if (!map_type_parts(type_node->text, mkt, sizeof(mkt), mvt, sizeof(mvt))) {
+                    codegen_error("malformed map type '%s'", type_node->text);
+                    strcpy(mkt, "string");
+                    strcpy(mvt, "int");
+                } else if (!map_combo_supported(mkt, mvt)) {
+                    map_combo_error(mkt, mvt);
+                }
+                if (init_expr && init_expr->type == AST_IDENTIFIER) {
+                    fprintf(f, "come_map_t* %s = ", node->text);
+                    generate_expression(f, init_expr);
+                    fprintf(f, ";\n");
+                } else {
+                    fprintf(f, "come_map_t* %s = come_map_new(COME_CTX);\n", node->text);
+                    if (init_expr && init_expr->type == AST_AGGREGATE_INIT) {
+                        for (int pi = 0; pi < init_expr->child_count; pi++) {
+                            ASTNode* pair = init_expr->children[pi];
+                            if (pair->type != AST_MAP_PAIR || pair->child_count < 2) {
+                                codegen_error("map literal for '%s' must use key: value pairs", node->text);
+                                continue;
+                            }
+                            check_map_expr_type(mkt, pair->children[0], "key");
+                            check_map_expr_type(mvt, pair->children[1], "value");
+                            emit_indent(f, indent);
+                            emit_map_put(f, node->text, mvt, pair->children[0], pair->children[1]);
+                        }
+                    }
+                }
             } else if (strcmp(type_node->text, "bool") == 0) {
                 fprintf(f, "bool %s = ", node->text);
                 generate_expression(f, init_expr);
@@ -1281,7 +1436,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     int is_numeric = 0;
                     ASTNode* arr_node = arg->children[0];
                     if (arr_node->type == AST_IDENTIFIER) {
-                         if (strcmp(arr_node->text, "scaled")==0 || 
+                         const char* at = get_local_variable_type(arr_node->text);
+                         char mkt[160], mvt[160];
+                         if (at && map_type_parts(at, mkt, sizeof(mkt), mvt, sizeof(mvt))) {
+                             // Map read: numeric unless V is string (COIL-102)
+                             is_numeric = strcmp(mvt, "string") != 0;
+                         } else if (strcmp(arr_node->text, "scaled")==0 ||
                              strcmp(arr_node->text, "dyn")==0 ||
                              strcmp(arr_node->text, "buf")==0 ||
                              strcmp(arr_node->text, "arr")==0) {
@@ -1414,6 +1574,24 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_ASSIGN: {
             emit_line_directive(f, node);  // Emit #line for assignment
             emit_indent(f, indent);
+            // Typed map index write: m[key] = value (COIL-102)
+            int map_write = 0;
+            if (strcmp(node->text, "=") == 0 && node->children[0]->type == AST_ARRAY_ACCESS) {
+                ASTNode* acc = node->children[0];
+                ASTNode* mbase = acc->children[0];
+                if (mbase->type == AST_IDENTIFIER) {
+                    const char* mbt = get_local_variable_type(mbase->text);
+                    char mkt[160], mvt[160];
+                    if (mbt && map_type_parts(mbt, mkt, sizeof(mkt), mvt, sizeof(mvt))) {
+                        if (!map_combo_supported(mkt, mvt)) map_combo_error(mkt, mvt);
+                        check_map_expr_type(mkt, acc->children[1], "key");
+                        check_map_expr_type(mvt, node->children[1], "value");
+                        emit_map_put(f, mbase->text, mvt, acc->children[1], node->children[1]);
+                        map_write = 1;
+                    }
+                }
+            }
+            if (!map_write) {
             if (node->children[0]->type == AST_IDENTIFIER && node->children[1]->type == AST_IDENTIFIER) {
                 const char* lt = get_local_variable_type(node->children[0]->text);
                 const char* rt = get_local_variable_type(node->children[1]->text);
@@ -1423,6 +1601,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, " %s ", node->text);
             generate_expression(f, node->children[1]);
             fprintf(f, ";\n");
+            }
             break;
         }
 

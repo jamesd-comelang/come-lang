@@ -215,7 +215,16 @@ static ASTNode* parse_primary() {
                      }
                  }
              } else {
-                 node->children[node->child_count++] = parse_expression();
+                 ASTNode* first = parse_expression();
+                 if (match(TOKEN_COLON)) {
+                     // Map literal entry: key: value (COIL-102)
+                     ASTNode* pair = ast_new(AST_MAP_PAIR);
+                     pair->children[pair->child_count++] = first;
+                     pair->children[pair->child_count++] = parse_expression();
+                     node->children[node->child_count++] = pair;
+                 } else {
+                     node->children[node->child_count++] = first;
+                 }
              }
              if (!match(TOKEN_COMMA)) break;
         }
@@ -391,9 +400,39 @@ static ASTNode* parse_expression() {
     return parse_expression_prec(0);
 }
 
+// Parse a map type's braces starting at the current '{' token and
+// write the normalized type text "map{K, V}" (recursive for a nested
+// map value type). COIL-102.
+static void parse_map_braces_text(char* out, size_t out_size) {
+    char kt[160] = "";
+    char vt[160] = "";
+    advance(); // '{'
+    if (current()->type != TOKEN_COMMA && current()->type != TOKEN_RBRACE) {
+        strncpy(kt, current()->text, sizeof(kt) - 1);
+        advance();
+    }
+    if (match(TOKEN_COMMA)) {
+        if (strcmp(current()->text, "map") == 0 && pos + 1 < tokens.count &&
+            tokens.tokens[pos + 1].type == TOKEN_LBRACE) {
+            advance(); // 'map'
+            parse_map_braces_text(vt, sizeof(vt));
+        } else if (current()->type != TOKEN_RBRACE) {
+            strncpy(vt, current()->text, sizeof(vt) - 1);
+            advance();
+            if (match(TOKEN_LBRACKET)) {
+                strcat(vt, "[]");
+                expect(TOKEN_RBRACKET);
+            }
+        }
+    }
+    expect(TOKEN_RBRACE);
+    if (vt[0]) snprintf(out, out_size, "map{%s, %s}", kt, vt);
+    else snprintf(out, out_size, "map{%s}", kt);
+}
+
 static ASTNode* parse_var_decl() {
     Token* t = current();
-    char type_name[128];
+    char type_name[256];
     strcpy(type_name, t->text);
     advance();
     
@@ -403,6 +442,11 @@ static ASTNode* parse_var_decl() {
         strcat(type_name, " ");
         strcat(type_name, current()->text);
         advance();
+    }
+
+    // Map type: map{K, V} (COIL-102)
+    if (strcmp(type_name, "map") == 0 && current()->type == TOKEN_LBRACE) {
+        parse_map_braces_text(type_name, sizeof(type_name));
     }
     
     // Check for array type: int[] x
@@ -1364,6 +1408,10 @@ static void parse_top_level_decl(ASTNode* program) {
                           while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();
                           expect(TOKEN_RBRACKET);
                           strcat(arg_type, "[]");
+                      }
+                      // map{K, V} parameter type (COIL-102)
+                      if (strcmp(arg_type, "map") == 0 && current()->type == TOKEN_LBRACE) {
+                          parse_map_braces_text(arg_type, sizeof(arg_type));
                       }
                       
                       if (current()->type == TOKEN_IDENTIFIER) {

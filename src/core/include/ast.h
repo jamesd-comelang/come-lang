@@ -47,6 +47,7 @@ typedef enum {
     AST_CONTINUE,
     AST_CAST,
     AST_TERNARY,
+    AST_MAP_PAIR,  // key: value entry inside a map literal (COIL-102)
     AST_TYPE_END
 } ASTNodeType;
 
