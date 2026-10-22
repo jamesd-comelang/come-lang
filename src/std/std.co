@@ -64,6 +64,9 @@ export (
     bool remove(string path),
     FILE tmpfile(),
     string tmpname(),
+    int rand(),
+    void srand(uint seed),
+    void qsort(byte[] arr, int cmp(byte a, byte b)),
     
     // Proc Methods
     void Proc.abort(),

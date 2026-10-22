@@ -33,6 +33,20 @@ typedef struct {
     struct come_string_t* items[];
 } come_string_list_t;
 
+// The remaining scalar element types (COIL-116): same header
+// layout, so the generic toolbox functions below work on all of
+// them through the element size.
+typedef struct { uint32_t size; uint32_t count; int16_t items[]; } come_array_short_t;
+typedef struct { uint32_t size; uint32_t count; uint16_t items[]; } come_array_ushort_t;
+typedef struct { uint32_t size; uint32_t count; uint8_t items[]; } come_array_ubyte_t;
+typedef struct { uint32_t size; uint32_t count; uint32_t items[]; } come_array_uint_t;
+typedef struct { uint32_t size; uint32_t count; long items[]; } come_array_long_t;
+typedef struct { uint32_t size; uint32_t count; unsigned long items[]; } come_array_ulong_t;
+typedef struct { uint32_t size; uint32_t count; float items[]; } come_array_float_t;
+typedef struct { uint32_t size; uint32_t count; double items[]; } come_array_double_t;
+typedef struct { uint32_t size; uint32_t count; bool items[]; } come_array_bool_t;
+typedef struct { uint32_t size; uint32_t count; int32_t items[]; } come_array_wchar_t;
+
 // Allocation / Management
 void* come_array_alloc(TALLOC_CTX* ctx, size_t elem_size, uint32_t count);
 void* come_array_realloc(void* arr, size_t elem_size, uint32_t new_size);
@@ -45,6 +59,48 @@ void* come_string_list_resize(come_string_list_t* a, uint32_t n);
 come_int_array_t* come_int_array_slice(come_int_array_t* a, uint32_t start, uint32_t end);
 come_byte_array_t* come_byte_array_slice(come_byte_array_t* a, uint32_t start, uint32_t end);
 come_string_list_t* come_string_list_slice(come_string_list_t* a, uint32_t start, uint32_t end);
+
+// Toolbox (Come_array.md section 4, COIL-116). The generic _g
+// functions work on any array with the shared header layout via
+// the element size; growing operations return the (possibly
+// moved) array, so callers assign the result back.
+void* come_array_append_g(void* a, size_t esz, const void* elem);
+void* come_array_insert_g(void* a, size_t esz, uint32_t idx, const void* elem);
+void* come_array_remove_g(void* a, size_t esz, uint32_t idx);
+void come_array_clear_g(void* a);
+void come_array_reverse_g(void* a, size_t esz);
+void come_array_set_g(void* a, size_t esz, const void* value);
+void* come_array_cpy_g(void* dst, size_t esz, const void* src);
+void* come_array_dup_g(void* ctx, const void* a, size_t esz);
+long come_array_index_g(const void* a, size_t esz, const void* elem);
+bool come_array_contains_g(const void* a, size_t esz, const void* elem);
+
+come_int_array_t* come_int_array_append(come_int_array_t* a, int elem);
+come_int_array_t* come_int_array_insert(come_int_array_t* a, uint32_t idx, int elem);
+void come_int_array_set(come_int_array_t* a, int value);
+come_int_array_t* come_int_array_cpy(come_int_array_t* dst, const come_int_array_t* src);
+come_int_array_t* come_int_array_dup(void* ctx, const come_int_array_t* a);
+long come_int_array_index(const come_int_array_t* a, int elem);
+bool come_int_array_contains(const come_int_array_t* a, int elem);
+void come_int_array_sort(come_int_array_t* a, int (*cmp)(int, int));
+
+come_byte_array_t* come_byte_array_append(come_byte_array_t* a, uint8_t elem);
+come_byte_array_t* come_byte_array_insert(come_byte_array_t* a, uint32_t idx, uint8_t elem);
+void come_byte_array_set(come_byte_array_t* a, uint8_t value);
+come_byte_array_t* come_byte_array_cpy(come_byte_array_t* dst, const come_byte_array_t* src);
+come_byte_array_t* come_byte_array_dup(void* ctx, const come_byte_array_t* a);
+long come_byte_array_index(const come_byte_array_t* a, uint8_t elem);
+bool come_byte_array_contains(const come_byte_array_t* a, uint8_t elem);
+void come_byte_array_sort(come_byte_array_t* a, int (*cmp)(int8_t, int8_t));
+
+come_string_list_t* come_string_list_append(come_string_list_t* a, struct come_string_t* elem);
+come_string_list_t* come_string_list_insert(come_string_list_t* a, uint32_t idx, struct come_string_t* elem);
+void come_string_list_set(come_string_list_t* a, struct come_string_t* value);
+come_string_list_t* come_string_list_cpy(come_string_list_t* dst, const come_string_list_t* src);
+come_string_list_t* come_string_list_dup(void* ctx, const come_string_list_t* a);
+long come_string_list_index(const come_string_list_t* a, const struct come_string_t* elem);
+bool come_string_list_contains(const come_string_list_t* a, const struct come_string_t* elem);
+void come_string_list_sort(come_string_list_t* a, int (*cmp)(struct come_string_t*, struct come_string_t*));
 
 // Generic Accessor
 // Out-of-bounds scratch slots (COIL-106): each call zeroes the slot

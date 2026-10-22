@@ -1,0 +1,95 @@
+module array_test
+import std
+
+// COIL-116: the full documented array toolbox (Come_array.md
+// section 4): contains, index, append, insert, remove, clear,
+// sort, reverse, set, cpy, slice, dup, type - plus std.qsort
+// from Come_std.md section 4.
+
+int asc(int a, int b) { return a - b }
+int desc(int a, int b) { return b - a }
+int basc(byte a, byte b) { return a - b }
+int scmp(string a, string b) { return a.cmp(b) }
+
+int main() {
+    int a[] = {3, 1, 2}
+    a.append(4)
+    if (a.length() != 4 || a[3] != 4) { std.out.printf("FAIL: append\n"); return 1 }
+    a.insert(0, 9)
+    if (a.length() != 5 || a[0] != 9 || a[1] != 3) { std.out.printf("FAIL: insert\n"); return 1 }
+    a.insert(5, 8)
+    if (a.length() != 6 || a[5] != 8) { std.out.printf("FAIL: insert at end\n"); return 1 }
+    a.remove(5)
+    a.remove(0)
+    if (a.length() != 4 || a[0] != 3) { std.out.printf("FAIL: remove\n"); return 1 }
+    ERR.clear()
+    a.insert(99, 0)
+    if (a.length() != 4 || !ERR.set()) { std.out.printf("FAIL: insert past end must set ERR and not grow\n"); return 1 }
+    if (!a.contains(2) || a.contains(7)) { std.out.printf("FAIL: contains\n"); return 1 }
+    if (a.index(2) != 2 || a.index(7) != -1) { std.out.printf("FAIL: index\n"); return 1 }
+    a.sort(asc)
+    if (a[0] != 1 || a[1] != 2 || a[2] != 3 || a[3] != 4) { std.out.printf("FAIL: sort asc\n"); return 1 }
+    a.sort(desc)
+    if (a[0] != 4 || a[3] != 1) { std.out.printf("FAIL: sort desc\n"); return 1 }
+    a.reverse()
+    if (a[0] != 1 || a[3] != 4) { std.out.printf("FAIL: reverse\n"); return 1 }
+    int sl[] = a.slice(1, 3)
+    if (sl.length() != 2 || sl[0] != 2 || sl[1] != 3) { std.out.printf("FAIL: slice\n"); return 1 }
+    int dp[] = a.dup()
+    dp[0] = 99
+    if (a[0] != 1) { std.out.printf("FAIL: dup must be independent\n"); return 1 }
+    int al[] = a.dup(0)
+    al[0] = 77
+    if (a[0] != 77) { std.out.printf("FAIL: dup(0) must share the buffer\n"); return 1 }
+    a.set(5)
+    if (a[0] != 5 || a[3] != 5) { std.out.printf("FAIL: set\n"); return 1 }
+    int b[] = {8, 6}
+    b.cpy(a)
+    if (b.length() != 4 || b[2] != 5) { std.out.printf("FAIL: cpy\n"); return 1 }
+    if (a.type() != "array") { std.out.printf("FAIL: type\n"); return 1 }
+    a.clear()
+    if (a.length() != 0) { std.out.printf("FAIL: clear\n"); return 1 }
+    a.append(1)
+    if (a.length() != 1 || a[0] != 1) { std.out.printf("FAIL: append after clear\n"); return 1 }
+
+    // Strings: search and sort by content.
+    string names[] = {"pear", "apple", "fig"}
+    if (!names.contains("fig") || names.contains("plum")) { std.out.printf("FAIL: string contains\n"); return 1 }
+    if (names.index("apple") != 1 || names.index("plum") != -1) { std.out.printf("FAIL: string index\n"); return 1 }
+    names.append("plum")
+    if (names.length() != 4 || names[3] != "plum") { std.out.printf("FAIL: string append\n"); return 1 }
+    names.sort(scmp)
+    if (names[0] != "apple" || names[3] != "plum") { std.out.printf("FAIL: string sort\n"); return 1 }
+    string ssl[] = names.slice(0, 2)
+    if (ssl.length() != 2 || ssl[1] != "fig") { std.out.printf("FAIL: string slice\n"); return 1 }
+
+    // Bytes + std.qsort.
+    byte raw[] = {5, 2, 9, 1}
+    raw.sort(basc)
+    if (raw[0] != 1 || raw[3] != 9) { std.out.printf("FAIL: byte sort\n"); return 1 }
+    byte qb[] = {4, 3, 8}
+    std.qsort(qb, basc)
+    if (qb[0] != 3 || qb[2] != 8) { std.out.printf("FAIL: std.qsort\n"); return 1 }
+
+    // Generic element types go through the same toolbox.
+    long big[] = {10000000000, 5}
+    big.append(7)
+    if (big.length() != 3 || big[2] != 7) { std.out.printf("FAIL: long append\n"); return 1 }
+    if (!big.contains(5) || big.index(7) != 2) { std.out.printf("FAIL: long contains/index\n"); return 1 }
+    big.reverse()
+    if (big[0] != 7 || big[2] != 10000000000) { std.out.printf("FAIL: long reverse\n"); return 1 }
+    big.set(1)
+    if (big[1] != 1) { std.out.printf("FAIL: long set\n"); return 1 }
+
+    // Fixed arrays: read-only toolbox works, growth is refused
+    // (the refusal itself is covered by tests/test_codegen.c).
+    int fixed[3] = {1, 2, 3}
+    fixed.reverse()
+    if (fixed[0] != 3 || fixed[2] != 1) { std.out.printf("FAIL: fixed reverse\n"); return 1 }
+    if (!fixed.contains(2) || fixed.index(2) != 1) { std.out.printf("FAIL: fixed contains/index\n"); return 1 }
+    fixed.set(0)
+    if (fixed[1] != 0) { std.out.printf("FAIL: fixed set\n"); return 1 }
+
+    std.out.printf("PASS: 07-toolbox\n")
+    return 0
+}

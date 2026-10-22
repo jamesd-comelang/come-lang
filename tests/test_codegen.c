@@ -643,5 +643,48 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-115 proc codegen test passed!\033[0m\n");
+
+    // COIL-116: array toolbox methods dispatch to the array
+    // runtime; growing a fixed array is a compile error.
+    {
+        const char* src116 =
+            "module m116\nimport std\n\n"
+            "int main() {\n"
+            "    int a[] = {3, 1, 2}\n"
+            "    a.append(4)\n"
+            "    bool has = a.contains(2)\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil116.co", src116)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-116: array toolbox program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of116 = fopen("build/tests/coil116.co.c", "r");
+        if (!of116) { printf("COIL-116: output file missing\n"); return 1; }
+        static char buf116[262144];
+        size_t blen116 = fread(buf116, 1, sizeof(buf116) - 1, of116);
+        fclose(of116);
+        buf116[blen116] = 0;
+        if (!strstr(buf116, "come_int_array_append")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-116: append must dispatch to the array runtime\033[0m\n");
+            return 1;
+        }
+        if (!strstr(buf116, "come_int_array_contains")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-116: contains must dispatch to the array runtime\033[0m\n");
+            return 1;
+        }
+        const char* bad116 =
+            "module m116b\nimport std\n\n"
+            "int main() {\n"
+            "    int fixed[3] = {1, 2, 3}\n"
+            "    fixed.append(4)\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil116bad.co", bad116)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-116: appending to a fixed array must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-116 array codegen test passed!\033[0m\n");
     return 0;
 }

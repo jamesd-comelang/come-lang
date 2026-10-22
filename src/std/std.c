@@ -521,6 +521,12 @@ come_string_t* come_std__tmpname(void) {
 int come_std__rand(void) { return rand(); }
 void come_std__srand(unsigned int seed) { srand(seed); }
 
+// std.qsort (Come_std.md section 4): sorts a byte array in
+// place with the caller's comparator.
+void come_std__qsort(come_byte_array_t* a, int (*cmp)(int8_t, int8_t)) {
+    come_byte_array_sort(a, cmp);
+}
+
 // ERR_t methods - following the name mangling convention: come_std__ERR_t__method
 int come_std__ERR_t__no(come_std__ERR_t* self) {
     // Set ERR.no to errno and return it

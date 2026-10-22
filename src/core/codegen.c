@@ -696,6 +696,202 @@ static void generate_block_children(FILE* f, ASTNode* block, int indent) {
         emit_file_closes_for(f, block, block->child_count, indent);
 }
 
+// Array toolbox dispatch (COIL-116, Come_array.md section 4).
+static int is_array_toolbox_method(const char* m) {
+    return strcmp(m, "contains") == 0 || strcmp(m, "index") == 0 ||
+           strcmp(m, "append") == 0 || strcmp(m, "insert") == 0 ||
+           strcmp(m, "remove") == 0 || strcmp(m, "clear") == 0 ||
+           strcmp(m, "sort") == 0 || strcmp(m, "reverse") == 0 ||
+           strcmp(m, "set") == 0 || strcmp(m, "cpy") == 0 ||
+           strcmp(m, "dup") == 0 || strcmp(m, "type") == 0 ||
+           strcmp(m, "owner") == 0 || strcmp(m, "chown") == 0;
+}
+
+static int is_array_receiver(ASTNode* receiver) {
+    if (!receiver || receiver->type != AST_IDENTIFIER) return 0;
+    const char* rt = get_local_variable_type(receiver->text);
+    return rt && strchr(rt, '[') != NULL;
+}
+
+// Emit one array toolbox call. The receiver is an array variable;
+// growing operations assign the (possibly moved) array back.
+static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const char* method) {
+    const char* rt = get_local_variable_type(receiver->text);
+    char elem[64];
+    const char* lb = rt ? strchr(rt, '[') : NULL;
+    size_t el = lb ? (size_t)(lb - rt) : 0;
+    if (el >= sizeof(elem)) el = sizeof(elem) - 1;
+    memcpy(elem, rt ? rt : "", el);
+    elem[el] = 0;
+    const char* prefix = NULL;
+    if (strcmp(elem, "int") == 0) prefix = "come_int_array_";
+    else if (strcmp(elem, "byte") == 0) prefix = "come_byte_array_";
+    else if (strcmp(elem, "string") == 0) prefix = "come_string_list_";
+    ASTNode* a1 = node->child_count > 1 ? node->children[1] : NULL;
+    ASTNode* a2 = node->child_count > 2 ? node->children[2] : NULL;
+
+    if (type_is_fixed_array(rt) &&
+        (strcmp(method, "append") == 0 || strcmp(method, "insert") == 0 ||
+         strcmp(method, "remove") == 0 || strcmp(method, "clear") == 0 ||
+         strcmp(method, "cpy") == 0)) {
+        codegen_error("'%s' would change the length of fixed array '%s' (%s): fixed arrays keep their length - declare a dynamic array (T[]) instead",
+                      method, receiver->text, rt);
+    }
+
+    if (strcmp(method, "type") == 0) {
+        fprintf(f, "come_string_new(COME_CTX, \"array\")");
+        return;
+    }
+    if (strcmp(method, "owner") == 0) {
+        fprintf(f, "COME_CTX");
+        return;
+    }
+    if (strcmp(method, "chown") == 0) {
+        fprintf(f, "mem_talloc_steal(");
+        if (a1) generate_expression(f, a1);
+        fprintf(f, ", ");
+        generate_expression(f, receiver);
+        fprintf(f, ")");
+        return;
+    }
+    if (strcmp(method, "dup") == 0) {
+        if (a1 && a1->type == AST_NUMBER && atoi(a1->text) == 0) {
+            generate_expression(f, receiver);   // dup(0) shares the buffer
+            return;
+        }
+        if (prefix) fprintf(f, "%sdup(COME_CTX, ", prefix);
+        else fprintf(f, "come_array_dup_g(COME_CTX, ");
+        generate_expression(f, receiver);
+        if (!prefix) {
+            fprintf(f, ", sizeof((");
+            generate_expression(f, receiver);
+            fprintf(f, ")->items[0])");
+        }
+        fprintf(f, ")");
+        return;
+    }
+    if (strcmp(method, "clear") == 0) {
+        fprintf(f, "come_array_clear_g(");
+        generate_expression(f, receiver);
+        fprintf(f, ")");
+        return;
+    }
+    if (strcmp(method, "reverse") == 0) {
+        fprintf(f, "come_array_reverse_g(");
+        generate_expression(f, receiver);
+        fprintf(f, ", sizeof((");
+        generate_expression(f, receiver);
+        fprintf(f, ")->items[0]))");
+        return;
+    }
+    if (strcmp(method, "remove") == 0) {
+        fprintf(f, "(");
+        generate_expression(f, receiver);
+        fprintf(f, " = come_array_remove_g(");
+        generate_expression(f, receiver);
+        fprintf(f, ", sizeof((");
+        generate_expression(f, receiver);
+        fprintf(f, ")->items[0]), ");
+        if (a1) generate_expression(f, a1);
+        fprintf(f, "))");
+        return;
+    }
+    if (strcmp(method, "cpy") == 0) {
+        fprintf(f, "(");
+        generate_expression(f, receiver);
+        if (prefix) fprintf(f, " = %scpy(", prefix);
+        else fprintf(f, " = come_array_cpy_g(");
+        generate_expression(f, receiver);
+        if (!prefix) {
+            fprintf(f, ", sizeof((");
+            generate_expression(f, receiver);
+            fprintf(f, ")->items[0])");
+        }
+        fprintf(f, ", ");
+        if (a1) generate_expression(f, a1);
+        fprintf(f, "))");
+        return;
+    }
+    if (strcmp(method, "sort") == 0) {
+        if (!prefix) {
+            codegen_error("sort(cmp) is implemented for int, byte and string arrays, not '%s'", rt);
+            fprintf(f, "0");
+            return;
+        }
+        if (!a1 || a1->type != AST_IDENTIFIER) {
+            codegen_error("sort expects a comparator function name (spec 8.3)");
+            fprintf(f, "0");
+            return;
+        }
+        const char* lt = get_local_variable_type(a1->text);
+        fprintf(f, "%ssort(", prefix);
+        generate_expression(f, receiver);
+        fprintf(f, ", ");
+        if (lt && is_fn_type(lt)) generate_expression(f, a1);
+        else if (find_module_fn_sig(a1->text)) fprintf(f, "come_%s__%s", current_module, a1->text);
+        else codegen_error("sort: '%s' is not a function of this module", a1->text);
+        fprintf(f, ")");
+        return;
+    }
+    // append / insert / set / contains / index carry an element.
+    ASTNode* elem_expr = (strcmp(method, "insert") == 0) ? a2 : a1;
+    if (prefix) {
+        if (strcmp(method, "append") == 0 || strcmp(method, "insert") == 0) {
+            fprintf(f, "(");
+            generate_expression(f, receiver);
+            fprintf(f, " = %s%s(", prefix, method);
+            generate_expression(f, receiver);
+            if (strcmp(method, "insert") == 0) {
+                fprintf(f, ", ");
+                if (a1) generate_expression(f, a1);
+            }
+            fprintf(f, ", ");
+            if (elem_expr) {
+                if (strcmp(elem, "string") == 0) emit_string_expr(f, elem_expr);
+                else generate_expression(f, elem_expr);
+            }
+            fprintf(f, "))");
+        } else {
+            fprintf(f, "%s%s(", prefix, method);
+            generate_expression(f, receiver);
+            fprintf(f, ", ");
+            if (elem_expr) {
+                if (strcmp(elem, "string") == 0) emit_string_expr(f, elem_expr);
+                else generate_expression(f, elem_expr);
+            }
+            fprintf(f, ")");
+        }
+        return;
+    }
+    // Generic element types: pass the element by address.
+    fprintf(f, "({ __typeof__((");
+    generate_expression(f, receiver);
+    fprintf(f, ")->items[0]) _ae = (");
+    if (elem_expr) generate_expression(f, elem_expr);
+    fprintf(f, "); ");
+    if (strcmp(method, "append") == 0) {
+        generate_expression(f, receiver);
+        fprintf(f, " = come_array_append_g(");
+        generate_expression(f, receiver);
+        fprintf(f, ", sizeof _ae, &_ae); })");
+    } else if (strcmp(method, "insert") == 0) {
+        generate_expression(f, receiver);
+        fprintf(f, " = come_array_insert_g(");
+        generate_expression(f, receiver);
+        fprintf(f, ", sizeof _ae, ");
+        if (a1) generate_expression(f, a1);
+        fprintf(f, ", &_ae); })");
+    } else if (strcmp(method, "set") == 0) {
+        fprintf(f, "come_array_set_g(");
+        generate_expression(f, receiver);
+        fprintf(f, ", sizeof _ae, &_ae); })");
+    } else {   // contains / index
+        fprintf(f, "come_array_%s_g(", method);
+        generate_expression(f, receiver);
+        fprintf(f, ", sizeof _ae, &_ae); })");
+    }
+}
+
 // Emit one map store statement (ends with a newline). Int values are
 // boxed in a cell owned by the current context; string values are
 // stored as the string object itself.
@@ -863,6 +1059,26 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  fprintf(f, "come_ERR_fatal(");
                  if (node->child_count > 1) emit_string_expr(f, node->children[1]);
                  else fprintf(f, "NULL");
+                 fprintf(f, ")");
+                 return;
+            }
+
+            // std.qsort(arr, cmp): byte-array sort with a named
+            // comparator (COIL-116, Come_std.md section 4).
+            if (strcmp(receiver->text, "std")==0 && strcmp(method, "qsort")==0) {
+                 ASTNode* arr_arg = node->child_count > 1 ? node->children[1] : NULL;
+                 ASTNode* cb = node->child_count > 2 ? node->children[2] : NULL;
+                 fprintf(f, "come_std__qsort(");
+                 if (arr_arg) generate_expression(f, arr_arg);
+                 fprintf(f, ", ");
+                 if (cb && cb->type == AST_IDENTIFIER) {
+                     const char* lt = get_local_variable_type(cb->text);
+                     if (lt && is_fn_type(lt)) generate_expression(f, cb);
+                     else if (find_module_fn_sig(cb->text)) fprintf(f, "come_%s__%s", current_module, cb->text);
+                     else codegen_error("std.qsort: '%s' is not a function of this module", cb->text);
+                 } else {
+                     codegen_error("std.qsort expects a comparator function name (spec 8.3)");
+                 }
                  fprintf(f, ")");
                  return;
             }
@@ -1173,6 +1389,13 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  // Enum values?
                  strcpy(c_func, "on"); 
              }
+        }
+        // Array toolbox (COIL-116): methods on an array-typed
+        // receiver go to the array runtime. Must precede the map
+        // branch below, which also claims remove.
+        else if (is_array_toolbox_method(method) && is_array_receiver(receiver)) {
+             emit_array_method(f, node, receiver, method);
+             return;
         }
         // Detect Map methods (put, get, remove only - not len which is shared with string)
         else if (strcmp(method, "put") == 0 || strcmp(method, "get") == 0 || strcmp(method, "remove") == 0) {
@@ -2663,6 +2886,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "come_string_t* come_std__tmpname(void);\n");
         fprintf(f, "int come_std__rand(void);\n");
         fprintf(f, "void come_std__srand(unsigned int);\n");
+        fprintf(f, "void come_std__qsort(come_byte_array_t*, int (*)(int8_t, int8_t));\n");
         fprintf(f, "void come_std__Proc__abort(void*);\n");
         fprintf(f, "void come_std__Proc__exit(void*, int);\n");
         fprintf(f, "void come_std__Proc__atexit(void*, void (*)(void));\n");
