@@ -46,6 +46,13 @@ sed -e "s|\${PKG_NAME}|$PKG_NAME|g" \
     packaging/debian/control > "$PKG_DIR/DEBIAN/control"
 
 # 4. Build the package
+# dpkg-deb requires the control directory to be 0755-0775;
+# a checkout under a setgid or shared directory can leave
+# it wider (2770) and the build fails (COIL-130).
+chmod 0755 "$PKG_DIR/DEBIAN"
+find "$PKG_DIR" -type d -exec chmod 0755 {} +
+find "$PKG_DIR" -type f -exec chmod 0644 {} +
+chmod 0755 "$PKG_DIR/usr/local/comelang/bin/come"
 echo "Building .deb package..."
 dpkg-deb --build "$PKG_DIR" "$DEB_NAME"
 
