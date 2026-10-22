@@ -205,6 +205,64 @@ int main() {
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
 
+    // COIL-107: narrowing stores are compile errors; lossless
+    // widening and explicit T(value) casts generate fine.
+    const char* ok107 =
+        "module main\nimport std\n\nint main() {\n"
+        "    long big = 1000\n"
+        "    int x = int(big)\n"
+        "    int i = 42\n"
+        "    long l = i\n"
+        "    double d = i\n"
+        "    float f = 2.5\n"
+        "    double d2 = f\n"
+        "    byte b = 100\n"
+        "    byte letter = 'A'\n"
+        "    ubyte u = 200\n"
+        "    uint ui = 7\n"
+        "    long l2 = ui\n"
+        "    return x\n}\n";
+    if (!gen_ok("build/tests/coil107_ok.co", ok107)) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-107: widening/cast/literal program must generate\033[0m\n");
+        return 1;
+    }
+    const char* bad107a =
+        "module main\nimport std\n\nint main() {\n"
+        "    long big = 1000\n    int x = big\n    return x\n}\n";
+    if (!gen_fail("build/tests/coil107_a.co", bad107a)) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-107: long -> int declaration must be a compile error\033[0m\n");
+        return 1;
+    }
+    const char* bad107b =
+        "module main\nimport std\n\nint main() {\n"
+        "    double d = 1.5\n    int j = 0\n    j = d\n    return j\n}\n";
+    if (!gen_fail("build/tests/coil107_b.co", bad107b)) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-107: double -> int assignment must be a compile error\033[0m\n");
+        return 1;
+    }
+    const char* bad107c =
+        "module main\nimport std\n\nint main() {\n"
+        "    long big = 5\n    double d = big\n    return 0\n}\n";
+    if (!gen_fail("build/tests/coil107_c.co", bad107c)) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-107: long -> double must be a compile error (not exact past 2^53)\033[0m\n");
+        return 1;
+    }
+    const char* bad107d =
+        "module main\nimport std\n\nint main() {\n"
+        "    byte b = 200\n    return 0\n}\n";
+    if (!gen_fail("build/tests/coil107_d.co", bad107d)) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-107: literal 200 must not fit a (signed) byte\033[0m\n");
+        return 1;
+    }
+    const char* bad107e =
+        "module main\nimport std\n\nint main() {\n"
+        "    int i = 42\n    byte b = i\n    return 0\n}\n";
+    if (!gen_fail("build/tests/coil107_e.co", bad107e)) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-107: int variable -> byte must be a compile error\033[0m\n");
+        return 1;
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-107 narrowing test passed!\033[0m\n");
+
     // COIL-105: ERR.set() must generate the predicate form and
     // ERR.fatal(msg) the runtime halt call.
     const char* p105 = "build/tests/coil105_err.co";

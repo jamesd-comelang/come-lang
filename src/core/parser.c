@@ -259,6 +259,24 @@ static ASTNode* parse_primary() {
         }
     }
 
+    if (!node && is_type_token(t->type) && pos + 1 < tokens.count &&
+        tokens.tokens[pos + 1].type == TOKEN_LPAREN) {
+        // Functional cast: T(value) - spec 6.8's explicit conversion.
+        // (A bare type token in expression position matched no atom
+        // branch and used to produce a NULL node.)
+        char type_name[64];
+        strcpy(type_name, t->text);
+        advance(); // type
+        advance(); // (
+        ASTNode* cast = ast_new(AST_CAST);
+        ASTNode* tnode = ast_new(AST_IDENTIFIER);
+        strcpy(tnode->text, type_name);
+        cast->children[cast->child_count++] = tnode;
+        cast->children[cast->child_count++] = parse_expression();
+        expect(TOKEN_RPAREN);
+        node = cast;
+    }
+
     if (!node) return NULL;
 
     // 2. Postfix Loop (Member access, Call, Array, PostInc/Dec)

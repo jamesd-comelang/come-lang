@@ -1,0 +1,78 @@
+module core_test
+import std
+
+// COIL-107: no implicit narrowing (spec 6.8). Lossless widening is
+// implicit; narrowing needs the explicit T(value) cast. The
+// rejection cases are compile errors asserted by the C suite; this
+// file covers the legal side at runtime.
+
+int main() {
+    // The spec's own widening examples.
+    int i = 42
+    long l = i
+    double d = i
+    if (l != 42 || d != 42.0) {
+        std.out.printf("FAIL: int must widen to long and double losslessly\n")
+        return 1
+    }
+
+    // float -> double is lossless.
+    float f = 2.5
+    double d2 = f
+    if (d2 != 2.5) {
+        std.out.printf("FAIL: float must widen to double\n")
+        return 1
+    }
+
+    // Narrowing through an explicit cast: the value truncates,
+    // exactly as written.
+    long big = 1000
+    int x = int(big)
+    double frac = 1.9
+    int j = int(frac)
+    if (x != 1000 || j != 1) {
+        std.out.printf("FAIL: explicit casts must convert (got %d, %d)\n", x, j)
+        return 1
+    }
+
+    // Literals are allowed where their value fits the target.
+    byte b = 100
+    byte bn = -12
+    ubyte u = 200
+    if (b != 100 || bn != -12 || u != 200) {
+        std.out.printf("FAIL: fitting literals must be accepted\n")
+        return 1
+    }
+
+    // A character literal is a wchar value; it fits a byte when the
+    // code point is small.
+    byte letter = 'A'
+    wchar w = 'A'
+    if (letter != 65 || w != 65) {
+        std.out.printf("FAIL: character literals must keep their value\n")
+        return 1
+    }
+
+    // Assignments follow the same rule as declarations.
+    long l2 = 0
+    l2 = i
+    int x2 = 0
+    x2 = int(big)
+    if (l2 != 42 || x2 != 1000) {
+        std.out.printf("FAIL: assignments must follow the widening/cast rules\n")
+        return 1
+    }
+
+    // Element stores follow the rule too: a byte variable into a
+    // byte element is fine, and a fitting literal is fine.
+    byte barr[] = {0, 0}
+    barr[0] = b
+    barr[1] = 7
+    if (barr[0] != 100 || barr[1] != 7) {
+        std.out.printf("FAIL: element stores must accept fitting values\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 08-numeric\n")
+    return 0
+}

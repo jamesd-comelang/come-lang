@@ -229,6 +229,169 @@ static void map_combo_error(const char* k, const char* v) {
 // Coarse static type of an expression for map checks: "string", "int",
 // an identifier's declared type, or "" when not statically known
 // (unchecked - method calls, subexpressions, ...).
+static void expr_coarse_type(ASTNode* e, char* out, size_t n);
+
+// ---- COIL-107: no implicit narrowing (spec 6.8) ----
+// The numeric family with kind (0 signed, 1 unsigned, 2 float) and
+// width. wchar is int32_t (come_types.h); byte is int8_t.
+typedef struct { const char* name; int kind; int bits; } NumInfo;
+static const NumInfo NUM_TYPES[] = {
+    {"byte", 0, 8}, {"ubyte", 1, 8}, {"short", 0, 16}, {"ushort", 1, 16},
+    {"int", 0, 32}, {"wchar", 0, 32}, {"uint", 1, 32},
+    {"long", 0, 64}, {"ulong", 1, 64}, {"float", 2, 32}, {"double", 2, 64},
+};
+static const NumInfo* num_info(const char* name) {
+    if (!name) return NULL;
+    for (size_t i = 0; i < sizeof(NUM_TYPES) / sizeof(NUM_TYPES[0]); i++)
+        if (strcmp(NUM_TYPES[i].name, name) == 0) return &NUM_TYPES[i];
+    return NULL;
+}
+// Can every value of `from` be represented exactly in `to`?
+static int conversion_is_lossless(const NumInfo* from, const NumInfo* to) {
+    if (from->kind == 2 && to->kind == 2) return to->bits >= from->bits;
+    if (from->kind == 2) return 0; // float -> integer can drop a fraction
+    if (to->kind == 2) {
+        int mantissa = (to->bits == 32) ? 24 : 53;
+        int valbits = (from->kind == 0) ? from->bits - 1 : from->bits;
+        return valbits <= mantissa;
+    }
+    if (to->kind == 0) // to signed
+        return from->kind == 0 ? to->bits >= from->bits : to->bits > from->bits;
+    // to unsigned: the source must be unsigned and fit
+    return from->kind == 1 && to->bits >= from->bits;
+}
+// Does this literal's value fit the target type with nothing lost?
+static int literal_fits(const char* text, const NumInfo* to) {
+    int is_hex = text[0] == '0' && (text[1] == 'x' || text[1] == 'X');
+    int is_float = 0;
+    if (!is_hex)
+        for (const char* p = text; *p; p++)
+            if (*p == '.' || *p == 'e' || *p == 'E') { is_float = 1; break; }
+    if (is_float) {
+        if (to->kind == 2) return 1; // float literal -> float/double
+        double d = strtod(text, NULL);
+        if (d != (double)(long long)d) return 0; // a fraction would be lost
+        char buf[40];
+        snprintf(buf, sizeof(buf), "%lld", (long long)d);
+        return literal_fits(buf, to); // range-check the integral value
+    }
+    if (to->kind == 2) {
+        // integer literal -> float/double: an exact round-trip is required
+        long long v = strtoll(text, NULL, 0);
+        if (to->bits == 32) return (long long)(float)v == v;
+        return v >= -9007199254740992LL && v <= 9007199254740992LL &&
+               (long long)(double)v == v;
+    }
+    if (to->kind == 1) {
+        if (text[0] == '-') return 0; // a negative never fits unsigned
+        unsigned long long v = strtoull(text, NULL, 0);
+        if (to->bits == 8) return v <= 255ULL;
+        if (to->bits == 16) return v <= 65535ULL;
+        if (to->bits == 32) return v <= 4294967295ULL;
+        return 1;
+    }
+    long long v = strtoll(text, NULL, 0);
+    if (to->bits == 8) return v >= -128 && v <= 127;
+    if (to->bits == 16) return v >= -32768 && v <= 32767;
+    if (to->bits == 32) return v >= -2147483647LL - 1 && v <= 2147483647LL;
+    return 1;
+}
+// Decode a character literal's text ('A', '\n', a UTF-8 character)
+// to its code point, or -1 when the form is not recognized.
+static long decode_char_literal(const char* text) {
+    if (!text || text[0] != '\'') return -1;
+    const unsigned char* p = (const unsigned char*)text + 1;
+    if (*p == '\\') {
+        switch (p[1]) {
+            case 'n': return '\n';
+            case 't': return '\t';
+            case 'r': return '\r';
+            case '0': return 0;
+            case '\\': return '\\';
+            case '\'': return '\'';
+            default: return -1;
+        }
+    }
+    if (*p < 0x80) return *p;
+    // UTF-8 multibyte
+    long cp;
+    int extra;
+    if ((*p & 0xE0) == 0xC0) { cp = *p & 0x1F; extra = 1; }
+    else if ((*p & 0xF0) == 0xE0) { cp = *p & 0x0F; extra = 2; }
+    else if ((*p & 0xF8) == 0xF0) { cp = *p & 0x07; extra = 3; }
+    else return -1;
+    for (int i = 0; i < extra; i++) {
+        p++;
+        if ((*p & 0xC0) != 0x80) return -1;
+        cp = (cp << 6) | (*p & 0x3F);
+    }
+    return cp;
+}
+// Reject a store (declaration init or assignment) that would narrow
+// implicitly. Explicit casts (AST_CAST) are the sanctioned path and
+// pass; expressions of unknown static type are not checked.
+static void check_numeric_store(const char* target_type, ASTNode* expr,
+                                const char* target_name) {
+    const NumInfo* to = num_info(target_type);
+    if (!to || !expr) return;
+    if (expr->type == AST_CAST) return;
+    // A literal, possibly negated: allowed iff its value fits.
+    ASTNode* lit = expr;
+    int neg = 0;
+    if (lit->type == AST_UNARY_OP && strcmp(lit->text, "-") == 0 &&
+        lit->child_count == 1) { neg = 1; lit = lit->children[0]; }
+    if (lit->type == AST_NUMBER && lit->text[0] == '\'') {
+        // A character literal is a wchar value with a known code
+        // point: it is allowed iff that value fits the target.
+        long cp = decode_char_literal(lit->text);
+        if (cp >= 0) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%ld", cp);
+            if (!literal_fits(buf, to))
+                codegen_error("character literal %s does not fit in %s '%s' without loss: use an explicit cast if intended",
+                              lit->text, target_type, target_name);
+            return;
+        }
+        // Unrecognized form: fall through to the type check.
+    }
+    if (lit->type == AST_NUMBER && lit->text[0] != '\'') {
+        char buf[80];
+        snprintf(buf, sizeof(buf), "%s%.60s", neg ? "-" : "", lit->text);
+        if (!literal_fits(buf, to))
+            codegen_error("numeric literal %s does not fit in %s '%s' without loss: use an explicit cast if intended",
+                          buf, target_type, target_name);
+        return;
+    }
+    char from[300];
+    expr_coarse_type(expr, from, sizeof(from));
+    const NumInfo* fi = num_info(from);
+    if (!fi) return; // unknown or non-numeric: not checked
+    if (!conversion_is_lossless(fi, to))
+        codegen_error("implicit narrowing: cannot store %s in %s '%s' - use an explicit cast %s(value)",
+                      from, target_type, target_name, target_type);
+}
+// The store check for an assignment node (identifier or array
+// element target).
+static void check_assign_store(ASTNode* assign) {
+    if (!assign || assign->child_count < 2) return;
+    ASTNode* lhs = assign->children[0];
+    ASTNode* rhs = assign->children[1];
+    if (lhs->type == AST_IDENTIFIER) {
+        const char* lt = get_local_variable_type(lhs->text);
+        if (lt) check_numeric_store(lt, rhs, lhs->text);
+    } else if (lhs->type == AST_ARRAY_ACCESS && lhs->child_count >= 1 &&
+               lhs->children[0]->type == AST_IDENTIFIER) {
+        const char* bt = get_local_variable_type(lhs->children[0]->text);
+        if (bt) {
+            char elem[64];
+            snprintf(elem, sizeof(elem), "%s", bt);
+            char* br = strchr(elem, '[');
+            if (br) *br = '\0';
+            check_numeric_store(elem, rhs, lhs->children[0]->text);
+        }
+    }
+}
+
 static void expr_coarse_type(ASTNode* e, char* out, size_t n) {
     out[0] = 0;
     if (!e) return;
@@ -360,6 +523,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
             fprintf(f, ")");
         }
     } else if (node->type == AST_ASSIGN) {
+        check_assign_store(node); // COIL-107
         if (node->children[0]->type == AST_IDENTIFIER && node->children[1]->type == AST_IDENTIFIER) {
             const char* lt = get_local_variable_type(node->children[0]->text);
             const char* rt = get_local_variable_type(node->children[1]->text);
@@ -1350,6 +1514,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             const char* src_type = get_local_variable_type(init_expr->text);
             if (src_type) check_array_transfer("initialize", node->text, type_node->text, init_expr->text, src_type);
         }
+        if (init_expr) check_numeric_store(type_node->text, init_expr, node->text); // COIL-107
         
         emit_indent(f, indent);
             if (strcmp(type_node->text, "string") == 0) {
@@ -1709,6 +1874,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_ASSIGN: {
             emit_line_directive(f, node);  // Emit #line for assignment
             emit_indent(f, indent);
+            check_assign_store(node); // COIL-107
             // Typed map index write: m[key] = value (COIL-102)
             int map_write = 0;
             if (strcmp(node->text, "=") == 0 && node->children[0]->type == AST_ARRAY_ACCESS) {

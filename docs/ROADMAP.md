@@ -39,7 +39,7 @@ semantics stories build on the final memory layer.
 | COIL-104 | Structs match C layouts exactly, so packed formats and FFI just work | §6.2 | M | — | Layout matches the equivalent C struct (verified against a C reference in tests) | ☑ |
 | COIL-105 | Errors are one obvious check away, and a fatal exit can't be compiled out | §12, Come_std | S | — | `ERR.set()` usable in conditions; `ERR.fatal` halts in all build modes | ☑ |
 | COIL-106 | Out-of-bounds access reports an error instead of crashing or corrupting memory | Come_array §2, §6.4–6.5 | S | COIL-105 | OOB test cases behave per doc, no crashes | ☑ |
-| COIL-107 | Numbers never lose precision silently | §6.8 | M | — | Narrowing assignments are compile errors; lossless widening still implicit | ☐ |
+| COIL-107 | Numbers never lose precision silently | §6.8 | M | — | Narrowing assignments are compile errors; lossless widening still implicit | ☑ |
 | COIL-108 | A module can grow across files in its directory with no import changes | §3.2, §3.5 | L | — | A 2-file module compiles and runs with correct init/exit order; both-layouts-present is an error | ☐ |
 | COIL-109 | Callbacks and comparators are passed without inventing new type syntax | §8.3 | M | — | `sort` / `qsort` / `atexit` call sites compile with inline declarators | ☐ |
 | COIL-110 | String length means characters, and strings never change under your feet | §6.5, Come_string | M | COIL-106, COIL-132 | String mutation attempts are compile errors; string_demo passes with `.length()` | ☐ |
