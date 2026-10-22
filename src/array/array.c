@@ -11,14 +11,14 @@
 int* come_oob_slot_int(void) {
     static int slot;
     slot = 0;
-    errno = ERANGE;
+    come_ERR_set(ERANGE, "array index out of bounds");
     return &slot;
 }
 
 uint8_t* come_oob_slot_byte(void) {
     static uint8_t slot;
     slot = 0;
-    errno = ERANGE;
+    come_ERR_set(ERANGE, "array index out of bounds");
     return &slot;
 }
 
@@ -26,14 +26,14 @@ struct come_string_t** come_oob_slot_string(void) {
     static struct come_string_t* slot;
     static struct { uint32_t size; uint32_t count; char data[1]; } empty = { 9, 0, { 0 } };
     slot = (struct come_string_t*)&empty;
-    errno = ERANGE;
+    come_ERR_set(ERANGE, "array index out of bounds");
     return &slot;
 }
 
 void* come_oob_slot_bytes(void) {
     static uint8_t slot[4096];
     memset(slot, 0, sizeof(slot));
-    errno = ERANGE;
+    come_ERR_set(ERANGE, "array index out of bounds");
     return slot;
 }
 
@@ -164,7 +164,7 @@ void* come_array_append_g(void* a, size_t esz, const void* elem) {
 void* come_array_insert_g(void* a, size_t esz, uint32_t idx, const void* elem) {
     if (!elem) return a;
     uint32_t cnt = a ? arr_hdr(a)[1] : 0;
-    if (idx > cnt) { errno = ERANGE; return a; }
+    if (idx > cnt) { come_ERR_set(ERANGE, "array index out of bounds"); return a; }
     a = arr_grow(a, esz, cnt + 1);
     if (!a) return NULL;
     char* items = arr_items(a);
@@ -177,7 +177,7 @@ void* come_array_insert_g(void* a, size_t esz, uint32_t idx, const void* elem) {
 void* come_array_remove_g(void* a, size_t esz, uint32_t idx) {
     if (!a) return NULL;
     uint32_t cnt = arr_hdr(a)[1];
-    if (idx >= cnt) { errno = ERANGE; return a; }
+    if (idx >= cnt) { come_ERR_set(ERANGE, "array index out of bounds"); return a; }
     char* items = arr_items(a);
     memmove(items + idx * esz, items + (idx + 1) * esz, (cnt - idx - 1) * esz);
     arr_hdr(a)[1] = cnt - 1;

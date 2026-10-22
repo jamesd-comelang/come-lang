@@ -68,6 +68,10 @@ static int call_vscanf(come_std__FILE_t* fp, come_string_t* fmt, ...) {
     return r;
 }
 
+void come_ERR_set(int, const char*);
+int come_ERR_no(void);
+come_string_t* come_ERR_str(void);
+void come_ERR_clear(void);
 void come_std__Proc__abort(void*);
 void come_std__Proc__exit(void*, int);
 void come_std__Proc__atexit(void*, void (*)(void));
@@ -219,6 +223,27 @@ int main() {
     if (of) { size_t n = fread(order, 1, sizeof(order) - 1, of); order[n] = 0; fclose(of); }
     CHECK(strcmp(order, "21") == 0, "atexit callbacks run in reverse registration order");
     remove(g_order_path);
+
+    // COIL-118: every runtime error arrives with a readable
+    // message. The specific message wins over strerror; with no
+    // specific message the text is still never empty.
+    come_ERR_set(ERANGE, "array index out of bounds");
+    come_string_t* m1 = come_ERR_str();
+    CHECK(m1 && strcmp(m1->data, "array index out of bounds") == 0, "ERR.str prefers the specific message");
+    come_ERR_set(EINVAL, NULL);
+    come_string_t* m2 = come_ERR_str();
+    CHECK(m2 && m2->count > 0, "ERR.str falls back to strerror, never empty");
+    come_ERR_clear();
+    CHECK(come_ERR_no() == 0, "ERR.clear resets the code");
+    come_string_t* m3 = come_ERR_str();
+    CHECK(m3 && m3->count > 0, "ERR.str with no error is still readable");
+    // I/O on an unopened FILE reports 'file is not open'.
+    come_std__FILE_t uf = {0};
+    errno = 0;
+    CHECK(come_std__FILE__getc(&uf) == -1, "getc on unopened FILE fails");
+    come_string_t* m4 = come_ERR_str();
+    CHECK(m4 && strcmp(m4->data, "file is not open") == 0, "unopened FILE message");
+    come_ERR_clear();
 
     free(buf); free(sbuf); free(rb);
     if (failures) { printf("test_std: %d FAILURES\n", failures); return 1; }

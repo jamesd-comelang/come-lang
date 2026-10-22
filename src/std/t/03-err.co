@@ -1,0 +1,54 @@
+// COIL-118: every runtime error arrives with a readable
+// message (spec 12). Each failure below must set ERR, and
+// ERR.str() must say what actually happened - not a generic
+// strerror text that names the wrong thing.
+module main
+import std
+int check(string what, string want) {
+    if (!ERR.set()) { std.out.printf("FAIL %s: ERR not set\n", what); return 1 }
+    string msg = ERR.str()
+    if (msg.length() == 0) { std.out.printf("FAIL %s: empty message\n", what); return 1 }
+    if (msg.cmp(want) != 0) { std.out.printf("FAIL %s: got '%s', want '%s'\n", what, msg, want); return 1 }
+    return 0
+}
+int main() {
+    int a[] = {1, 2, 3}
+    ERR.clear()
+    int x = a[10]
+    if (check("array oob", "array index out of bounds") != 0) { return 1 }
+    string s = "abc"
+    ERR.clear()
+    wchar c = s[9]
+    if (check("string oob", "string index out of bounds") != 0) { return 1 }
+    map{string, int} m = {"a": 1}
+    ERR.clear()
+    int v = m["zzz"]
+    if (check("map key", "map key not found") != 0) { return 1 }
+    ERR.clear()
+    long n = "abc".tol()
+    if (check("tol", "string is not a number") != 0) { return 1 }
+    ERR.clear()
+    bool r = "x".regex("[")
+    if (r) { std.out.printf("FAIL regex must not match\n"); return 1 }
+    if (check("regex", "invalid regular expression") != 0) { return 1 }
+    FILE f
+    ERR.clear()
+    wchar g = f.getc()
+    if (g != -1) { std.out.printf("FAIL unopened getc\n"); return 1 }
+    if (check("file not open", "file is not open") != 0) { return 1 }
+    ERR.clear()
+    bool ok = f.open("/nonexistent-dir-xyz/nope.txt", "r")
+    if (ok) { std.out.printf("FAIL open must fail\n"); return 1 }
+    if (!ERR.set() || ERR.str().length() == 0) { std.out.printf("FAIL open message\n"); return 1 }
+    ERR.clear()
+    string miss = std.proc.getenv("COME_NO_SUCH_VAR_118")
+    if (check("getenv", "environment variable not set") != 0) { return 1 }
+    ERR.clear()
+    a.insert(99, 0)
+    if (check("insert oob", "array index out of bounds") != 0) { return 1 }
+    ERR.clear()
+    if (ERR.set()) { std.out.printf("FAIL clear must clear\n"); return 1 }
+    if (ERR.str().length() == 0) { std.out.printf("FAIL str after clear must not be empty\n"); return 1 }
+    std.out.printf("PASS: 03-err\n")
+    return 0
+}

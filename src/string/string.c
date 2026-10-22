@@ -426,7 +426,7 @@ come_string_t* come_string_substr(const come_string_t* a, size_t start, size_t e
 bool come_string_regex(const come_string_t* a, const char* pattern) {
     if (!a || !pattern) return false;
     regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB) != 0) return false;
+    if (regcomp(&regex, pattern, REG_EXTENDED | REG_NOSUB) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return false; }
     
     int ret = regexec(&regex, a->data, 0, NULL, 0);
     regfree(&regex);
@@ -437,7 +437,7 @@ come_string_list_t* come_string_regex_split(const come_string_t* a, const char* 
     if (!a || !pattern) return NULL;
     
     regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) return NULL;
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return NULL; }
 
     // First pass: count
     size_t count = 1;
@@ -485,7 +485,7 @@ come_string_list_t* come_string_regex_groups(const come_string_t* a, const char*
     if (!a || !pattern) return NULL;
     
     regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) return NULL;
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return NULL; }
 
     size_t nmatch = regex.re_nsub + 1; // 0 is full match, 1..n are groups
     regmatch_t* pmatch_vals = malloc(sizeof(regmatch_t) * nmatch);
@@ -519,7 +519,7 @@ come_string_t* come_string_regex_replace(const come_string_t* a, const char* pat
     if (!a || !pattern) return NULL;
     
     regex_t regex;
-    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) return NULL;
+    if (regcomp(&regex, pattern, REG_EXTENDED) != 0) { come_ERR_set(EINVAL, "invalid regular expression"); return NULL; }
 
     // We need to build the new string.
     // Since we don't know the size, we might need a dynamic buffer or two passes.
@@ -645,7 +645,7 @@ come_byte_array_t* come_string_to_byte_array(const come_string_t* a) {
 // (errno = ERANGE) and yields 0, the zero wchar.
 int32_t come_string_wchar_at_e(const come_string_t* a, long index) {
     if (!a || index < 0) {
-        errno = ERANGE;
+        come_ERR_set(ERANGE, "string index out of bounds");
         return 0;
     }
     const unsigned char* p = (const unsigned char*)a->data;
@@ -665,7 +665,7 @@ int32_t come_string_wchar_at_e(const come_string_t* a, long index) {
         p = q;
         current++;
     }
-    errno = ERANGE;
+    come_ERR_set(ERANGE, "string index out of bounds");
     return 0;
 }
 
@@ -675,7 +675,7 @@ int32_t come_string_wchar_at_e(const come_string_t* a, long index) {
 come_string_t* come_string_at_e(const come_string_t* a, size_t index) {
     come_string_t* r = come_string_at(a, index);
     if (!r) {
-        errno = ERANGE;
+        come_ERR_set(ERANGE, "string index out of bounds");
         return come_string_new_len(a ? (void*)a : NULL, "", 0);
     }
     return r;
@@ -720,7 +720,7 @@ long come_string_tol_base(const come_string_t* a, int base) {
     char* end = NULL;
     errno = 0;
     long v = strtoll(a->data, &end, base);
-    if (end == a->data) errno = EINVAL;
+    if (end == a->data) come_ERR_set(EINVAL, "string is not a number");
     return v;
 }
 
@@ -729,7 +729,7 @@ double come_string_tod(const come_string_t* a) {
     char* end = NULL;
     errno = 0;
     double v = strtod(a->data, &end);
-    if (end == a->data) errno = EINVAL;
+    if (end == a->data) come_ERR_set(EINVAL, "string is not a number");
     return v;
 }
 

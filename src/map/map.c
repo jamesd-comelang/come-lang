@@ -148,13 +148,13 @@ void come_map_free(come_map_t* m) {
 
 void* come_map_get_e(come_map_t* m, string key) {
     void* v = come_map_get(m, key);
-    if (!v) errno = ENOENT;
+    if (!v) come_ERR_set(ENOENT, "map key not found");
     return v;
 }
 
 int come_map_remove_e(come_map_t* m, string key) {
     if (!come_map_get(m, key)) {
-        errno = ENOENT;
+        come_ERR_set(ENOENT, "map key not found");
         return 0;
     }
     come_map_remove(m, key);

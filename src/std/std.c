@@ -11,6 +11,7 @@
 #include "come_string.h"
 #include "come_array.h"
 #include "come_std.h"
+#include "mem/talloc.h"
 
 /* COME std module - FILE and related types (Come_std.md).
  * COIL-114: every FILE row of the Come_std tables is implemented
@@ -134,6 +135,14 @@ void come_std__FILE__exit(come_std__FILE_t* self) {
     }
 }
 
+
+// I/O on a FILE that is not open is a reportable failure
+// (COIL-118): EBADF with a message that says what happened.
+static bool std_file_ready(come_std__FILE_t* self) {
+    if (!self || !self->fp) { come_ERR_set(EBADF, "file is not open"); return false; }
+    return true;
+}
+
 bool come_std__FILE__open(come_std__FILE_t* self, come_string_t* path, come_string_t* mode) {
     if (!self || !path || !mode) return false;
     if (self->fp && self->fp != stdin && self->fp != stdout && self->fp != stderr) {
@@ -197,7 +206,7 @@ int come_std__FILE__fileno(come_std__FILE_t* self) {
 // %t/%T expects bool (converted to "true"/"false")
 // %c expects wchar (converted to %lc)
 int come_std__FILE__printf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
-    if (!self || !self->fp || !fmt_s) return -1;
+    if (!fmt_s || !std_file_ready(self)) return -1;
     const char* fmt = come_string_to_cstr(fmt_s);
 
     // Convert format string
@@ -282,12 +291,12 @@ int come_std__FILE__printf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
 }
 
 int come_std__FILE__vprintf(come_std__FILE_t* self, come_string_t* fmt_s, va_list ap) {
-    if (!self || !self->fp || !fmt_s) return -1;
+    if (!fmt_s || !std_file_ready(self)) return -1;
     return vfprintf(self->fp, come_string_to_cstr(fmt_s), ap);
 }
 
 int come_std__FILE__scanf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
-    if (!self || !self->fp || !fmt_s) return EOF;
+    if (!fmt_s || !std_file_ready(self)) return EOF;
     va_list ap;
     va_start(ap, fmt_s);
     int r = vfscanf(self->fp, come_string_to_cstr(fmt_s), ap);
@@ -296,12 +305,12 @@ int come_std__FILE__scanf(come_std__FILE_t* self, come_string_t* fmt_s, ...) {
 }
 
 int come_std__FILE__vscanf(come_std__FILE_t* self, come_string_t* fmt_s, va_list ap) {
-    if (!self || !self->fp || !fmt_s) return EOF;
+    if (!fmt_s || !std_file_ready(self)) return EOF;
     return vfscanf(self->fp, come_string_to_cstr(fmt_s), ap);
 }
 
 long come_std__FILE__read(come_std__FILE_t* self, come_byte_array_t* buf, long n) {
-    if (!self || !self->fp || !buf || n < 0) return -1;
+    if (!buf || n < 0 || !std_file_ready(self)) return -1;
     long want = n;
     if ((uint32_t)want > buf->count) want = buf->count;
     if (want == 0) return 0;
@@ -309,7 +318,7 @@ long come_std__FILE__read(come_std__FILE_t* self, come_byte_array_t* buf, long n
 }
 
 long come_std__FILE__write(come_std__FILE_t* self, come_byte_array_t* buf, long n) {
-    if (!self || !self->fp || !buf || n < 0) return -1;
+    if (!buf || n < 0 || !std_file_ready(self)) return -1;
     long want = n;
     if ((uint32_t)want > buf->count) want = buf->count;
     if (want == 0) return 0;
@@ -320,7 +329,7 @@ long come_std__FILE__write(come_std__FILE_t* self, come_byte_array_t* buf, long 
 // stream: the UTF-8 encoding is done here, not via fgetwc, whose
 // behavior after byte I/O depends on the C locale.
 int32_t come_std__FILE__getc(come_std__FILE_t* self) {
-    if (!self || !self->fp) return -1;
+    if (!std_file_ready(self)) return -1;
     int b = fgetc(self->fp);
     if (b == EOF) return -1;
     if (b < 0x80) return b;
@@ -359,7 +368,7 @@ void come_std__FILE__putc(come_std__FILE_t* self, int32_t c) {
 }
 
 come_string_t* come_std__FILE__gets(come_std__FILE_t* self) {
-    if (!self || !self->fp) return come_string_new(NULL, "");
+    if (!std_file_ready(self)) return come_string_new(NULL, "");
     size_t cap = 128, len = 0;
     char* buf = (char*)malloc(cap);
     if (!buf) return come_string_new(NULL, "");
@@ -382,7 +391,7 @@ come_string_t* come_std__FILE__gets(come_std__FILE_t* self) {
 }
 
 long come_std__FILE__puts(come_std__FILE_t* self, come_string_t* s) {
-    if (!self || !self->fp || !s) return EOF;
+    if (!s || !std_file_ready(self)) return EOF;
     const char* text = come_string_to_cstr(s);
     if (fputs(text, self->fp) == EOF) return EOF;
     if (fputc('\n', self->fp) == EOF) return EOF;
@@ -424,7 +433,7 @@ void come_std__FILE__seek(come_std__FILE_t* self, long offset, int whence) {
 }
 
 long come_std__FILE__tell(come_std__FILE_t* self) {
-    if (!self || !self->fp) return -1;
+    if (!std_file_ready(self)) return -1;
     return (long)ftello(self->fp);
 }
 
@@ -483,9 +492,9 @@ come_string_t* come_std__Proc__getenv(void* self, come_string_t* name) {
     if (!name) return come_string_new(NULL, "");
     const char* v = getenv(come_string_to_cstr(name));
     if (!v) {
-        // Missing variable: empty string (never null) + ENOENT,
-        // so ERR.set() reports it like other missing things.
-        errno = ENOENT;
+        // Missing variable: empty string (never null) + ENOENT
+        // with a message that names the actual problem.
+        come_ERR_set(ENOENT, "environment variable not set");
         return come_string_new(NULL, "");
     }
     return come_string_new(NULL, v);
@@ -537,12 +546,16 @@ int come_std__ERR_t__no(come_std__ERR_t* self) {
 
 
 come_string_t* come_std__ERR_t__str(come_std__ERR_t* self) {
-    // Copy strerror into ERR.str buffer and return it
+    // Copy the message for the current code into the ERR.str
+    // buffer and return it. A specific runtime message wins over
+    // strerror where strerror would mislead (COIL-118); the
+    // result is never empty.
     if (!self) self = &come_std__ERR;
 
 
-    const char* err_msg = strerror(errno);
-    if (!err_msg) err_msg = "Unknown error";
+    const char* err_msg = come_ERR_message_for(errno);
+    if (!err_msg) err_msg = strerror(errno);
+    if (!err_msg || !*err_msg) err_msg = "Unknown error";
 
     size_t len = strlen(err_msg);
     if (len >= sizeof(self->buffer) - sizeof(come_string_t)) {
@@ -564,6 +577,7 @@ void come_std__ERR_t__clear(come_std__ERR_t* self) {
 
     self->no = 0;
     errno = 0;
+    come_ERR_clear_custom();
     if (self->str) {
         self->str->count = 0;
         self->str->data[0] = '\0';

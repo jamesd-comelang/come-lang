@@ -23,6 +23,8 @@
 #include <stdalign.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
+#include <errno.h>
 #include <stdlib.h>
 
 /* ---- chunk layout -------------------------------------------------- */
@@ -165,11 +167,44 @@ void mem_talloc_module_shutdown(void) {
     co_mem_root = NULL;
 }
 
+/* ---- error reporting (spec 12, COIL-118) -----------------------
+ * errno carries the code; a specific message may ride along for
+ * the failures whose strerror text misleads (a missing map key
+ * is not "No such file or directory"). ERR.str() in the std
+ * runtime prefers the specific message when the code matches. */
+static int co_err_custom_code = 0;
+static char co_err_custom[256];
+
+void come_ERR_set(int code, const char *msg) {
+    errno = code;
+    if (msg && *msg) {
+        co_err_custom_code = code;
+        strncpy(co_err_custom, msg, sizeof(co_err_custom) - 1);
+        co_err_custom[sizeof(co_err_custom) - 1] = 0;
+    } else {
+        co_err_custom_code = 0;
+        co_err_custom[0] = 0;
+    }
+}
+
+const char *come_ERR_message_for(int code) {
+    if (co_err_custom_code != 0 && co_err_custom_code == code && co_err_custom[0])
+        return co_err_custom;
+    return NULL;
+}
+
+void come_ERR_clear_custom(void) {
+    co_err_custom_code = 0;
+    co_err_custom[0] = 0;
+}
+
 void *mem_talloc_alloc(void *ctx, size_t size) {
     if (!co_mem_root)
         mem_talloc_module_init();
     co_chunk *parent = ctx ? co_from_ptr(ctx) : co_root_chunk();
     co_chunk *chunk = co_alloc_chunk(parent, size);
+    if (!chunk)
+        errno = ENOMEM;
     return chunk ? co_to_ptr(chunk) : NULL;
 }
 
@@ -180,7 +215,10 @@ void *mem_talloc_realloc(void *ctx, void *ptr, size_t size) {
         co_free_chunk(co_from_ptr(ptr));
         return NULL;
     }
-    return co_realloc_chunk(co_from_ptr(ptr), size);
+    void *np = co_realloc_chunk(co_from_ptr(ptr), size);
+    if (!np)
+        errno = ENOMEM;
+    return np;
 }
 
 void mem_talloc_free(void *ptr) {
