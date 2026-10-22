@@ -9,6 +9,7 @@ alias MAX_ARRAY = 5
 alias SQUARE(x) = ((x) * (x))
 alias (mybyte, myshort) = (byte, short)
 alias (i8, i16) = (byte, short)
+alias say = std.out.printf
 
 const PI = 3.14
 
@@ -46,6 +47,7 @@ int main() {
     i16 bs = 2
     if (bi + bs != 3) { std.out.printf("FAIL: builtin alias names\n"); return 1 }
 
+    say("dotted alias target called\n")
     if (SQUARE(5) != 25) { std.out.printf("FAIL: macro alias\n"); return 1 }
     if (SQUARE(2 + 3) != 25) { std.out.printf("FAIL: macro alias expr arg\n"); return 1 }
 

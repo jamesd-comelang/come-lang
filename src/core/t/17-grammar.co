@@ -1,0 +1,57 @@
+module core_test
+import std
+
+// COIL-128: the operator surface the published grammar
+// (docs/grammar.ebnf) describes, exercised end to end -
+// bitwise and shift levels (added to the parser by this
+// story; spec 14 listed them but they did not parse),
+// every compound assignment, prefix/postfix ++ and --,
+// hex literals.
+
+int main() {
+    int x = 0x1F
+    int y = 6
+    if (x != 31) { std.out.printf("FAIL: hex literal\n"); return 1 }
+    if ((x & y) != 6) { std.out.printf("FAIL: &\n"); return 1 }
+    if ((x | y) != 31) { std.out.printf("FAIL: |\n"); return 1 }
+    if ((x ^ y) != 25) { std.out.printf("FAIL: ^\n"); return 1 }
+    if ((y << 2) != 24) { std.out.printf("FAIL: <<\n"); return 1 }
+    if ((x >> 2) != 7) { std.out.printf("FAIL: >>\n"); return 1 }
+    if (~y != -7) { std.out.printf("FAIL: ~\n"); return 1 }
+
+    // Precedence: shift binds looser than additive; &
+    // binds looser than == (C's order): 1 & (2 == 2) is 1,
+    // while (1 & 2) == 2 would be 0.
+    if ((1 << 2 + 1) != 8) { std.out.printf("FAIL: shift precedence\n"); return 1 }
+    if ((1 & 2 == 2) != 1) { std.out.printf("FAIL: & precedence shape\n"); return 1 }
+
+    int c = 10
+    c += 5
+    c -= 3
+    c *= 4
+    c /= 2
+    c %= 7
+    c <<= 3
+    c >>= 2
+    c &= 12
+    c |= 3
+    c ^= 5
+    if (c != 2) { std.out.printf("FAIL: compound %d\n", c); return 1 }
+
+    int i = 0
+    i++
+    ++i
+    i--
+    --i
+    if (i != 0) { std.out.printf("FAIL: inc/dec %d\n", i); return 1 }
+
+    // Postfix on one line, prefix starting the next: the
+    // newline is the statement boundary (spec 15).
+    int j = 5
+    j++
+    ++j
+    if (j != 7) { std.out.printf("FAIL: line boundary %d\n", j); return 1 }
+
+    std.out.printf("PASS: 17-grammar\n")
+    return 0
+}

@@ -1158,5 +1158,40 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-127 spec-conformance codegen test passed!\033[0m\n");
+
+    // COIL-128: the grammar's operator surface generates -
+    // bitwise/shift levels parse (spec 14), every compound
+    // assignment is accepted, and a prefix ++/-- used as a
+    // statement is emitted (it used to be dropped silently).
+    {
+        const char* src128 =
+            "module m128\nimport std\n\n"
+            "int main() {\n"
+            "    int x = 0x1F\n"
+            "    int y = (x & 6) | (3 ^ 1)\n"
+            "    int z = (y << 2) >> 1\n"
+            "    z %= 7\n"
+            "    ++z\n"
+            "    --z\n"
+            "    return z\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil128.co", src128)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-128: operator-surface program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of128 = fopen("build/tests/coil128.co.c", "r");
+        if (!of128) { printf("COIL-128: output file missing\n"); return 1; }
+        static char buf128[262144];
+        size_t blen128 = fread(buf128, 1, sizeof(buf128) - 1, of128);
+        fclose(of128);
+        buf128[blen128] = 0;
+        if (!strstr(buf128, "&") || !strstr(buf128, "<<") ||
+            !strstr(buf128, "%=") || !strstr(buf128, "++") ||
+            !strstr(buf128, "--")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-128: bitwise, shift, %=, or prefix ++/-- missing from generated C\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-128 grammar-surface codegen test passed!\033[0m\n");
     return 0;
 }

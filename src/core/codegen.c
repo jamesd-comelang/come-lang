@@ -3645,6 +3645,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_CALL:
         case AST_POST_INC:
         case AST_POST_DEC:
+        case AST_UNARY_OP:
         case AST_BINARY_OP:
         case AST_IDENTIFIER: {
             emit_line_directive(f, node);

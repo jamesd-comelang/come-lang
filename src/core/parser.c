@@ -179,7 +179,8 @@ static ASTNode* parse_primary() {
     // Unary ops like !, ~, * are handled here?
     // Snippet 159 showed NOT, TILDE, STAR handling at TOP of parse_primary!
     // I must preserve that.
-    if (t->type == TOKEN_NOT || t->type == TOKEN_TILDE || t->type == TOKEN_STAR || t->type == TOKEN_MINUS || t->type == TOKEN_AND) {
+    if (t->type == TOKEN_NOT || t->type == TOKEN_TILDE || t->type == TOKEN_STAR || t->type == TOKEN_MINUS || t->type == TOKEN_AND ||
+        t->type == TOKEN_INC || t->type == TOKEN_DEC) {
         TokenType op_type = t->type;
         advance();
         ASTNode* operand = parse_primary(); // Recursive for **x or - -x
@@ -189,6 +190,8 @@ static ASTNode* parse_primary() {
         else if (op_type == TOKEN_STAR) strcpy(unary->text, "*");
         else if (op_type == TOKEN_AND) strcpy(unary->text, "&");
         else if (op_type == TOKEN_MINUS) strcpy(unary->text, "-");
+        else if (op_type == TOKEN_INC) strcpy(unary->text, "++");
+        else if (op_type == TOKEN_DEC) strcpy(unary->text, "--");
         unary->children[unary->child_count++] = operand;
         // Unary ops usually bind tight, but postfix binds tighter.
         // If I return here, I miss postfix on the result?
@@ -427,11 +430,19 @@ static ASTNode* parse_primary() {
                  while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) advance();
                  expect(TOKEN_RPAREN);
             }
-        } else if (match(TOKEN_INC)) {
+        } else if (current()->type == TOKEN_INC &&
+                   current()->line == tokens.tokens[pos - 1].line &&
+                   match(TOKEN_INC)) {
+            // Postfix ++ binds only on the same line: a ++
+            // starting the next line is a prefix operator of
+            // the next statement (statements end at newlines,
+            // spec 15; the call case above has the same rule).
             ASTNode* inc = ast_new(AST_POST_INC);
             inc->children[inc->child_count++] = node;
             node = inc;
-        } else if (match(TOKEN_DEC)) {
+        } else if (current()->type == TOKEN_DEC &&
+                   current()->line == tokens.tokens[pos - 1].line &&
+                   match(TOKEN_DEC)) {
             ASTNode* dec = ast_new(AST_POST_DEC);
             dec->children[dec->child_count++] = node;
             node = dec;
@@ -444,14 +455,21 @@ static ASTNode* parse_primary() {
 }
 
 static int get_precedence(TokenType type) {
+    // C's relative order (spec 14 lists the bitwise and shift
+    // operators; they lexed fine but had no precedence, so
+    // the parser rejected them - COIL-128).
     switch (type) {
         case TOKEN_QUESTION: return 1;
         case TOKEN_LOGIC_OR: return 2;
         case TOKEN_LOGIC_AND: return 3;
-        case TOKEN_EQ: case TOKEN_NEQ: return 4;
-        case TOKEN_LT: case TOKEN_GT: case TOKEN_LE: case TOKEN_GE: return 5;
-        case TOKEN_PLUS: case TOKEN_MINUS: return 6;
-        case TOKEN_STAR: case TOKEN_SLASH: case TOKEN_PERCENT: return 7;
+        case TOKEN_OR: return 4;
+        case TOKEN_XOR: return 5;
+        case TOKEN_AND: return 6;
+        case TOKEN_EQ: case TOKEN_NEQ: return 7;
+        case TOKEN_LT: case TOKEN_GT: case TOKEN_LE: case TOKEN_GE: return 8;
+        case TOKEN_LSHIFT: case TOKEN_RSHIFT: return 9;
+        case TOKEN_PLUS: case TOKEN_MINUS: return 10;
+        case TOKEN_STAR: case TOKEN_SLASH: case TOKEN_PERCENT: return 11;
         default: return 0;
     }
 }
@@ -777,18 +795,19 @@ static ASTNode* parse_expression_statement() {
     ASTNode* node = parse_expression();
     // Check for assignment after parsing expression (e.g. member/array access LHS)
     // This duplicates logic inside parse_identifier_statement partially but handles non-identifier starts (e.g. *ptr = val)
-    if (pos < tokens.count && 
-        (tokens.tokens[pos].type == TOKEN_ASSIGN || 
+    if (pos < tokens.count &&
+        (tokens.tokens[pos].type == TOKEN_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_PLUS_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_MINUS_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_STAR_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_SLASH_ASSIGN ||
+         tokens.tokens[pos].type == TOKEN_MOD_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_AND_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_OR_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_XOR_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_LSHIFT_ASSIGN ||
          tokens.tokens[pos].type == TOKEN_RSHIFT_ASSIGN)) {
-          
+
            ASTNode* assign = ast_new(AST_ASSIGN);
            strcpy(assign->text, tokens.tokens[pos].text);
            match(tokens.tokens[pos].type); // consume op
@@ -809,12 +828,13 @@ static ASTNode* parse_identifier_statement() {
     
     // Check for assignments FIRST (before type declarations)
     // Check lookahead for assignment operators
-    if (pos + 1 < tokens.count && 
-        (tokens.tokens[pos+1].type == TOKEN_ASSIGN || 
+    if (pos + 1 < tokens.count &&
+        (tokens.tokens[pos+1].type == TOKEN_ASSIGN ||
          tokens.tokens[pos+1].type == TOKEN_PLUS_ASSIGN ||
          tokens.tokens[pos+1].type == TOKEN_MINUS_ASSIGN ||
          tokens.tokens[pos+1].type == TOKEN_STAR_ASSIGN ||
          tokens.tokens[pos+1].type == TOKEN_SLASH_ASSIGN ||
+         tokens.tokens[pos+1].type == TOKEN_MOD_ASSIGN ||
          tokens.tokens[pos+1].type == TOKEN_AND_ASSIGN ||
          tokens.tokens[pos+1].type == TOKEN_OR_ASSIGN ||
          tokens.tokens[pos+1].type == TOKEN_XOR_ASSIGN ||
@@ -1304,11 +1324,62 @@ static void parse_export(ASTNode* program) {
                 advance();
                 continue;
             }
-            // The exported name: a plain entry IS the name;
-            // a signature entry (int add(int, int)) names the
-            // identifier before its '('. (A bare name parses
-            // as no declaration at all, so watch the tokens,
-            // not the AST.)
+            // A plain name entry (PI, Rect) is just a name:
+            // consume and record it here. (It used to fall
+            // through parse_top_level_decl's silent token
+            // eat; that fallback now reports an error -
+            // COIL-128.)
+            if (current()->type == TOKEN_IDENTIFIER &&
+                (tokens.tokens[pos + 1].type == TOKEN_COMMA ||
+                 tokens.tokens[pos + 1].type == TOKEN_RPAREN)) {
+                ASTNode* name_node = ast_new(AST_IDENTIFIER);
+                strcpy(name_node->text, current()->text);
+                exp->children[exp->child_count++] = name_node;
+                advance();
+                continue;
+            }
+            // A typed declaration entry (FILE in) names its
+            // variable: record the second identifier.
+            if (current()->type == TOKEN_IDENTIFIER &&
+                tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER &&
+                (tokens.tokens[pos + 2].type == TOKEN_COMMA ||
+                 tokens.tokens[pos + 2].type == TOKEN_RPAREN)) {
+                ASTNode* name_node = ast_new(AST_IDENTIFIER);
+                strcpy(name_node->text, tokens.tokens[pos + 1].text);
+                exp->children[exp->child_count++] = name_node;
+                advance();
+                advance();
+                continue;
+            }
+            // A signature entry whose return type is a named
+            // type (FILE tmpfile()) does not fit
+            // parse_top_level_decl's entry shapes either.
+            // These entries are prototypes (skipped for the
+            // AST, as before): consume through the matching
+            // ')' and record the function's name.
+            if (current()->type == TOKEN_IDENTIFIER &&
+                tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER &&
+                tokens.tokens[pos + 2].type == TOKEN_LPAREN) {
+                ASTNode* name_node = ast_new(AST_IDENTIFIER);
+                strcpy(name_node->text, tokens.tokens[pos + 1].text);
+                exp->children[exp->child_count++] = name_node;
+                advance();
+                advance();
+                int depth = 0;
+                while (pos < tokens.count) {
+                    if (current()->type == TOKEN_LPAREN) depth++;
+                    if (current()->type == TOKEN_RPAREN && --depth == 0) {
+                        advance();
+                        break;
+                    }
+                    if (current()->type == TOKEN_EOF) break;
+                    advance();
+                }
+                continue;
+            }
+            // A signature entry (int add(int, int)) names the
+            // identifier before its '('. Watch the tokens,
+            // not the AST.
             int entry_start = pos;
             parse_top_level_decl(program);
             const char* entry_name = NULL;
@@ -2075,6 +2146,17 @@ static void parse_top_level_decl(ASTNode* program) {
              }
          }
      } else {
+         // Unknown top-level construct. This used to eat one
+         // token and continue, which silently dissolved
+         // whole declarations (an "interface Shape { ... }"
+         // block built without a trace). Name it and fail
+         // (COIL-128: the grammar excludes it, so the parser
+         // must too).
+         if (t->type != TOKEN_SEMICOLON) {
+             printf("Error: unexpected top-level token '%s' at line %d: not a declaration the grammar allows\n",
+                    t->text, t->line);
+             g_parse_errors++;
+         }
          advance(); // unknown top level
      }
 }
@@ -2083,6 +2165,15 @@ int parse_file(const char* filename, ASTNode** out_ast) {
     if (lex_file(filename, &tokens) != 0) return 1;
     pos = 0;
     g_parse_errors = 0;
+
+    // The grammar starts every file with a module
+    // declaration (spec 3); the parser used to accept
+    // files without one. Enforce it (COIL-128).
+    if (tokens.count == 0 || tokens.tokens[0].type != TOKEN_MODULE) {
+        printf("Error: %s: a Come file must begin with a module declaration ('module <name>')\n",
+               filename);
+        g_parse_errors++;
+    }
     
     *out_ast = ast_new(AST_PROGRAM);
     
