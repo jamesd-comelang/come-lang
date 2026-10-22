@@ -482,6 +482,93 @@ static const char* find_module_fn_sig(const char* name) {
         if (strcmp(g_module_fns[i].name, name) == 0) return g_module_fns[i].sig;
     return NULL;
 }
+
+// Module export registry (spec 3.4, COIL-127): see codegen.h.
+typedef struct {
+    char module[128];
+    char names[64][128];
+    int count;
+} ModuleExports;
+static ModuleExports g_exports[64];
+static int g_exports_count = 0;
+
+void codegen_register_module_exports(const char* module, const char** names, int count) {
+    ModuleExports* e = NULL;
+    for (int i = 0; i < g_exports_count; i++) {
+        if (strcmp(g_exports[i].module, module) == 0) { e = &g_exports[i]; break; }
+    }
+    if (!e) {
+        if (g_exports_count >= 64) return;
+        e = &g_exports[g_exports_count++];
+        snprintf(e->module, sizeof(e->module), "%s", module);
+        e->count = 0;
+    }
+    for (int i = 0; i < count && e->count < 64; i++) {
+        int dup = 0;
+        for (int j = 0; j < e->count; j++) {
+            if (strcmp(e->names[j], names[i]) == 0) dup = 1;
+        }
+        if (!dup) snprintf(e->names[e->count++], sizeof(e->names[0]), "%s", names[i]);
+    }
+}
+
+// 1 when `symbol` may be referenced from outside `module`:
+// always, unless the module declared an export list that
+// does not contain it.
+static int module_symbol_visible(const char* module, const char* symbol) {
+    for (int i = 0; i < g_exports_count; i++) {
+        if (strcmp(g_exports[i].module, module) != 0) continue;
+        for (int j = 0; j < g_exports[i].count; j++) {
+            if (strcmp(g_exports[i].names[j], symbol) == 0) return 1;
+        }
+        return 0;
+    }
+    return 1;
+}
+
+// Struct declarations in the file (COIL-127): the universal
+// methods on a struct value (spec 7.4) need the field count.
+static char g_struct_names[64][128];
+static int g_struct_fields[64];
+static int g_struct_count = 0;
+
+static void collect_structs(ASTNode* ast) {
+    g_struct_count = 0;
+    if (!ast || ast->type != AST_PROGRAM) return;
+    for (int i = 0; i < ast->child_count && g_struct_count < 64; i++) {
+        ASTNode* ch = ast->children[i];
+        if (ch && ch->type == AST_STRUCT_DECL) {
+            int fields = 0;
+            for (int j = 0; j < ch->child_count; j++) {
+                if (ch->children[j]->type == AST_VAR_DECL) fields++;
+            }
+            snprintf(g_struct_names[g_struct_count], 128, "%s", ch->text);
+            g_struct_fields[g_struct_count] = fields;
+            g_struct_count++;
+        }
+    }
+}
+
+static int struct_field_count(const char* name) {
+    for (int i = 0; i < g_struct_count; i++) {
+        if (strcmp(g_struct_names[i], name) == 0) return g_struct_fields[i];
+    }
+    return 0;
+}
+
+// The struct name when an expression is a struct-typed local,
+// else NULL.
+static const char* struct_receiver_name(ASTNode* receiver) {
+    if (!receiver || receiver->type != AST_IDENTIFIER) return NULL;
+    const char* rt = get_local_variable_type(receiver->text);
+    if (rt && strncmp(rt, "struct ", 7) == 0 && struct_field_count(rt + 7) >= 0 &&
+        rt[7] != 0) {
+        for (int i = 0; i < g_struct_count; i++) {
+            if (strcmp(g_struct_names[i], rt + 7) == 0) return rt + 7;
+        }
+    }
+    return NULL;
+}
 static void collect_module_fns(ASTNode* ast) {
     g_module_fn_count = 0;
     if (!ast || ast->type != AST_PROGRAM) return;
@@ -618,6 +705,76 @@ static int split_types(const char* s, char parts[][160], int max_parts) {
     }
     return n;
 }
+// ---- Tuple returns (spec 8.2, COIL-127) ----
+// A function declared `(int, string) f(...)` returns a
+// generated C struct by value; call sites destructure it
+// with (a, b) = f(...). Element types are recorded here so
+// returns and destructures can be checked and emitted.
+
+// Map a Come type text to its C declarator type.
+static void come_type_to_c(const char* t, char* out, size_t n) {
+    size_t len = strlen(t);
+    if (len >= 2 && strcmp(t + len - 2, "[]") == 0) {
+        char raw[128];
+        snprintf(raw, sizeof(raw), "%.*s", (int)(len - 2), t);
+        if (strcmp(raw, "int") == 0) snprintf(out, n, "come_int_array_t*");
+        else if (strcmp(raw, "byte") == 0) snprintf(out, n, "come_byte_array_t*");
+        else if (strcmp(raw, "string") == 0) snprintf(out, n, "come_string_list_t*");
+        else snprintf(out, n, "come_array_%s_t*", raw);
+    } else if (strcmp(t, "string") == 0) {
+        snprintf(out, n, "come_string_t*");
+    } else if (strcmp(t, "link") == 0) {
+        snprintf(out, n, "come_link_t*");
+    } else if (strncmp(t, "map{", 4) == 0) {
+        snprintf(out, n, "come_map_t*");
+    } else {
+        // Scalars, struct X, and typedef'd names pass through:
+        // the runtime headers define byte/short/... and user
+        // aliases are emitted as typedefs.
+        snprintf(out, n, "%s", t);
+    }
+}
+
+typedef struct {
+    char name[128];
+    int count;
+    char elems[8][160];
+} TupleFn;
+static TupleFn g_tuple_fns[64];
+static int g_tuple_fn_count = 0;
+static const TupleFn* g_cur_tuple = NULL; // function being generated
+
+static void collect_tuple_fns(ASTNode* ast) {
+    g_tuple_fn_count = 0;
+    if (!ast || ast->type != AST_PROGRAM) return;
+    for (int i = 0; i < ast->child_count && g_tuple_fn_count < 64; i++) {
+        ASTNode* ch = ast->children[i];
+        if (!ch || ch->type != AST_FUNCTION || ch->child_count == 0) continue;
+        const char* ret = ch->children[0]->text;
+        if (!ret || ret[0] != '(') continue;
+        char inner[600];
+        snprintf(inner, sizeof(inner), "%.*s", (int)strlen(ret) - 2, ret + 1);
+        TupleFn* tf = &g_tuple_fns[g_tuple_fn_count];
+        snprintf(tf->name, sizeof(tf->name), "%s", ch->text);
+        tf->count = split_types(inner, tf->elems, 8);
+        for (int j = 0; j < tf->count; j++) {
+            // Trim surrounding spaces from each element type.
+            char* s = tf->elems[j];
+            while (*s == ' ') memmove(s, s + 1, strlen(s));
+            size_t l = strlen(s);
+            while (l > 0 && s[l - 1] == ' ') s[--l] = 0;
+        }
+        g_tuple_fn_count++;
+    }
+}
+
+static const TupleFn* find_tuple_fn(const char* name) {
+    for (int i = 0; i < g_tuple_fn_count; i++) {
+        if (strcmp(g_tuple_fns[i].name, name) == 0) return &g_tuple_fns[i];
+    }
+    return NULL;
+}
+
 // Emit a C function-pointer parameter: RET (*name)(ARGS) from a
 // fn: type text. `name` may be NULL for prototypes. Array argument
 // types map to the runtime array types, as for ordinary parameters.
@@ -781,6 +938,31 @@ static void emit_string_expr(FILE* f, ASTNode* e) {
     } else {
         generate_expression(f, e);
     }
+}
+
+// Is this expression statically a string value? Routes `+`
+// to concatenation (spec 6.5) and string ternaries to
+// materialized branches (spec 14). Deliberately conservative:
+// literals, string variables, string-returning calls, and
+// combinations of those.
+static int expr_is_stringish(ASTNode* e) {
+    if (!e) return 0;
+    if (e->type == AST_STRING_LITERAL) return 1;
+    if (e->type == AST_IDENTIFIER) {
+        const char* t = get_local_variable_type(e->text);
+        return t && strcmp(t, "string") == 0;
+    }
+    if (e->type == AST_BINARY_OP && strcmp(e->text, "+") == 0 && e->child_count >= 2) {
+        return expr_is_stringish(e->children[0]) || expr_is_stringish(e->children[1]);
+    }
+    if (e->type == AST_TERNARY && e->child_count >= 3) {
+        return expr_is_stringish(e->children[1]) || expr_is_stringish(e->children[2]);
+    }
+    if (e->type == AST_CALL) {
+        const char* sig = find_module_fn_sig(e->text);
+        return sig && strncmp(sig, "come_string_t*", 14) == 0;
+    }
+    return 0;
 }
 
 // Emit a FILE method call (COIL-114, Come_std.md section 2):
@@ -1364,6 +1546,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
              } else {
                  if (is_import) {
                      // New schema for imported modules: come_MODULE__FUNC
+                     // Spec 3.4: a module that declares exports
+                     // shows only those symbols outside itself.
+                     if (!module_symbol_visible(receiver->text, method)) {
+                         codegen_error("'%s.%s' is not exported by module '%s' (spec 3.4: only exported symbols are visible outside their module)", receiver->text, method, receiver->text);
+                     }
                      snprintf(c_func, sizeof(c_func), "come_%s__%s", receiver->text, method);
                  } else {
                      // Legacy schema for core modules
@@ -1729,6 +1916,22 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  fprintf(f, ")");
                  return;
              }
+        }
+        // Universal methods on a struct value (spec 7.4,
+        // COIL-127): length is the field count, bytesize the
+        // C size of the struct, type is "struct".
+        else if (struct_receiver_name(receiver) &&
+                 (strcmp(method, "length") == 0 || strcmp(method, "bytesize") == 0 ||
+                  strcmp(method, "type") == 0)) {
+             const char* sname = struct_receiver_name(receiver);
+             if (strcmp(method, "length") == 0) {
+                 fprintf(f, "%d", struct_field_count(sname));
+             } else if (strcmp(method, "bytesize") == 0) {
+                 fprintf(f, "((int)sizeof(struct %s))", sname);
+             } else {
+                 fprintf(f, "come_string_new(COME_CTX, \"struct\")");
+             }
+             return;
         }
         // Typed map methods (COIL-103): the Come_map.md method table.
         // Must precede the string branch, which also claims length/chown.
@@ -2238,12 +2441,19 @@ static void generate_expression(FILE* f, ASTNode* node) {
         fprintf(f, "(%s) ", node->children[0]->text);
         generate_expression(f, node->children[1]);
     } else if (node->type == AST_TERNARY) {
+        // String ternaries must agree on come_string_t* on
+        // both branches; a raw literal branch would decay to
+        // char* and corrupt the result (spec 14, COIL-127).
+        int str_tern = expr_is_stringish(node->children[1]) ||
+                       expr_is_stringish(node->children[2]);
         fprintf(f, "(");
         generate_expression(f, node->children[0]);
         fprintf(f, " ? ");
-        generate_expression(f, node->children[1]);
+        if (str_tern) emit_string_expr(f, node->children[1]);
+        else generate_expression(f, node->children[1]);
         fprintf(f, " : ");
-        generate_expression(f, node->children[2]);
+        if (str_tern) emit_string_expr(f, node->children[2]);
+        else generate_expression(f, node->children[2]);
         fprintf(f, ")");
     } else if (node->type == AST_UNARY_OP) {
         fprintf(f, "%s", node->text); 
@@ -2274,14 +2484,14 @@ static void generate_expression(FILE* f, ASTNode* node) {
             } else {
                 // Check if either operand is a string
                 int left_is_str = 0, right_is_str = 0;
-                
+
                 if (left->type == AST_IDENTIFIER) {
                     const char* type = get_local_variable_type(left->text);
                     if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t*") == 0)) {
                         left_is_str = 1;
                     }
                 }
-                
+
                 if (right->type == AST_STRING_LITERAL || right->type == AST_IDENTIFIER) {
                     if (right->type == AST_STRING_LITERAL) {
                         right_is_str = 1;
@@ -2292,18 +2502,41 @@ static void generate_expression(FILE* f, ASTNode* node) {
                         }
                     }
                 }
-                
+
                 is_string_cmp = (left_is_str || right_is_str);
+
+                // Spec 14: == on composite values tests
+                // identity (same buffer), not contents - so
+                // two string VARIABLES compare by pointer.
+                // A literal has no buffer identity, so a
+                // comparison involving a literal keeps the
+                // content comparison (COIL-127).
+                if (left->type == AST_IDENTIFIER && right->type == AST_IDENTIFIER &&
+                    left_is_str && right_is_str) {
+                    is_string_cmp = 0;
+                }
             }
         }
         
-        if (is_string_cmp) {
-            // Generate strcmp() call
+        if (strcmp(node->text, "+") == 0 &&
+            (expr_is_stringish(left) || expr_is_stringish(right))) {
+            // String concatenation (spec 6.5): `+` on strings
+            // produces a new string; C's + cannot do this.
+            fprintf(f, "come_string_concat(COME_CTX, ");
+            emit_string_expr(f, left);
+            fprintf(f, ", ");
+            emit_string_expr(f, right);
+            fprintf(f, ")");
+        } else if (is_string_cmp) {
+            // Content comparison against a literal (either
+            // side): both operands go through emit_string_expr
+            // so variables pass as-is and only literals are
+            // materialized (COIL-127).
             fprintf(f, "(come_string_cmp(");
-            generate_expression(f, node->children[0]);
-            fprintf(f, ", come_string_new(NULL, ");
-            generate_expression(f, node->children[1]);
-            fprintf(f, "), 0) %s 0)", is_eq ? "==" : "!=");
+            emit_string_expr(f, node->children[0]);
+            fprintf(f, ", ");
+            emit_string_expr(f, node->children[1]);
+            fprintf(f, ", 0) %s 0)", is_eq ? "==" : "!=");
         } else {
             fprintf(f, "(");
             generate_expression(f, node->children[0]);
@@ -2387,9 +2620,14 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         
         ASTNode* ret_type = node->children[0];
         int body_idx = node->child_count - 1;
-        
+
+        g_cur_tuple = NULL;
         if (ret_type->text[0] == '(') {
-            strcpy(current_function_return_type, "void");
+            // Tuple return (spec 8.2): the C function returns
+            // the generated struct by value.
+            strncpy(current_function_return_type, ret_type->text, sizeof(current_function_return_type) - 1);
+            current_function_return_type[sizeof(current_function_return_type) - 1] = '\0';
+            g_cur_tuple = find_tuple_fn(node->text);
         } else {
             strncpy(current_function_return_type, ret_type->text, sizeof(current_function_return_type) - 1);
             current_function_return_type[sizeof(current_function_return_type) - 1] = '\0';
@@ -2444,8 +2682,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         emit_indent(f, indent);
 
         // Return type
-        // Handle "byte" etc alias?? no, just print text
-        fprintf(f, "%s %s(", ret_type->text, func_name);
+        if (ret_type->text[0] == '(') {
+            fprintf(f, "come_%s__%s_ret_t %s(", current_module, node->text, func_name);
+        } else {
+            fprintf(f, "%s %s(", ret_type->text, func_name);
+        }
         
         // Args
         int has_args = 0;
@@ -2555,6 +2796,14 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         register_local_type(node->text, type_node);
 
         ASTNode* init_expr = node->children[0];
+
+        // A `var` with an initializer locks to the inferred
+        // type right here (spec 10.1, COIL-127): downstream
+        // code must see the real type, not "var".
+        if (strcmp(type_node->text, "var") == 0 && init_expr) {
+            const char* inferred = infer_assign_type(init_expr);
+            if (inferred) update_local_variable_type(node->text, inferred);
+        }
 
         if (init_expr && init_expr->type == AST_IDENTIFIER && type_is_array(type_node->text)) {
             const char* src_type = get_local_variable_type(init_expr->text);
@@ -2703,11 +2952,19 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     else if (strcmp(raw_type, "var")==0) { strcpy(arr_type, "come_int_array_t"); strcpy(elem_type, "int"); }
                     else { snprintf(arr_type, sizeof(arr_type), "come_array_%s_t", raw_type); }
                     
+                    // An uninitialized declaration carries a
+                    // synthetic 0 init; for arrays that means
+                    // "no initializer", not the value 0 -
+                    // taking it as an expression init left
+                    // fixed arrays NULL (COIL-127).
+                    int zero_init = init_expr && init_expr->type == AST_NUMBER &&
+                                    strcmp(init_expr->text, "0") == 0;
+                    int eff_fixed = fixed_size > 0 ? fixed_size : type_node->array_size;
                     if (init_expr && init_expr->type == AST_AGGREGATE_INIT) {
                         int count = init_expr->child_count;
-                        int alloc_count = (fixed_size > count) ? fixed_size : count;
-                        
-                        fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %u * sizeof(%s));\n", 
+                        int alloc_count = (eff_fixed > count) ? eff_fixed : count;
+
+                        fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %u * sizeof(%s));\n",
                                 arr_type, node->text, arr_type, alloc_count, elem_type);
                         emit_indent(f, indent);
                         fprintf(f, "%s->size = %u; %s->count = %u;\n", node->text, alloc_count, node->text, count);
@@ -2715,18 +2972,18 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                         fprintf(f, "{ %s _vals[] = ", elem_type);
                         generate_expression(f, init_expr);
                         fprintf(f, "; memcpy(%s->items, _vals, sizeof(_vals)); }\n", node->text);
-                    } else if (init_expr) {
+                    } else if (init_expr && !zero_init) {
                         // Initialized from expression (e.g. slice, function return)
                         fprintf(f, "%s* %s = ", arr_type, node->text);
                         generate_expression(f, init_expr);
                         fprintf(f, ";\n");
-                    } else if (fixed_size > 0) {
-                        fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %u * sizeof(%s));\n", 
-                                arr_type, node->text, arr_type, fixed_size, elem_type);
+                    } else if (eff_fixed > 0) {
+                        fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %u * sizeof(%s));\n",
+                                arr_type, node->text, arr_type, eff_fixed, elem_type);
                         emit_indent(f, indent);
-                        fprintf(f, "memset(%s->items, 0, %u * sizeof(%s));\n", node->text, fixed_size, elem_type);
+                        fprintf(f, "memset(%s->items, 0, %u * sizeof(%s));\n", node->text, eff_fixed, elem_type);
                         emit_indent(f, indent);
-                        fprintf(f, "%s->size = %u; %s->count = %u;\n", node->text, fixed_size, node->text, fixed_size);
+                        fprintf(f, "%s->size = %u; %s->count = %u;\n", node->text, eff_fixed, node->text, eff_fixed);
                     } else {
                         // Empty dynamic
                         fprintf(f, "%s* %s = (%s*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2);\n", arr_type, node->text, arr_type);
@@ -2945,10 +3202,47 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_COLINK_ASSIGN: {
             // (a, b) = colink() (COIL-123, spec 9.2): declares
             // two link variables and creates the channel.
+            // (a, b) = f() for a tuple-returning f (spec 8.2):
+            // destructures the returned struct (COIL-127).
             emit_line_directive(f, node);
             ASTNode* rhs = node->children[2];
+            if (rhs && rhs->type == AST_CALL && strcmp(rhs->text, "colink") != 0) {
+                const TupleFn* tf = find_tuple_fn(rhs->text);
+                if (!tf) {
+                    codegen_error("the (a, b) = ... form is for colink() or a tuple-returning function (spec 8.2, 9.2)");
+                    break;
+                }
+                if (tf->count != 2) {
+                    codegen_error("'%s' returns %d values; this destructure binds 2 names", rhs->text, tf->count);
+                    break;
+                }
+                // A unique temp per destructure: a function
+                // may destructure several calls.
+                static int tup_counter = 0;
+                char tup[32];
+                snprintf(tup, sizeof(tup), "__tup%d", tup_counter++);
+                emit_indent(f, indent);
+                fprintf(f, "come_%s__%s_ret_t %s = ", current_module, tf->name, tup);
+                generate_expression(f, rhs);
+                fprintf(f, ";\n");
+                for (int i = 0; i < 2; i++) {
+                    const char* name = node->children[i]->text;
+                    emit_indent(f, indent);
+                    if (!get_local_variable_type(name)) {
+                        ASTNode* tn = ast_new(AST_IDENTIFIER);
+                        strcpy(tn->text, tf->elems[i]);
+                        register_local_type(name, tn);
+                        char ct[300];
+                        come_type_to_c(tf->elems[i], ct, sizeof(ct));
+                        fprintf(f, "%s %s = %s._%d;\n", ct, name, tup, i);
+                    } else {
+                        fprintf(f, "%s = %s._%d;\n", name, tup, i);
+                    }
+                }
+                break;
+            }
             if (!rhs || rhs->type != AST_CALL || strcmp(rhs->text, "colink") != 0) {
-                codegen_error("the (a, b) = ... form is only for colink()");
+                codegen_error("the (a, b) = ... form is for colink() or a tuple-returning function (spec 8.2, 9.2)");
                 break;
             }
             for (int i = 0; i < 2; i++) {
@@ -2969,6 +3263,30 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             emit_indent(f, indent);
             if (g_in_coroutine && node->child_count > 0) {
                 codegen_error("coroutines cannot return a value (spec 9.1); results travel through links");
+            }
+            if (g_cur_tuple) {
+                // Tuple return (spec 8.2): build the generated
+                // struct from the comma-separated values.
+                if (node->child_count != g_cur_tuple->count) {
+                    codegen_error("'%s' returns %d values (spec 8.2); this return gives %d",
+                                  g_cur_tuple->name, g_cur_tuple->count, node->child_count);
+                    break;
+                }
+                fprintf(f, "return (come_%s__%s_ret_t){", current_module, g_cur_tuple->name);
+                for (int i = 0; i < node->child_count; i++) {
+                    if (i) fprintf(f, ", ");
+                    if (strcmp(g_cur_tuple->elems[i], "string") == 0) {
+                        emit_string_expr(f, node->children[i]);
+                    } else {
+                        generate_expression(f, node->children[i]);
+                    }
+                }
+                fprintf(f, "};\n");
+                break;
+            }
+            if (node->child_count > 1) {
+                codegen_error("multiple return values need a tuple return type like (int, string) (spec 8.2)");
+                break;
             }
             if (node->child_count > 0 && expr_is_fn_value(node->children[0]))
                 codegen_error("functions cannot be returned (spec 8.3): '%s'", node->children[0]->text);
@@ -3074,6 +3392,40 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 emit_indent(f, indent);
                 emit_inferred_decl(f, inferred, node->children[0]->text, node->children[1]);
                 break;
+            }
+            // A `var` local locks its type at its first
+            // assignment (spec 10.1, COIL-127).
+            if (strcmp(node->text, "=") == 0 && node->child_count >= 2 &&
+                node->children[0]->type == AST_IDENTIFIER) {
+                const char* cur = get_local_variable_type(node->children[0]->text);
+                if (cur && strcmp(cur, "var") == 0) {
+                    const char* inferred = infer_assign_type(node->children[1]);
+                    if (!inferred) {
+                        codegen_error("cannot infer the type of var '%s' from its first assignment; declare it with a type first", node->children[0]->text);
+                        break;
+                    }
+                    update_local_variable_type(node->children[0]->text, inferred);
+                }
+            }
+            // A string value can never land in a non-string
+            // variable, nor a numeric literal in a string
+            // (the type-lock rule of spec 10.1, applied to
+            // every typed local).
+            if (node->child_count >= 2 &&
+                node->children[0]->type == AST_IDENTIFIER) {
+                const char* lt = get_local_variable_type(node->children[0]->text);
+                if (lt && strcmp(lt, "var") != 0) {
+                    int lhs_str = strcmp(lt, "string") == 0;
+                    if (expr_is_stringish(node->children[1]) && !lhs_str) {
+                        codegen_error("cannot assign a string to '%s' of type %s", node->children[0]->text, lt);
+                        break;
+                    }
+                    if (lhs_str && (node->children[1]->type == AST_NUMBER ||
+                                    node->children[1]->type == AST_BOOL_LITERAL)) {
+                        codegen_error("cannot assign a non-string to string '%s'", node->children[0]->text);
+                        break;
+                    }
+                }
             }
             emit_indent(f, indent);
             check_assign_store(node); // COIL-107
@@ -3222,17 +3574,25 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, "case ");
             generate_expression(f, node->children[0]);
             fprintf(f, ": {\n");
+            // Spec 11.2: a case does NOT fall through unless
+            // its last statement is `fallthrough` (COIL-127).
+            int has_fallthrough = node->child_count > 1 &&
+                node->children[node->child_count - 1]->type == AST_FALLTHROUGH;
             for (int i=1; i < node->child_count; i++) {
                 generate_node(f, node->children[i], indent+4);
             }
-            // Explicit break needed unless Fallthrough? 
-            // COME spec: "Does NOT fall through by default".
-            // So we add break unless last stmt is Fallthrough (not tracked yet)
-            // For now, always break.
-            emit_indent(f, indent+4);
-            fprintf(f, "break;\n");
+            if (!has_fallthrough) {
+                emit_indent(f, indent+4);
+                fprintf(f, "break;\n");
+            }
             emit_indent(f, indent);
             fprintf(f, "}\n");
+            break;
+        }
+
+        case AST_FALLTHROUGH: {
+            // Marker only: AST_CASE reads it to decide whether
+            // to emit the break. Emits nothing itself.
             break;
         }
         
@@ -3397,6 +3757,10 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     }
 
     // COIL-111 (spec 13, 3.3): extern "C" declarations may appear
+    // Tuple functions are collected before every pass: the
+    // typedef and prototype passes need them (COIL-127).
+    collect_tuple_fns(ast);
+
     // only in system modules. The driver marks system-module
     // generation (source inside the compiler's own tree); the
     // default is a user module.
@@ -3516,10 +3880,18 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         // Scan AST to find main function and check if it has parameters
         int main_has_params = 0;
         int has_main_fn = 0;
+        int main_is_void = 0;
         for (int i = 0; i < ast->child_count; i++) {
             ASTNode* child = ast->children[i];
             if (child && child->type == AST_FUNCTION && strcmp(child->text, "main") == 0) {
                 has_main_fn = 1;
+                // Spec 2.1: void main is one of the four entry
+                // signatures; its prototype and call must be
+                // void (COIL-127).
+                if (child->child_count > 0 && child->children[0] &&
+                    strcmp(child->children[0]->text, "void") == 0) {
+                    main_is_void = 1;
+                }
                 // Check if main has any arguments
                 // Arguments are in children[1] if present and NOT a block
                 if (child->child_count > 1 && child->children[1] && child->children[1]->type != AST_BLOCK) {
@@ -3540,9 +3912,9 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         if (has_main_fn) {
         // Forward declare user main with correct signature
         if (main_has_params) {
-            fprintf(f, "int come_%s__main(come_string_list_t* args);\n", current_module);
+            fprintf(f, "%s come_%s__main(come_string_list_t* args);\n", main_is_void ? "void" : "int", current_module);
         } else {
-            fprintf(f, "int come_%s__main(void);\n", current_module);
+            fprintf(f, "%s come_%s__main(void);\n", main_is_void ? "void" : "int", current_module);
         }
 
         // Forward declare module init/exit
@@ -3557,7 +3929,16 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "    come_%s__init();\n", current_module);
         fprintf(f, "    \n");
         
-        if (main_has_params) {
+        if (main_is_void) {
+            // Void main implies exit code 0 (spec 2.1).
+            if (main_has_params) {
+                fprintf(f, "    come_string_list_t* args = come_string_list_from_argv(COME_CTX, argc, argv);\n");
+                fprintf(f, "    come_%s__main(args);\n", current_module);
+            } else {
+                fprintf(f, "    come_%s__main();\n", current_module);
+            }
+            fprintf(f, "    int ret = 0;\n");
+        } else if (main_has_params) {
             fprintf(f, "    // Convert argv to string[]\n");
             fprintf(f, "    come_string_list_t* args = come_string_list_from_argv(COME_CTX, argc, argv);\n");
             fprintf(f, "    \n");
@@ -3719,6 +4100,19 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         }
     }
 
+    // Tuple return structs (spec 8.2, COIL-127): one typedef
+    // per tuple-returning function, before any prototype.
+    for (int i = 0; i < g_tuple_fn_count; i++) {
+        TupleFn* tf = &g_tuple_fns[i];
+        fprintf(f, "typedef struct { ");
+        for (int j = 0; j < tf->count; j++) {
+            char ct[300];
+            come_type_to_c(tf->elems[j], ct, sizeof(ct));
+            fprintf(f, "%s _%d; ", ct, j);
+        }
+        fprintf(f, "} come_%s__%s_ret_t;\n", current_module, tf->name);
+    }
+
     // Forward Prototypes
     if (g_verbose) printf("DEBUG: Starting Pass forward prototypes\n");
     for (int i=0; i<ast->child_count; i++) {
@@ -3769,7 +4163,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
 
 
                   if (ret->text[0] == '(') {
-                       fprintf(f, "void %s(", func_name);
+                       fprintf(f, "come_%s__%s_ret_t %s(", current_module, child->text, func_name);
                   } else {
                        if (strcmp(ret->text, "string") == 0) fprintf(f, "come_string_t* %s(", func_name);
                        else fprintf(f, "%s %s(", ret->text, func_name);
@@ -3834,6 +4228,8 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         collect_module_fns(ast); // COIL-109
         collect_coroutines(ast); // COIL-120
         collect_module_vars(ast); // COIL-122
+        collect_structs(ast); // COIL-127
+        collect_tuple_fns(ast); // COIL-127
         generate_program(f, ast);
     } else {
         generate_node(f, ast, 0);

@@ -37,6 +37,45 @@ static void register_alias(const char* name, ASTNode* replacement) {
     }
 }
 
+// Macro aliases (spec 5.3): alias SQUARE(x) = ((x) * (x)).
+// The body is stored as a template AST; a call site expands
+// to a clone with the arguments substituted for the
+// parameters (COIL-127).
+#define MAX_MACROS 64
+typedef struct {
+    char name[64];
+    char params[8][64];
+    int param_count;
+    ASTNode* body;
+} MacroEntry;
+static MacroEntry macro_table[MAX_MACROS];
+static int macro_count = 0;
+
+static MacroEntry* find_macro(const char* name) {
+    for (int i = 0; i < macro_count; i++) {
+        if (strcmp(macro_table[i].name, name) == 0) return &macro_table[i];
+    }
+    return NULL;
+}
+
+static ASTNode* ast_clone(ASTNode* node);
+
+static void macro_substitute(ASTNode* n, MacroEntry* m, ASTNode* call) {
+    if (!n) return;
+    if (n->type == AST_IDENTIFIER) {
+        for (int i = 0; i < m->param_count; i++) {
+            if (strcmp(n->text, m->params[i]) == 0) {
+                ASTNode* argcopy = ast_clone(call->children[i]);
+                *n = *argcopy; // take over the argument's shape
+                return; // never re-scan substituted arguments
+            }
+        }
+    }
+    for (int i = 0; i < n->child_count; i++) {
+        macro_substitute(n->children[i], m, call);
+    }
+}
+
 static ASTNode* find_alias(const char* name) {
     for (int i = 0; i < alias_count; i++) {
         if (strcmp(alias_table[i].name, name) == 0) {
@@ -93,6 +132,13 @@ static int peek_array_size() {
     if (current()->type == TOKEN_LBRACKET && pos + 1 < tokens.count &&
         tokens.tokens[pos + 1].type == TOKEN_NUMBER) {
         return atoi(tokens.tokens[pos + 1].text);
+    }
+    // A constant alias as the size: alias MAX_ARRAY = 5 is
+    // the spec 5.2 example, written for exactly this use.
+    if (current()->type == TOKEN_LBRACKET && pos + 1 < tokens.count &&
+        tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER) {
+        ASTNode* rep = find_alias(tokens.tokens[pos + 1].text);
+        if (rep && rep->type == AST_NUMBER) return atoi(rep->text);
     }
     return 0;
 }
@@ -337,14 +383,30 @@ static ASTNode* parse_primary() {
             if (node->type == AST_IDENTIFIER) {
                  ASTNode* call = ast_new(AST_CALL);
                  strcpy(call->text, node->text);
-                 free(node); 
+                 free(node);
                  node = call;
-                 
+
                  while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
                      node->children[node->child_count++] = parse_expression();
                      if (!match(TOKEN_COMMA)) break;
                  }
                  expect(TOKEN_RPAREN);
+
+                 // Macro alias expansion (spec 5.3): a call to
+                 // a macro name is replaced by a clone of the
+                 // body with arguments substituted for the
+                 // parameters.
+                 MacroEntry* macro = find_macro(node->text);
+                 if (macro) {
+                     if (node->child_count != macro->param_count) {
+                         printf("Error: macro %s takes %d argument(s), got %d\n",
+                                macro->name, macro->param_count, node->child_count);
+                     } else {
+                         ASTNode* expanded = ast_clone(macro->body);
+                         macro_substitute(expanded, macro, node);
+                         node = expanded;
+                     }
+                 }
             } else if (node->type == AST_MEMBER_ACCESS) {
                  // Convert Member Access + Call -> Method Call (Alias Substitution case)
                  ASTNode* receiver = node->children[0];
@@ -1061,7 +1123,7 @@ static ASTNode* parse_statement() {
             if (current()->type == TOKEN_SEMICOLON) advance();
             return node;
         }
-        case TOKEN_FALLTHROUGH: advance(); return NULL;
+        case TOKEN_FALLTHROUGH: advance(); return ast_new(AST_FALLTHROUGH);
         default: return parse_expression_statement();
     }
 }
@@ -1207,6 +1269,14 @@ static void parse_import(ASTNode* program) {
             strcpy(imp->text, current()->text);
             program->children[program->child_count++] = imp;
             advance();
+            // `import X as ...` forces system-module import
+            // (spec 3.2): local resolution is skipped. The
+            // flag rides on the import node (is_extern slot).
+            if (current()->type == TOKEN_IDENTIFIER && strcmp(current()->text, "as") == 0) {
+                imp->is_extern = 1;
+                advance(); // as
+                if (current()->type == TOKEN_IDENTIFIER) advance(); // depot qualifier
+            }
             while(match(TOKEN_COMMA)) {
                  if (current()->type == TOKEN_IDENTIFIER || current()->type == TOKEN_STRING_LITERAL || current()->type == TOKEN_STRING) {
                      ASTNode* imp2 = ast_new(AST_IMPORT);
@@ -1221,6 +1291,12 @@ static void parse_import(ASTNode* program) {
 
 static void parse_export(ASTNode* program) {
     advance();
+    // Record the exported names in an AST_EXPORT node so the
+    // driver can enforce visibility (spec 3.4, COIL-127).
+    // The entries themselves still parse as declarations,
+    // exactly as before.
+    ASTNode* exp = ast_new(AST_EXPORT);
+    program->children[program->child_count++] = exp;
     if (match(TOKEN_LPAREN)) {
         while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
             int start_pos = pos;
@@ -1228,8 +1304,34 @@ static void parse_export(ASTNode* program) {
                 advance();
                 continue;
             }
+            // The exported name: a plain entry IS the name;
+            // a signature entry (int add(int, int)) names the
+            // identifier before its '('. (A bare name parses
+            // as no declaration at all, so watch the tokens,
+            // not the AST.)
+            int entry_start = pos;
             parse_top_level_decl(program);
-            
+            const char* entry_name = NULL;
+            char dotted[256];
+            if (entry_start < tokens.count &&
+                tokens.tokens[entry_start].type == TOKEN_IDENTIFIER) {
+                entry_name = tokens.tokens[entry_start].text;
+            } else {
+                for (int i = entry_start; i < pos && i < tokens.count; i++) {
+                    if (tokens.tokens[i].type == TOKEN_LPAREN && i > entry_start) {
+                        snprintf(dotted, sizeof(dotted), "%s", tokens.tokens[i - 1].text);
+                        char* dot = strrchr(dotted, '.');
+                        entry_name = dot ? dot + 1 : dotted;
+                        break;
+                    }
+                }
+            }
+            if (entry_name) {
+                ASTNode* name_node = ast_new(AST_IDENTIFIER);
+                strcpy(name_node->text, entry_name);
+                exp->children[exp->child_count++] = name_node;
+            }
+
             if (pos == start_pos) {
                  printf("Error: Unexpected token in export: %s\n", current()->text);
                  advance();
@@ -1237,6 +1339,9 @@ static void parse_export(ASTNode* program) {
         }
         expect(TOKEN_RPAREN);
     } else {
+        ASTNode* name_node = ast_new(AST_IDENTIFIER);
+        strcpy(name_node->text, current()->text);
+        exp->children[exp->child_count++] = name_node;
         advance(); // export symbol
     }
 }
@@ -1411,11 +1516,27 @@ static void parse_single_alias(ASTNode* program) {
         }
 
         if (match(TOKEN_LPAREN)) {
-            // Macro alias: alias SQUARE(x) = ...
-             while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) advance(); // skip args
-             expect(TOKEN_RPAREN);
-             // Assume macro, skip for now
-             if (match(TOKEN_ASSIGN)) parse_expression();
+            // Macro alias: alias SQUARE(x) = ((x) * (x))
+            // (spec 5.3). Capture the parameter names and the
+            // body as a template for call-site expansion.
+            char params[8][64];
+            int pc = 0;
+            while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                if (current()->type == TOKEN_COMMA) { advance(); continue; }
+                if (pc < 8) snprintf(params[pc++], 64, "%s", current()->text);
+                advance();
+            }
+            expect(TOKEN_RPAREN);
+            if (match(TOKEN_ASSIGN)) {
+                ASTNode* body = parse_expression();
+                if (macro_count < MAX_MACROS) {
+                    MacroEntry* m = &macro_table[macro_count++];
+                    strcpy(m->name, name);
+                    m->param_count = pc;
+                    for (int i = 0; i < pc; i++) strcpy(m->params[i], params[i]);
+                    m->body = body;
+                }
+            }
         }
         else if (match(TOKEN_ASSIGN)) {
              // alias X = Y
@@ -1461,8 +1582,93 @@ static void parse_single_alias(ASTNode* program) {
     }
 }
 
+// Read one type spelling for the paired grouped alias:
+// [struct|union] name, with an optional [] suffix. Writes
+// the canonical text ("struct Point", "int[]", ...).
+static int parse_alias_type_text(char* out, size_t outsz) {
+    out[0] = 0;
+    if (current()->type == TOKEN_STRUCT || current()->type == TOKEN_UNION) {
+        snprintf(out, outsz, "%s ", current()->text);
+        advance();
+    }
+    if (current()->type == TOKEN_EOF) return 0;
+    strncat(out, current()->text, outsz - strlen(out) - 1);
+    advance();
+    if (match(TOKEN_LBRACKET)) {
+        while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+        expect(TOKEN_RBRACKET);
+        strncat(out, "[]", outsz - strlen(out) - 1);
+    }
+    return 1;
+}
+
 static void parse_alias(ASTNode* program) {
     advance(); // alias
+    if (current()->type == TOKEN_LPAREN) {
+        // Spec 5.1 paired grouped form:
+        //   alias (a, b) = (T1, T2)
+        // Scan the name list first; if a '=' and a second
+        // list follow, it is the paired form. Otherwise fall
+        // back to a list of single aliases.
+        int save = pos;
+        char names[16][64];
+        int name_is_ident[16];
+        int name_count = 0;
+        int paired = 0;
+        advance(); // '('
+        while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+            if (current()->type == TOKEN_COMMA) { advance(); continue; }
+            if (name_count < 16) {
+                // The lexer rewrites built-in alias spellings
+                // (i8, i16, ...) to their canonical type text,
+                // so a name may arrive as a type token: record
+                // that; it can only re-declare itself.
+                name_is_ident[name_count] = current()->type == TOKEN_IDENTIFIER;
+                snprintf(names[name_count++], 64, "%s", current()->text);
+            }
+            advance();
+        }
+        if (match(TOKEN_RPAREN) && current()->type == TOKEN_ASSIGN) {
+            advance(); // '='
+            if (current()->type == TOKEN_LPAREN) paired = 1;
+        }
+        if (paired) {
+            advance(); // '('
+            char types[16][300];
+            int type_count = 0;
+            while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                if (current()->type == TOKEN_COMMA) { advance(); continue; }
+                if (type_count < 16 && parse_alias_type_text(types[type_count], 300)) type_count++;
+                else advance();
+            }
+            expect(TOKEN_RPAREN);
+            if (type_count != name_count) {
+                printf("Error: grouped alias pairs %d names with %d types\n", name_count, type_count);
+                return;
+            }
+            for (int i = 0; i < name_count; i++) {
+                if (!name_is_ident[i]) {
+                    // A built-in alias name (arrived as its
+                    // canonical type token): re-declaring it as
+                    // the same type is a no-op; anything else
+                    // would redefine the built-in.
+                    if (strcmp(names[i], types[i]) != 0) {
+                        printf("Error: grouped alias cannot redefine built-in alias '%s' as '%s'\n", names[i], types[i]);
+                    }
+                    continue;
+                }
+                ASTNode* node = ast_new(AST_TYPE_ALIAS);
+                strcpy(node->text, names[i]);
+                ASTNode* typeNode = ast_new(AST_IDENTIFIER);
+                strcpy(typeNode->text, types[i]);
+                node->children[0] = typeNode;
+                node->child_count = 1;
+                program->children[program->child_count++] = node;
+            }
+            return;
+        }
+        pos = save; // not the paired form: reparse as singles
+    }
     if (match(TOKEN_LPAREN)) {
         // Grouped aliases: alias ( ... )
         while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
@@ -1573,17 +1779,23 @@ static void parse_top_level_decl(ASTNode* program) {
 
     // Variable or Function declaration
     // Check if it starts with a type OR is an implicit function definition (e.g. main() or myfunc())
-    if (is_type_token(t->type) || t->type == TOKEN_MAIN || 
+    if (is_type_token(t->type) || t->type == TOKEN_MAIN || t->type == TOKEN_LPAREN ||
         (t->type == TOKEN_IDENTIFIER && tokens.tokens[pos+1].type == TOKEN_LPAREN)) {
              
          // Parse type info
          // int is_struct = 0; // UNUSED
 
          if (t->type == TOKEN_LPAREN) {
-              // Parse tuple type: (int, string)
+              // Parse tuple type: (int, string) (spec 8.2)
               advance(); // (
               strcpy(type_name, "(");
               while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                  // Keep multi-token types readable: a space
+                  // between tokens except after '(' and ','.
+                  size_t tl = strlen(type_name);
+                  if (tl > 1 && type_name[tl - 1] != ',' && type_name[tl - 1] != '(') {
+                      strcat(type_name, " ");
+                  }
                   strcat(type_name, current()->text);
                   advance();
                   if (match(TOKEN_COMMA)) strcat(type_name, ",");

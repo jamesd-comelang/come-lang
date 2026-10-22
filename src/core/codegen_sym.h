@@ -34,3 +34,17 @@ static const char* get_local_variable_type(const char* name) {
     }
     return NULL;
 }
+
+// Rewrite a name's recorded type (COIL-127: a `var` local
+// locks to its inferred type at declaration/first assignment,
+// spec 10.1). Returns 1 when the name was found.
+static int update_local_variable_type(const char* name, const char* type) {
+    for (int i = 0; i < local_var_count; i++) {
+        if (strcmp(local_vars[i].name, name) == 0) {
+            strncpy(local_vars[i].type, type, sizeof(local_vars[i].type) - 1);
+            local_vars[i].type[sizeof(local_vars[i].type) - 1] = 0;
+            return 1;
+        }
+    }
+    return 0;
+}

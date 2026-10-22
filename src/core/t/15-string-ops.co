@@ -1,0 +1,52 @@
+module core_test
+import std
+
+// COIL-127 coverage: string concatenation (6.5) and the
+// expression rules of section 14 - ternary on strings and
+// == as identity on composites.
+
+string shout(string s) {
+    return s.upper()
+}
+
+int main() {
+    string name = "world"
+
+    string g1 = "Hello, " + name
+    if (g1 != "Hello, world") { std.out.printf("FAIL: literal + var\n"); return 1 }
+    string g2 = name + "!"
+    if (g2 != "world!") { std.out.printf("FAIL: var + literal\n"); return 1 }
+    string g3 = name + name
+    if (g3 != "worldworld") { std.out.printf("FAIL: var + var\n"); return 1 }
+    string g4 = "a" + "b" + name
+    if (g4 != "abworld") { std.out.printf("FAIL: chained +\n"); return 1 }
+    // Concatenation produces a new string; operands unchanged.
+    if (name != "world") { std.out.printf("FAIL: operand mutated\n"); return 1 }
+    string g5 = shout("hey ") + name
+    if (g5 != "HEY world") { std.out.printf("FAIL: call + var\n"); return 1 }
+
+    // Ternary choosing between strings.
+    string c = (5 > 3) ? "yes" : "no"
+    if (c != "yes") { std.out.printf("FAIL: string ternary\n"); return 1 }
+    string d = (3 > 5) ? "yes" : "no"
+    if (d != "no") { std.out.printf("FAIL: string ternary 2\n"); return 1 }
+
+    // == on composites is identity (same buffer), per 14.
+    int a[] = {1, 2}
+    int b[] = a
+    int e[] = {1, 2}
+    if (!(a == b)) { std.out.printf("FAIL: array identity same\n"); return 1 }
+    if (a == e) { std.out.printf("FAIL: array identity distinct\n"); return 1 }
+
+    string s = "x"
+    string t = s
+    string u = "x"
+    if (!(s == t)) { std.out.printf("FAIL: string identity same\n"); return 1 }
+    if (s == u) { std.out.printf("FAIL: string identity distinct buffers\n"); return 1 }
+    // Against a literal, == compares contents.
+    if (s != "x") { std.out.printf("FAIL: string literal compare\n"); return 1 }
+    if ("x" != s) { std.out.printf("FAIL: literal-first compare\n"); return 1 }
+
+    std.out.printf("PASS: 15-string-ops\n")
+    return 0
+}

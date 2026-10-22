@@ -1,0 +1,30 @@
+module core_test
+import std
+
+// COIL-127 coverage: multiple return values (8.2). The
+// first function is the spec's own example.
+
+(int, string) add_n_compare(int a, int b) {
+    return (a + b), (a > b) ? ">" : "<="
+}
+
+(string, int) name_and_len(string s) {
+    return s, s.length()
+}
+
+int main() {
+    int sum
+    string cmp
+    (sum, cmp) = add_n_compare(5, 3)
+    if (sum != 8 || cmp != ">") { std.out.printf("FAIL: spec tuple %d %s\n", sum, cmp); return 1 }
+
+    // Destructuring also declares fresh names.
+    (total, sign) = add_n_compare(2, 9)
+    if (total != 11 || sign != "<=") { std.out.printf("FAIL: tuple declare\n"); return 1 }
+
+    (nm, ln) = name_and_len("come")
+    if (nm != "come" || ln != 4) { std.out.printf("FAIL: tuple order\n"); return 1 }
+
+    std.out.printf("PASS: 16-tuples\n")
+    return 0
+}

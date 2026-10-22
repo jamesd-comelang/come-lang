@@ -1,0 +1,11 @@
+module geom
+
+export (add2)
+
+int add2(int x) {
+    return x + 2
+}
+
+int secret(int x) {
+    return x * 10
+}

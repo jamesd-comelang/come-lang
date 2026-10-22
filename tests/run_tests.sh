@@ -34,6 +34,7 @@ bash tests/run_module_project.sh
 bash tests/run_extern_test.sh
 bash tests/run_proc_test.sh
 bash tests/run_coro_test.sh
+bash tests/run_spec_test.sh
 
 # Examples are documentation that must run (COIL-119): every
 # example at the top level of examples/ builds and exits 0.

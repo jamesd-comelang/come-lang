@@ -21,6 +21,21 @@ come_string_t* come_string_new(TALLOC_CTX* ctx, const char* str) {
     return come_string_new_len(ctx, str, strlen(str));
 }
 
+// Concatenation (spec 6.5: `+` produces a new string; the
+// operands are unchanged because strings are immutable).
+come_string_t* come_string_concat(TALLOC_CTX* ctx, const come_string_t* a, const come_string_t* b) {
+    size_t la = a ? strlen(a->data) : 0;
+    size_t lb = b ? strlen(b->data) : 0;
+    come_string_t* s = mem_talloc_alloc(ctx, sizeof(come_string_t) + la + lb + 1);
+    if (!s) return NULL;
+    s->size = (uint32_t)(sizeof(come_string_t) + la + lb + 1);
+    s->count = (uint32_t)(la + lb);
+    if (la) memcpy(s->data, a->data, la);
+    if (lb) memcpy(s->data + la, b->data, lb);
+    s->data[la + lb] = '\0';
+    return s;
+}
+
 come_string_t* come_string_new_len(TALLOC_CTX* ctx, const char* str, size_t len) {
     // Allocate single block struct + data
     come_string_t* s = mem_talloc_alloc(ctx, sizeof(come_string_t) + len + 1);

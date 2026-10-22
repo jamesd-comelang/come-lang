@@ -1,0 +1,8 @@
+module main
+import std
+import geom
+
+int main() {
+    std.out.printf("export ok %d\n", geom.add2(40))
+    return 0
+}

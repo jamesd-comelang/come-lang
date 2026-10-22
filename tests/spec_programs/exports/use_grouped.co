@@ -1,0 +1,10 @@
+module main
+import std
+import (geom)
+
+alias printf = std.out.printf
+
+int main() {
+    printf("grouped %d\n", geom.add2(1))
+    return 0
+}

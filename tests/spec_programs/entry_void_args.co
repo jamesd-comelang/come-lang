@@ -1,0 +1,7 @@
+module main
+import std
+
+// Spec 2.1: void main(string args[]).
+void main(string args[]) {
+    std.out.printf("entry void args ok %s\n", args[1])
+}

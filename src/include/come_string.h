@@ -23,6 +23,7 @@ typedef come_string_t* string;
 // Constructor/Destructor
 come_string_t* come_string_new(TALLOC_CTX* ctx, const char* str);
 come_string_t* come_string_new_len(TALLOC_CTX* ctx, const char* str, size_t len);
+come_string_t* come_string_concat(TALLOC_CTX* ctx, const come_string_t* a, const come_string_t* b);
 void come_string_free(come_string_t* str);
 
 // Core Methods

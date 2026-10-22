@@ -33,6 +33,7 @@ typedef enum {
     AST_ENUM_DECL,
     AST_UNION_DECL,
     AST_SWITCH,
+    AST_FALLTHROUGH,
     AST_CASE,
     AST_DEFAULT,
     AST_FOR,

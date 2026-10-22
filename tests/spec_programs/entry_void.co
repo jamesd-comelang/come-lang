@@ -1,0 +1,7 @@
+module main
+import std
+
+// Spec 2.1: void main() - implies exit code 0.
+void main() {
+    std.out.printf("entry void ok\n")
+}

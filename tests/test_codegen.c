@@ -1090,5 +1090,73 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-126 inferred-assignment codegen test passed!\033[0m\n");
+
+    // COIL-127: spec-conformance fixes - void main (2.1),
+    // tuple returns (8.2), the var type lock (10.1), and the
+    // string/non-string assignment class check.
+    {
+        const char* src127 =
+            "module m127\nimport std\n\n"
+            "(int, string) add_n_compare(int a, int b) {\n"
+            "    return (a + b), (a > b) ? \">\" : \"<=\"\n"
+            "}\n\n"
+            "void main() {\n"
+            "    int sum\n"
+            "    string cmp\n"
+            "    (sum, cmp) = add_n_compare(5, 3)\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil127.co", src127)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-127: tuple/void-main program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of127 = fopen("build/tests/coil127.co.c", "r");
+        if (!of127) { printf("COIL-127: output file missing\n"); return 1; }
+        static char buf127[262144];
+        size_t blen127 = fread(buf127, 1, sizeof(buf127) - 1, of127);
+        fclose(of127);
+        buf127[blen127] = 0;
+        if (!strstr(buf127, "come_m127__add_n_compare_ret_t") ||
+            !strstr(buf127, "void come_m127__main(void);") ||
+            !strstr(buf127, "__tup")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-127: tuple typedef, void main prototype, or destructure temp missing\033[0m\n");
+            return 1;
+        }
+        // var locks its type at the first assignment (10.1).
+        const char* bad_var =
+            "module m127b\nimport std\n\n"
+            "int main() {\n"
+            "    var x\n"
+            "    x = 123\n"
+            "    x = \"now a string\"\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_fail("build/tests/coil127bad1.co", bad_var)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-127: changing a var's locked type must be a compile error\033[0m\n");
+            return 1;
+        }
+        // A tuple function must return all its values (8.2).
+        const char* bad_arity =
+            "module m127c\nimport std\n\n"
+            "(int, string) f(int a) {\n"
+            "    return a\n"
+            "}\n\n"
+            "int main() { return 0; }\n";
+        if (!gen_fail("build/tests/coil127bad2.co", bad_arity)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-127: a short tuple return must be a compile error\033[0m\n");
+            return 1;
+        }
+        // Multiple values from a plain function (8.2).
+        const char* bad_multi =
+            "module m127d\nimport std\n\n"
+            "int f(int a) {\n"
+            "    return a, a\n"
+            "}\n\n"
+            "int main() { return 0; }\n";
+        if (!gen_fail("build/tests/coil127bad3.co", bad_multi)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-127: multiple returns without a tuple type must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-127 spec-conformance codegen test passed!\033[0m\n");
     return 0;
 }

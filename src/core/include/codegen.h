@@ -21,4 +21,9 @@ extern int g_codegen_chain_import_count;
 // COIL-111: 1 while generating a system module (its source lives
 // in the compiler's own tree); extern "C" is allowed only there.
 extern int g_codegen_system_module;
+// COIL-127 (spec 3.4): the driver registers each local module's
+// exported names as it parses the module's files; codegen then
+// rejects cross-module calls to symbols the module did not
+// export. A module with no export statement stays open.
+void codegen_register_module_exports(const char* module, const char** names, int count);
 #endif

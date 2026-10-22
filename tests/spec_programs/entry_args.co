@@ -1,0 +1,18 @@
+module main
+import std
+
+// Spec 2.1: int main(string args[]) - args[0] is the
+// program name, args[1] the first argument; the returned
+// int is the exit code.
+int main(string args[]) {
+    if (args[1] != "hello") {
+        std.out.printf("FAIL: args[1] '%s'\n", args[1])
+        return 1
+    }
+    if (args[0].length() == 0) {
+        std.out.printf("FAIL: args[0] empty\n")
+        return 1
+    }
+    std.out.printf("entry args ok\n")
+    return 3
+}

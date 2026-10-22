@@ -1,0 +1,60 @@
+module core_test
+import std
+
+// COIL-127 coverage: comments (2.2), semicolons (15),
+// constants and enums (4), aliases (5).
+
+alias tcpport_t = ushort
+alias MAX_ARRAY = 5
+alias SQUARE(x) = ((x) * (x))
+alias (mybyte, myshort) = (byte, short)
+alias (i8, i16) = (byte, short)
+
+const PI = 3.14
+
+const (
+    a = 1,
+    b = 2,
+)
+
+const (
+    RED = enum,
+    YELLOW,
+    GREEN,
+    HL_RED = enum(8),
+    HL_YELLOW,
+)
+
+int main() {
+    // a comment line, and a /* block */ in the middle
+    int semi = 1; int other = 2;
+    if (semi + other != 3) { std.out.printf("FAIL: semicolons\n"); return 1 }
+
+    if (a != 1 || b != 2) { std.out.printf("FAIL: const group\n"); return 1 }
+    if (PI < 3.13 || PI > 3.15) { std.out.printf("FAIL: const float\n"); return 1 }
+    if (RED != 0 || YELLOW != 1 || GREEN != 2) { std.out.printf("FAIL: enum auto\n"); return 1 }
+    if (HL_RED != 8 || HL_YELLOW != 9) { std.out.printf("FAIL: enum start\n"); return 1 }
+
+    tcpport_t port = 8080
+    if (port != 8080) { std.out.printf("FAIL: type alias\n"); return 1 }
+    int arr[MAX_ARRAY]
+    if (arr.length() != 5) { std.out.printf("FAIL: const alias size\n"); return 1 }
+    mybyte mb = 3
+    myshort ms = 4
+    if (mb + ms != 7) { std.out.printf("FAIL: grouped alias\n"); return 1 }
+    i8 bi = 1
+    i16 bs = 2
+    if (bi + bs != 3) { std.out.printf("FAIL: builtin alias names\n"); return 1 }
+
+    if (SQUARE(5) != 25) { std.out.printf("FAIL: macro alias\n"); return 1 }
+    if (SQUARE(2 + 3) != 25) { std.out.printf("FAIL: macro alias expr arg\n"); return 1 }
+
+    // Digit separators and the L suffix (6.1): the value
+    // itself must be the full long (checked via division,
+    // not a %d print).
+    long sep = 10'000'000'000L
+    if (int(sep / 100000) != 100000) { std.out.printf("FAIL: digit separator\n"); return 1 }
+
+    std.out.printf("PASS: 12-const-alias\n")
+    return 0
+}

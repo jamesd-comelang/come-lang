@@ -141,9 +141,30 @@ typedef struct {
 
 static void compile_file(const char *source_path, const char *forced_o_path,
                          const ModuleGroup *group);
-static void compile_import(const char *import_name, const char *current_file);
+static void compile_import(const char *import_name, const char *current_file, int force_system);
 
 /* ---------- Compilation ---------- */
+
+// Is this source file part of a system module (COIL-111,
+// spec 3.3)? System sources live in the compiler's own tree:
+// <root>/src/ or <root>/lib/modules, root being the
+// executable's grandparent directory.
+static int file_is_system_module(const char *abs_path) {
+    char exe_path_s[PATH_MAX];
+    ssize_t len_s = readlink("/proc/self/exe", exe_path_s, sizeof(exe_path_s) - 1);
+    if (len_s == -1) return 0;
+    exe_path_s[len_s] = 0;
+    char root[PATH_MAX];
+    snprintf(root, sizeof(root), "%s", exe_path_s);
+    dirname(root); // bin/build dir
+    dirname(root); // the compiler tree root
+    char prefix[PATH_MAX];
+    snprintf(prefix, sizeof(prefix), "%s/src/", root);
+    if (strncmp(abs_path, prefix, strlen(prefix)) == 0) return 1;
+    snprintf(prefix, sizeof(prefix), "%s/lib/modules/", root);
+    if (strncmp(abs_path, prefix, strlen(prefix)) == 0) return 1;
+    return 0;
+}
 
 // Compile a single file, recursing on imports. `group` is non-NULL
 // when the file belongs to a directory module (COIL-108).
@@ -165,6 +186,26 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         die("Parsing failed: %s", abs_path);
     }
 
+    // 1b. Export registry (spec 3.4, COIL-127): record this
+    // module's exported names so importers' codegen can
+    // enforce visibility. This runs at parse time, on every
+    // build: registration must not depend on the transpile
+    // cache being cold. System modules are exempt - their
+    // surface is the runtime's own.
+    if (!file_is_system_module(abs_path) && ast->type == AST_PROGRAM) {
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode* ch = ast->children[i];
+            if (ch && ch->type == AST_EXPORT) {
+                const char* names[64];
+                int n = 0;
+                for (int j = 0; j < ch->child_count && n < 64; j++) {
+                    names[n++] = ch->children[j]->text;
+                }
+                if (n > 0) codegen_register_module_exports(ast->text, names, n);
+            }
+        }
+    }
+
     // 2. Scan for imports and recurse
     if (ast->type == AST_PROGRAM) {
         for (int i = 0; i < ast->child_count; i++) {
@@ -175,7 +216,7 @@ static void compile_file(const char *source_path, const char *forced_o_path,
                     continue;
                 }
 
-                compile_import(import_name, abs_path);
+                compile_import(import_name, abs_path, ast->children[i]->is_extern);
             }
         }
     }
@@ -248,28 +289,9 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         g_codegen_group_has_exit = (grouped && group->is_primary) ? group->has_exit : -1;
         g_codegen_chain_imports = (grouped && group->is_primary) ? group->imports : NULL;
         g_codegen_chain_import_count = (grouped && group->is_primary) ? group->import_count : 0;
-        // System module (COIL-111, spec 3.3): the source lives in
-        // the compiler's own tree - <root>/src/ or <root>/lib/modules
-        // where <root> is the executable's grandparent directory.
-        g_codegen_system_module = 0;
-        {
-            char exe_path_s[PATH_MAX];
-            ssize_t len_s = readlink("/proc/self/exe", exe_path_s, sizeof(exe_path_s) - 1);
-            if (len_s != -1) {
-                exe_path_s[len_s] = 0;
-                char root[PATH_MAX];
-                snprintf(root, sizeof(root), "%s", exe_path_s);
-                dirname(root); // bin/build dir
-                dirname(root); // the compiler tree root
-                char prefix[PATH_MAX];
-                snprintf(prefix, sizeof(prefix), "%s/src/", root);
-                if (strncmp(abs_path, prefix, strlen(prefix)) == 0)
-                    g_codegen_system_module = 1;
-                snprintf(prefix, sizeof(prefix), "%s/lib/modules/", root);
-                if (strncmp(abs_path, prefix, strlen(prefix)) == 0)
-                    g_codegen_system_module = 1;
-            }
-        }
+        // System module (COIL-111, spec 3.3): the source lives
+        // in the compiler's own tree.
+        g_codegen_system_module = file_is_system_module(abs_path);
         int gen_rc = generate_c_from_ast(ast, c_file, abs_path, 1);
         g_codegen_suppress_singletons = 0;
         g_codegen_group_has_init = -1;
@@ -425,7 +447,7 @@ static void compile_group(char paths[][PATH_MAX], int count, const char *module_
 // shapes under the project src/ tree, then the system depot. A file
 // and a directory providing the same module at one location is an
 // error - the module would be ambiguous.
-static void compile_import(const char *import_name, const char *current_file) {
+static void compile_import(const char *import_name, const char *current_file, int force_system) {
     char base_dir[PATH_MAX] = {0};
     strncpy(base_dir, current_file, sizeof(base_dir) - 1);
     dirname(base_dir);
@@ -436,7 +458,9 @@ static void compile_import(const char *import_name, const char *current_file) {
     snprintf(stems[2], PATH_MAX, "%s/src", g_project_root);
     snprintf(stems[3], PATH_MAX, "%s/src/modules", g_project_root);
 
-    for (int s = 0; s < 4; s++) {
+    // `import X as ...` (spec 3.2): skip local resolution
+    // (stems 0-1) and resolve from the system depot only.
+    for (int s = force_system ? 2 : 0; s < 4; s++) {
         char file[PATH_MAX], dir[PATH_MAX];
         snprintf(file, sizeof(file), "%s/%s.co", stems[s], import_name);
         snprintf(dir, sizeof(dir), "%s/%s", stems[s], import_name);

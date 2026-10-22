@@ -1,0 +1,8 @@
+module main
+import std
+import geom as sys
+
+int main() {
+    std.out.printf("should not resolve %d\n", geom.add2(1))
+    return 0
+}

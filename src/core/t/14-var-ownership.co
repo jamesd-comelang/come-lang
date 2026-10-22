@@ -1,0 +1,68 @@
+module core_test
+import std
+
+// COIL-127 coverage: var (10.1), fixed arrays without an
+// initializer (6.4, 7.3), the 7.2 scope example, struct
+// methods and universal methods on structs (6.2, 7.4).
+
+struct Point {
+    int x
+    int y
+}
+
+union TwoBytes {
+    short signed_s
+    ushort unsigned_s
+    byte first_byte
+}
+
+int Point.sum() {
+    return self.x + self.y
+}
+
+int main() {
+    var x
+    x = 123
+    if (x != 123) { std.out.printf("FAIL: var lock int\n"); return 1 }
+    var y = "hello"
+    if (y.length() != 5) { std.out.printf("FAIL: var string init\n"); return 1 }
+    var z = 2.5
+    if (z < 2.4 || z > 2.6) { std.out.printf("FAIL: var double init\n"); return 1 }
+
+    // A fixed array with no initializer is allocated at its
+    // declared length, zero-filled (spec 6.4).
+    int arr[5]
+    if (arr.length() != 5) { std.out.printf("FAIL: fixed length %d\n", arr.length()); return 1 }
+    if (arr[4] != 0) { std.out.printf("FAIL: fixed zero fill\n"); return 1 }
+    arr[0] = 7
+    if (arr[0] != 7) { std.out.printf("FAIL: fixed write\n"); return 1 }
+    if (arr.bytesize() != 20) { std.out.printf("FAIL: fixed bytesize\n"); return 1 }
+
+    // The 7.2 example shape: a buffer built in an inner
+    // scope, assigned to an outer variable, stays usable.
+    byte r[]
+    {
+        byte buf[]
+        buf.resize(4)
+        buf[0] = 65
+        r = buf
+    }
+    if (r.length() != 4 || r[0] != 65) { std.out.printf("FAIL: scope buffer\n"); return 1 }
+
+    // Structs: designated init, a method with implicit self,
+    // and the universal methods (7.4).
+    struct Point p = { .x = 3, .y = 4 }
+    if (p.sum() != 7) { std.out.printf("FAIL: struct method\n"); return 1 }
+    if (p.length() != 2) { std.out.printf("FAIL: struct length\n"); return 1 }
+    if (p.bytesize() != 8) { std.out.printf("FAIL: struct bytesize %d\n", p.bytesize()); return 1 }
+    string pt = p.type()
+    if (pt != "struct") { std.out.printf("FAIL: struct type\n"); return 1 }
+
+    // Unions (6.3): overlapping storage, C-compatible.
+    union TwoBytes u
+    u.unsigned_s = 65535
+    if (u.signed_s != -1 || u.first_byte != -1) { std.out.printf("FAIL: union overlap\n"); return 1 }
+
+    std.out.printf("PASS: 14-var-ownership\n")
+    return 0
+}
