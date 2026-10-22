@@ -18,4 +18,7 @@ extern int g_codegen_group_has_init;
 extern int g_codegen_group_has_exit;
 extern const char** g_codegen_chain_imports;
 extern int g_codegen_chain_import_count;
+// COIL-111: 1 while generating a system module (its source lives
+// in the compiler's own tree); extern "C" is allowed only there.
+extern int g_codegen_system_module;
 #endif

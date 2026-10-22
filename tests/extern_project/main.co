@@ -1,0 +1,11 @@
+module main
+import std
+import exttest
+
+// COIL-111 acceptance program: a user module calling a system
+// module that wraps a C library function via extern "C".
+
+int main() {
+    std.out.printf("magnitude: %d\n", exttest.magnitude(0 - 42))
+    return 0
+}

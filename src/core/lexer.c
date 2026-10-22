@@ -62,6 +62,7 @@ int lex_file(const char* filename, TokenList* out) {
             else if(MATCH_KEYWORD("alias", TOKEN_ALIAS)) { tok.type=TOKEN_ALIAS; strcpy(tok.text,"alias"); p+=5; }
             else if(MATCH_KEYWORD("method", TOKEN_METHOD)) { tok.type=TOKEN_METHOD; strcpy(tok.text,"method"); p+=6; }
             else if(MATCH_KEYWORD("export", TOKEN_EXPORT)) { tok.type=TOKEN_EXPORT; strcpy(tok.text,"export"); p+=6; }
+            else if(MATCH_KEYWORD("extern", TOKEN_EXTERN)) { tok.type=TOKEN_EXTERN; strcpy(tok.text,"extern"); p+=6; }
             else if(MATCH_KEYWORD("var", TOKEN_VAR)) { tok.type=TOKEN_VAR; strcpy(tok.text,"var"); p+=3; }
             
             else if(MATCH_KEYWORD("switch", TOKEN_SWITCH)) { tok.type=TOKEN_SWITCH; strcpy(tok.text,"switch"); p+=6; }

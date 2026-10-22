@@ -227,6 +227,38 @@ int main() {
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
 
+    // COIL-111: extern "C" is rejected in a user module (the
+    // default) and generates a raw C prototype + unmangled calls
+    // in a system module.
+    {
+        const char* src111 =
+            "module sysmod\nimport std\n\n"
+            "extern \"C\" int abs(int x)\n\n"
+            "int magnitude(int x) {\n    return abs(x)\n}\n";
+        if (!gen_fail("build/tests/coil111_user.co", src111)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-111: extern in a user module must be a compile error\033[0m\n");
+            return 1;
+        }
+        g_codegen_system_module = 1;
+        int ok111 = gen_ok("build/tests/coil111_sys.co", src111);
+        g_codegen_system_module = 0;
+        if (!ok111) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-111: extern in a system module must generate\033[0m\n");
+            return 1;
+        }
+        static char buf111[262144];
+        FILE* of111 = fopen("build/tests/coil111_sys.co.c", "r");
+        size_t bl111 = fread(buf111, 1, sizeof(buf111) - 1, of111);
+        fclose(of111);
+        buf111[bl111] = 0;
+        if (!strstr(buf111, "int abs(int") || !strstr(buf111, "return abs(x);") ||
+            strstr(buf111, "come_sysmod__abs")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-111: raw prototype / unmangled call missing in generated C\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-111 extern test passed!\033[0m\n");
+
     // COIL-133: string literals in argument and return positions
     // must be materialized as come_string_t - passing the raw C
     // literal made callees read string headers out of rodata and

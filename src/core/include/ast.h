@@ -60,6 +60,7 @@ typedef struct ASTNode {
     int array_size;   // For array type nodes: fixed size (T[N]), 0 = dynamic/not an array (COIL-101)
     int layout_packed; // For struct decls: 1 = packed (no padding) (COIL-104)
     int layout_align;  // For struct decls: required alignment, 0 = default (COIL-104)
+    int is_extern;     // For function decls: extern "C" (COIL-111)
 } ASTNode;
 ASTNode* ast_new(ASTNodeType type);
 void ast_free(ASTNode* node);

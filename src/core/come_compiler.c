@@ -248,12 +248,35 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         g_codegen_group_has_exit = (grouped && group->is_primary) ? group->has_exit : -1;
         g_codegen_chain_imports = (grouped && group->is_primary) ? group->imports : NULL;
         g_codegen_chain_import_count = (grouped && group->is_primary) ? group->import_count : 0;
+        // System module (COIL-111, spec 3.3): the source lives in
+        // the compiler's own tree - <root>/src/ or <root>/lib/modules
+        // where <root> is the executable's grandparent directory.
+        g_codegen_system_module = 0;
+        {
+            char exe_path_s[PATH_MAX];
+            ssize_t len_s = readlink("/proc/self/exe", exe_path_s, sizeof(exe_path_s) - 1);
+            if (len_s != -1) {
+                exe_path_s[len_s] = 0;
+                char root[PATH_MAX];
+                snprintf(root, sizeof(root), "%s", exe_path_s);
+                dirname(root); // bin/build dir
+                dirname(root); // the compiler tree root
+                char prefix[PATH_MAX];
+                snprintf(prefix, sizeof(prefix), "%s/src/", root);
+                if (strncmp(abs_path, prefix, strlen(prefix)) == 0)
+                    g_codegen_system_module = 1;
+                snprintf(prefix, sizeof(prefix), "%s/lib/modules/", root);
+                if (strncmp(abs_path, prefix, strlen(prefix)) == 0)
+                    g_codegen_system_module = 1;
+            }
+        }
         int gen_rc = generate_c_from_ast(ast, c_file, abs_path, 1);
         g_codegen_suppress_singletons = 0;
         g_codegen_group_has_init = -1;
         g_codegen_group_has_exit = -1;
         g_codegen_chain_imports = NULL;
         g_codegen_chain_import_count = 0;
+        g_codegen_system_module = 0;
         if (gen_rc != 0) {
             die("Codegen failed: %s", abs_path);
         }

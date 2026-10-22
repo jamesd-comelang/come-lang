@@ -28,6 +28,8 @@ int g_codegen_group_has_init = -1;
 int g_codegen_group_has_exit = -1;
 const char** g_codegen_chain_imports = NULL;
 int g_codegen_chain_import_count = 0;
+// COIL-111: system-module generation (see codegen.h).
+int g_codegen_system_module = 0;
 static void codegen_error(const char* fmt, ...) {
     char buf[512];
     va_list ap;
@@ -382,9 +384,14 @@ static void check_numeric_store(const char* target_type, ASTNode* expr,
 // in the parser's fn: form ("fn:RET(T1,T2)"), built once per file.
 // Struct methods (Rect.area style) are excluded: they need a
 // receiver and cannot be passed as bare names.
-typedef struct { char name[128]; char sig[600]; } FnSig;
+typedef struct { char name[128]; char sig[600]; int is_extern; } FnSig;
 static FnSig g_module_fns[256];
 static int g_module_fn_count = 0;
+static int is_extern_fn(const char* name) {
+    for (int i = 0; i < g_module_fn_count; i++)
+        if (g_module_fns[i].is_extern && strcmp(g_module_fns[i].name, name) == 0) return 1;
+    return 0;
+}
 
 static void build_fn_sig(ASTNode* fn, char* out, size_t n) {
     const char* ret = "void";
@@ -425,6 +432,7 @@ static void collect_module_fns(ASTNode* ast) {
                 continue; // struct method (Rect_area): needs a receiver
             FnSig* e = &g_module_fns[g_module_fn_count++];
             snprintf(e->name, sizeof(e->name), "%s", ch->text);
+            e->is_extern = ch->is_extern;
             build_fn_sig(ch, e->sig, sizeof(e->sig));
         }
     }
@@ -662,8 +670,10 @@ static void generate_expression(FILE* f, ASTNode* node) {
         else if (expr_is_fn_value(node)) {
             // A named function used as a value: its code reference
             // (spec 8.3 - legal as a call argument; the store and
-            // call checks reject other positions).
-            fprintf(f, "come_%s__%s", current_module, node->text);
+            // call checks reject other positions). Extern "C"
+            // functions keep their raw C name (COIL-111).
+            if (is_extern_fn(node->text)) fprintf(f, "%s", node->text);
+            else fprintf(f, "come_%s__%s", current_module, node->text);
         }
         else fprintf(f, "%s", node->text);
     } else if (node->type == AST_UNARY_OP) {
@@ -1363,6 +1373,10 @@ static void generate_expression(FILE* f, ASTNode* node) {
              // Calling through a function parameter: the parameter
              // itself is the C function pointer (COIL-109).
              strcpy(mangled_name, node->text);
+        } else if (is_extern_fn(node->text)) {
+             // An extern "C" function is called by its raw C name
+             // (COIL-111).
+             strcpy(mangled_name, node->text);
         } else if (strncmp(node->text, "come_", 5) == 0 || strncmp(node->text, "std_", 4) == 0) {
              strcpy(mangled_name, node->text);
         } else {
@@ -1554,6 +1568,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 
       case AST_FUNCTION: {
         // [RetType] [Name] [Args...] [Block/Body]
+        if (node->is_extern) return; // COIL-111: prototype only (forward pass)
         emit_line_directive(f, node);
 
         reset_local_variables();
@@ -2397,6 +2412,19 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         strcpy(current_module, "main");
     }
 
+    // COIL-111 (spec 13, 3.3): extern "C" declarations may appear
+    // only in system modules. The driver marks system-module
+    // generation (source inside the compiler's own tree); the
+    // default is a user module.
+    if (!g_codegen_system_module && ast->type == AST_PROGRAM) {
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode* ch = ast->children[i];
+            if (ch && ch->type == AST_FUNCTION && ch->is_extern)
+                codegen_error("extern \"C\" is only allowed in system modules (spec 13): '%s' in module '%s'",
+                              ch->text, current_module);
+        }
+    }
+
 
     fprintf(f, "#include <stdio.h>\n");
     fprintf(f, "#include <string.h>\n");
@@ -2669,7 +2697,10 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                   char func_name[8192];
                   int is_main = (strcmp(child->text, "main") == 0);
                   char* underscore = strchr(child->text, '_');
-                  if (underscore && !is_main && isupper(child->text[0])) {
+                  if (child->is_extern) {
+                      // extern "C": the raw C prototype (COIL-111)
+                      snprintf(func_name, sizeof(func_name), "%s", child->text);
+                  } else if (underscore && !is_main && isupper(child->text[0])) {
                       // Struct method: first char is uppercase
                       long prefix_len = underscore - child->text;
                       snprintf(func_name, sizeof(func_name), "come_%s__%.*s__%s", current_module, (int)prefix_len, child->text, underscore + 1);

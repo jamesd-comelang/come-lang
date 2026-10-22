@@ -1,0 +1,13 @@
+module exttest
+
+// Test fixture for COIL-111 (tests/run_extern_test.sh): a system
+// module - it lives in the compiler's src/ tree, the one place
+// extern "C" declarations may appear (spec 13). It wraps libc's
+// abs() behind an ordinary Come function; user code calls
+// magnitude() and never touches the raw C boundary.
+
+extern "C" int abs(int x)
+
+int magnitude(int x) {
+    return abs(x)
+}

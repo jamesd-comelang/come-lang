@@ -54,6 +54,7 @@ static ASTNode* ast_clone(ASTNode* node) {
     copy->array_size = node->array_size;
     copy->layout_packed = node->layout_packed;
     copy->layout_align = node->layout_align;
+    copy->is_extern = node->is_extern;
     copy->child_count = node->child_count;
     for (int i = 0; i < node->child_count; i++) {
         copy->children[i] = ast_clone(node->children[i]);
@@ -105,6 +106,7 @@ ASTNode* ast_new(ASTNodeType type) {
     n->array_size = 0;
     n->layout_packed = 0;
     n->layout_align = 0;
+    n->is_extern = 0;
     return n;
 }
 
@@ -1020,6 +1022,107 @@ static ASTNode* parse_block() {
     return block;
 }
 
+// extern "C" <ret> <name>(<params>) - a raw C function declaration
+// (COIL-111, spec 13). Produces a body-less AST_FUNCTION marked
+// is_extern; codegen emits the unmangled C prototype and rejects
+// the declaration outside system modules. Parameter parsing mirrors
+// the ordinary parameter shapes (types, arrays, fn declarators).
+static void parse_extern(ASTNode* program) {
+    advance(); // extern
+    if (current()->type != TOKEN_STRING_LITERAL || strcmp(current()->text, "\"C\"") != 0) {
+        printf("Error: extern must be written extern \"C\" (line %d)\n", current()->line);
+        g_parse_errors++;
+        return;
+    }
+    advance(); // "C"
+
+    char ret_type[256];
+    if (current()->type == TOKEN_STRUCT) {
+        advance();
+        snprintf(ret_type, sizeof(ret_type), "struct %s", current()->text);
+        advance();
+    } else {
+        snprintf(ret_type, sizeof(ret_type), "%s", current()->text);
+        advance();
+    }
+    if (match(TOKEN_LBRACKET)) {
+        while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+        expect(TOKEN_RBRACKET);
+        strcat(ret_type, "[]");
+    }
+    if (current()->type != TOKEN_IDENTIFIER) {
+        printf("Error: extern \"C\" declaration needs a function name (line %d)\n", current()->line);
+        g_parse_errors++;
+        return;
+    }
+    ASTNode* fn = ast_new(AST_FUNCTION);
+    fn->is_extern = 1;
+    strcpy(fn->text, current()->text);
+    advance();
+    ASTNode* ret = ast_new(AST_IDENTIFIER);
+    strcpy(ret->text, ret_type);
+    fn->children[fn->child_count++] = ret;
+
+    expect(TOKEN_LPAREN);
+    while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+        if (current()->type == TOKEN_COMMA) { advance(); continue; }
+        if (current()->type == TOKEN_CONST) advance();
+        char pt[256];
+        if (current()->type == TOKEN_STRUCT) {
+            advance();
+            snprintf(pt, sizeof(pt), "struct %s", current()->text);
+            advance();
+        } else {
+            snprintf(pt, sizeof(pt), "%s", current()->text);
+            advance();
+        }
+        if (match(TOKEN_LBRACKET)) {
+            while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+            expect(TOKEN_RBRACKET);
+            strcat(pt, "[]");
+        }
+        ASTNode* arg = ast_new(AST_VAR_DECL);
+        if (current()->type == TOKEN_IDENTIFIER) {
+            strcpy(arg->text, current()->text);
+            advance();
+        }
+        if (match(TOKEN_LBRACKET)) {
+            while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
+            expect(TOKEN_RBRACKET);
+            strcat(pt, "[]");
+        }
+        // Function-declarator parameter (qsort's comparator shape)
+        if (current()->type == TOKEN_LPAREN) {
+            char fn_type[512];
+            snprintf(fn_type, sizeof(fn_type), "fn:%s(", pt);
+            advance(); // (
+            int first = 1;
+            while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) {
+                if (current()->type == TOKEN_COMMA) { advance(); continue; }
+                if (current()->type == TOKEN_CONST) advance();
+                char ipt[160];
+                snprintf(ipt, sizeof(ipt), "%s", current()->text);
+                advance();
+                if (current()->type == TOKEN_IDENTIFIER) advance();
+                if (!first) strcat(fn_type, ",");
+                strcat(fn_type, ipt);
+                first = 0;
+            }
+            expect(TOKEN_RPAREN);
+            strcat(fn_type, ")");
+            strcpy(pt, fn_type);
+        }
+        ASTNode* at = ast_new(AST_IDENTIFIER);
+        strcpy(at->text, pt);
+        arg->children[arg->child_count++] = NULL; // no init
+        arg->children[arg->child_count++] = at;
+        fn->children[fn->child_count++] = arg;
+    }
+    expect(TOKEN_RPAREN);
+    match(TOKEN_SEMICOLON);
+    program->children[program->child_count++] = fn;
+}
+
 static void parse_import(ASTNode* program) {
     advance(); // import
     if (match(TOKEN_LPAREN)) {
@@ -1669,6 +1772,9 @@ int parse_file(const char* filename, ASTNode** out_ast) {
 
             case TOKEN_IMPORT:
                 parse_import(*out_ast);
+                break;
+            case TOKEN_EXTERN:
+                parse_extern(*out_ast);
                 break;
             case TOKEN_EXPORT:
                 parse_export(*out_ast);

@@ -22,3 +22,4 @@ gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/t
 ./build/tests/test_oob
 
 bash tests/run_module_project.sh
+bash tests/run_extern_test.sh
