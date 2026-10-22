@@ -15,8 +15,8 @@ int main() {
     }
     
     // Test 2: String size (should equal len for ASCII)
-    if (s.size() != 5) {
-        std.out.printf("FAIL: size() - expected 5, got %u\n", s.size())
+    if (s.bytesize() != 5) {
+        std.out.printf("FAIL: bytesize() - expected 5, got %u\n", s.bytesize())
         failures = failures + 1
     }
     

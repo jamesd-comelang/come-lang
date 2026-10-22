@@ -204,14 +204,14 @@ void demo_arrays() {
 
     // A dynamic array: brace literal, length decided at runtime.
     int scores[] = {90, 85, 77}
-    std.out.printf("dynamic: size=%d first=%d\n", scores.size(), scores[0])
+    std.out.printf("dynamic: length=%d first=%d\n", scores.length(), scores[0])
 
     // resize() grows it; new elements are zero-initialized.
     scores.resize(MAX_SCORES)
     scores[3] = 60
     scores[4] = 100
-    std.out.printf("after resize(5): size=%d scores[4]=%d\n",
-                   scores.size(), scores[4])
+    std.out.printf("after resize(5): length=%d scores[4]=%d\n",
+                   scores.length(), scores[4])
 
     // Indexing is bounds-checked: an out-of-bounds read yields the
     // element type's zero value instead of garbage or a crash.
@@ -220,15 +220,15 @@ void demo_arrays() {
 
     // Sum with a for loop.
     int total = 0
-    for (int k = 0; k < scores.size(); k++) {
+    for (int k = 0; k < scores.length(); k++) {
         total += scores[k]
     }
-    std.out.printf("total of %d scores = %d\n", scores.size(), total)
+    std.out.printf("total of %d scores = %d\n", scores.length(), total)
 
     // A fixed-size array uses the same literal syntax; its length is
     // part of the type and known at compile time.
     int fixed[5] = {1, 2, 3, 4, 5}
-    std.out.printf("fixed[5]: size=%d last=%d\n", fixed.size(), fixed[4])
+    std.out.printf("fixed[5]: length=%d last=%d\n", fixed.length(), fixed[4])
 }
 
 // ---------------------------------------------------------------------

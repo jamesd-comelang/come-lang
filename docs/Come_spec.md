@@ -31,7 +31,7 @@ Decisions walked through with the founder (2026-10-19), all applied here:
   `string` (hashed by contents), and enums. `float`/`double` keys are
   excluded (NaN breaks the hash contract); struct keys are deferred.
 - **Strings:** character-first. `s[i]` returns a `wchar`, `.length()` counts
-  characters, `.size()` counts bytes. Strings are immutable; methods return
+  characters, `.bytesize()` counts bytes. Strings are immutable; methods return
   new strings. `+` concatenates.
 - **Coroutines (new in v1):** `coroutine name(args) { }` declaration,
   `spawn name(args)` launch. No module-variable access inside; argument
@@ -51,7 +51,7 @@ Decisions walked through with the founder (2026-10-19), all applied here:
 - **Layout:** default struct layout is C-compatible (needed for FFI).
   `packed struct` removes padding; `align(n) struct` sets alignment.
   No `@` sigil.
-- **Built-in methods:** universal are `.type()`, `.size()`, `.length()`,
+- **Built-in methods:** universal are `.type()`, `.bytesize()`, `.length()`,
   `.owner()`, `.chown()`, `.dup()`. `.alloc()` / `.resize()` / `.free()` are
   type-specific (array) — `.alloc()` and `.free()` removed per above.
 - **`null` removed** from the language (no `.co` example uses it; the
@@ -434,7 +434,7 @@ Character-first semantics:
 
 - `s[i]` returns the i-th character as a `wchar` (decoded Unicode scalar)
 - `s.length()` counts characters
-- `s.size()` counts bytes
+- `s.bytesize()` counts bytes
 
 There is no in-place character mutation (`s[0] = 'x'` is an error).
 Methods return new strings; reassignment replaces the buffer:
@@ -572,7 +572,7 @@ Every composite type supports:
 | Method | Description |
 | :--- | :--- |
 | `.type()` | Type name as a string, e.g. `"string"`, `"map"`, `"struct"` (compile-time) |
-| `.size()` | Total memory size in bytes, including header |
+| `.bytesize()` | Size of the buffer's data in bytes (string content bytes; array elements × element size; excludes header) |
 | `.length()` | Logical element count (array elements, string characters, map pairs, struct fields) |
 | `.owner()` | The composite variable or module that currently owns the buffer |
 | `.chown(o)` | Re-parent the buffer (and its subtree) to owner `o` |

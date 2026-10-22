@@ -70,7 +70,7 @@ If explicit storage reservation is later added, it should use a separate method 
 | Method | Returns | Description |
 | :--- | :--- | :--- |
 | `a.length()` | `int` | Returns the number of elements currently stored. |
-| `a.size()` | `long` | Returns the total memory size in bytes, including header. |
+| `a.bytesize()` | `long` | Returns the data size in bytes: element count × element size (excludes header). |
 | `a.type()` | `string` | Returns `"array"`. |
 | `a.owner()` | composite | Returns the current owner context. |
 | `a.contains(elem)` | `bool` | Returns `true` if `elem` exists in the array. |

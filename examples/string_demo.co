@@ -10,7 +10,7 @@ int main(string args[])
     print("Original: '%s'\n", s)
 
     // 1. Basic Info
-    print("Size (bytes): %u\n", s.size())
+    print("Size (bytes): %u\n", s.bytesize())
     print("Len (chars): %u\n", s.length())
     print("Is ASCII: %t\n", s.isascii())
 

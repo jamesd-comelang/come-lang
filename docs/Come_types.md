@@ -36,7 +36,7 @@ Their memory lifetime is managed by **explicit ownership**: every buffer has an 
 
 | Type | Declaration Syntax | Initialization Syntax | Description |
 |------|--------------------|-----------------------|-------------|
-| `string` | `string name;` | `string name = "John"` | Immutable, UTF-8 encoded sequence of characters. Character-first: `s[i]` is a `wchar`, `.length()` counts characters, `.size()` counts bytes. |
+| `string` | `string name;` | `string name = "John"` | Immutable, UTF-8 encoded sequence of characters. Character-first: `s[i]` is a `wchar`, `.length()` counts characters, `.bytesize()` counts bytes. |
 | `struct` / `union` | `Point p;` | `struct Point p = { .x = 5, .y = 10 }` | Custom aggregated data structure. Default layout is C-compatible; `packed struct` / `align(n) struct` adjust it. |
 | `array` | `int arr[10];` (fixed)<br>`int dyn[];` (dynamic) | `int numbers[] = {1, 2, 3}` | Fixed-size arrays are fixed; dynamic arrays grow/shrink via `resize(n)` only. Indexing is zero-based and bounds-checked. |
 | `map` | `map{string, int} m;` | `map{string, int} m = {"a": 1, "b": 2}` | Unordered key-value collection. V1 key types: integer types, `bool`, `wchar`, `string` (hashed by contents), enums. |
@@ -51,7 +51,7 @@ All composite variables automatically possess the following methods. These metho
 | :--- | :--- | :--- | :--- |
 | `type()` | `variable.type()` | `string` | Returns the **name of the composite variable's type** as a lowercase string (e.g., `"string"`, `"map"`, `"struct"`). |
 | `length()` | `variable.length()` | `int` | Returns the **logical count** of elements/chars/pairs contained within the variable. |
-| `size()` | `variable.size()` | `long` | Returns the total memory size of the object, in **bytes**, including headers and contained data. |
+| `bytesize()` | `variable.bytesize()` | `long` | Returns the size of the object's data in **bytes** (string content bytes; array elements × element size; excludes headers). Maps have no `bytesize()` — a map's byte size is an implementation detail. |
 | `owner()` | `variable.owner()` | `composite variable` / `module` | Returns the **composite variable** or **module** that currently owns the object. |
 | `chown()` | `variable.chown(new_owner)` | `void` | Explicitly transfers the object and its memory subtree to `new_owner` (a composite variable or a module name). |
 | `dup()` | `variable.dup(depth)` | same type | Copies the object; `depth` counts freshly-copied levels: `.dup(0)` = new reference to the same buffer and owner; `.dup()` with no argument = full deep copy. |

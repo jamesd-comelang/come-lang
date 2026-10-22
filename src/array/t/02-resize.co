@@ -4,15 +4,15 @@ import std
 int main() {
     int arr[] = [1, 2, 3]
     
-    if (arr.size() != 3) {
-        std.out.printf("FAIL: initial size mismatch\n")
+    if (arr.length() != 3) {
+        std.out.printf("FAIL: initial length mismatch\n")
         return 1
     }
     
     arr.resize(10)
     
-    if (arr.size() != 10) {
-        std.out.printf("FAIL: resized size mismatch, expected 10, got %d\n", arr.size())
+    if (arr.length() != 10) {
+        std.out.printf("FAIL: resized length mismatch, expected 10, got %d\n", arr.length())
         return 1
     }
     

@@ -72,9 +72,6 @@ int p2 = limits[key]
 - `m.length() -> int`
   Returns the number of key-value entries.
 
-- `m.size() -> long`
-  Returns the total memory size of the map, including internal storage.
-
 - `m.type() -> string`
   Returns `"map"`.
 

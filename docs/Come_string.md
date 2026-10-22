@@ -9,7 +9,7 @@ Every string supports `s.chown(new_owner)`, which re-parents the string to a lon
 
 | Come Method | Description | C Equivalent | Go Equivalent |
 | :--- | :--- | :--- | :--- |
-| **a.size()** | Returns the number of **bytes** in the string. | *None* | `len(a)` |
+| **a.bytesize()** | Returns the number of **bytes** in the string. | *None* | `len(a)` |
 | **a.length()** | Returns the number of **characters** in the string. | `strlen(a)` | `utf8.RuneCountInString(a)` |
 | **a.cmp(b[, n])** | Compares string `a` and `b` lexicographically. If `n` is provided, compares up to the first `n` UTF-8 characters; otherwise compares the entire strings. Returns 0 if equal, < 0 if `a < b`, > 0 if `a > b`. | `strcmp(a, b)` / `strncmp(a, b, n)` | `strings.Compare(a, b)` (full string), slice `a[:n]` for partial comparison |
 | **a.casecmp(b[, n])** | Case-insensitively compares string `a` and `b`. If `n` is provided, compares up to the first `n` UTF-8 characters. Returns 0 if equal ignoring case, < 0 if `a < b`, > 0 if `a > b`. | `strcasecmp(a, b)` / `strncasecmp(a, b, n)` | `strings.EqualFold(a, b)` (for equality), use slice for first `n` characters |

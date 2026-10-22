@@ -67,6 +67,23 @@ come_string_list_t* come_string_list_slice(come_string_list_t* a, uint32_t start
     const struct come_string_t**: ((arr) ? (arr)->count : 0) \
 )
 
+// Generic Byte Size: element count x element size. The element size
+// comes from a _Generic over constant sizeof expressions (branch
+// expressions may not dereference arr - only the selected branch's
+// type is known). For strings the count field already counts content
+// bytes, so the element size is 1. (COIL-134: .bytesize() -
+// .length() counts, .bytesize() measures bytes, .size() is gone.)
+#define come_array_bytesize(arr) (come_array_size(arr) * _Generic(&(arr), \
+    come_int_array_t**: sizeof(int), \
+    const come_int_array_t**: sizeof(int), \
+    come_byte_array_t**: sizeof(uint8_t), \
+    const come_byte_array_t**: sizeof(uint8_t), \
+    come_string_list_t**: sizeof(struct come_string_t*), \
+    const come_string_list_t**: sizeof(struct come_string_t*), \
+    struct come_string_t**: 1, \
+    const struct come_string_t**: 1) \
+)
+
 // Array Resize Helper Macro
 #define come_array_resize(a, n) ((a) = _Generic((a), \
     come_int_array_t*: come_int_array_resize, \

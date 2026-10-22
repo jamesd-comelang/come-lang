@@ -22,8 +22,8 @@ int main() {
 
     // Shrink: the surviving prefix must be preserved.
     arr.resize(10)
-    if (arr.size() != 10) {
-        std.out.printf("FAIL: size after shrink, expected 10, got %d\n", arr.size())
+    if (arr.length() != 10) {
+        std.out.printf("FAIL: length after shrink, expected 10, got %d\n", arr.length())
         return 1
     }
     for (int i = 0; i < 10; i++) {
@@ -35,8 +35,8 @@ int main() {
 
     // Resize to zero leaves a valid, reusable empty array.
     arr.resize(0)
-    if (arr.size() != 0) {
-        std.out.printf("FAIL: size after resize(0), expected 0, got %d\n", arr.size())
+    if (arr.length() != 0) {
+        std.out.printf("FAIL: length after resize(0), expected 0, got %d\n", arr.length())
         return 1
     }
     arr.resize(4)

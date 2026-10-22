@@ -507,9 +507,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
             else snprintf(c_func, sizeof(c_func), "come_string_%s", method);
         }
         // Detect Array methods
-        else if (strcmp(method, "size") == 0 || strcmp(method, "resize") == 0 || strcmp(method, "free") == 0 || strcmp(method, "slice") == 0) {
+        else if (strcmp(method, "bytesize") == 0 || strcmp(method, "resize") == 0 || strcmp(method, "free") == 0 || strcmp(method, "slice") == 0) {
              if (strcmp(method, "free") == 0) strcpy(c_func, "come_free");
-             else if (strcmp(method, "size") == 0) strcpy(c_func, "come_array_size");
+             else if (strcmp(method, "bytesize") == 0) strcpy(c_func, "come_array_bytesize");
              else if (strcmp(method, "slice") == 0) strcpy(c_func, "come_array_slice");
              else snprintf(c_func, sizeof(c_func), "come_array_%s", method);
         }

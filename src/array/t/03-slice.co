@@ -6,8 +6,8 @@ int main() {
     
     int sub[] = arr.slice(1, 4) // [2, 3, 4]
     
-    if (sub.size() != 3) {
-        std.out.printf("FAIL: slice size mismatch, expected 3, got %d\n", sub.size())
+    if (sub.length() != 3) {
+        std.out.printf("FAIL: slice length mismatch, expected 3, got %d\n", sub.length())
         return 1
     }
     
