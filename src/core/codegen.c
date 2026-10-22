@@ -1036,6 +1036,27 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 }
                 fprintf(f, ";\n");
             } else if (strcmp(type_node->text, "string[]") == 0) {
+                if (init_expr && init_expr->type == AST_AGGREGATE_INIT) {
+                    // String array literal (COIL-100): build a real list -
+                    // header + one owned string per element.
+                    int count = init_expr->child_count;
+                    fprintf(f, "come_string_list_t* %s = (come_string_list_t*)mem_talloc_alloc(COME_CTX, sizeof(uint32_t)*2 + %d * sizeof(come_string_t*));\n", node->text, count);
+                    emit_indent(f, indent);
+                    fprintf(f, "%s->size = %d; %s->count = %d;\n", node->text, count, node->text, count);
+                    for (int ei = 0; ei < count; ei++) {
+                        ASTNode* elem = init_expr->children[ei];
+                        emit_indent(f, indent);
+                        fprintf(f, "%s->items[%d] = ", node->text, ei);
+                        if (elem->type == AST_STRING_LITERAL) {
+                            fprintf(f, "come_string_new(COME_CTX, ");
+                            generate_expression(f, elem);
+                            fprintf(f, ")");
+                        } else {
+                            generate_expression(f, elem);
+                        }
+                        fprintf(f, ";\n");
+                    }
+                } else {
                 fprintf(f, "come_string_list_t* %s = ", node->text);
                 if (init_expr->type == AST_STRING_LITERAL && strcmp(init_expr->text, "\"__ARGS__\"") == 0) {
                     fprintf(f, "come_string_list_from_argv(COME_CTX, argc, argv)");
@@ -1043,6 +1064,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     generate_expression(f, init_expr);
                 }
                 fprintf(f, ";\n");
+                }
                 // Mark as potentially unused to avoid warnings
                 emit_indent(f, indent);
                 fprintf(f, "(void)%s;\n", node->text);

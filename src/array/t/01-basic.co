@@ -2,7 +2,7 @@ module array_test
 import std
 
 int main() {
-    int arr[5] = [1, 2, 3, 4, 5]
+    int arr[5] = {1, 2, 3, 4, 5}
     
     if (arr.length() != 5) {
         std.out.printf("FAIL: length mismatch, expected 5, got %d\n", arr.length())

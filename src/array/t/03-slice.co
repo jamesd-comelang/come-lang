@@ -2,7 +2,7 @@ module array_test
 import std
 
 int main() {
-    int arr[] = [1, 2, 3, 4, 5]
+    int arr[] = {1, 2, 3, 4, 5}
     
     int sub[] = arr.slice(1, 4) // [2, 3, 4]
     

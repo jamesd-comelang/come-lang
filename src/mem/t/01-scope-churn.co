@@ -3,7 +3,7 @@ import std
 
 int main() {
     // Control data owned by main's scope: must survive all churn below.
-    int control[] = [7, 8, 9]
+    int control[] = {7, 8, 9}
 
     // Repeatedly allocate inside a block scope. Each iteration's arrays
     // and strings die with the block; if scope memory were not reclaimed

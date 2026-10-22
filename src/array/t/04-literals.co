@@ -1,0 +1,44 @@
+module array_test
+import std
+
+int main() {
+    // COIL-100: { } is the one literal syntax for every collection.
+    // (The old [ ] literal form is a parse error now; the C parser
+    // test in tests/test_parser.c covers that it is rejected.)
+
+    // Dynamic array literal
+    int dyn[] = {10, 20, 30}
+    if (dyn.length() != 3) {
+        std.out.printf("FAIL: dynamic literal length, expected 3, got %d\n", dyn.length())
+        return 1
+    }
+    if (dyn[0] != 10 || dyn[1] != 20 || dyn[2] != 30) {
+        std.out.printf("FAIL: dynamic literal elements wrong\n")
+        return 1
+    }
+
+    // Fixed array literal
+    int fixed[4] = {1, 2, 3, 4}
+    if (fixed.length() != 4) {
+        std.out.printf("FAIL: fixed literal length, expected 4, got %d\n", fixed.length())
+        return 1
+    }
+    if (fixed[3] != 4) {
+        std.out.printf("FAIL: fixed literal element wrong\n")
+        return 1
+    }
+
+    // String array literal
+    string words[] = {"red", "green", "blue"}
+    if (words.length() != 3) {
+        std.out.printf("FAIL: string literal length, expected 3, got %d\n", words.length())
+        return 1
+    }
+    if (words[1].cmp("green") != 0) {
+        std.out.printf("FAIL: string literal element wrong\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 04-literals\n")
+    return 0
+}

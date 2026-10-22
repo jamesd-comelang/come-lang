@@ -11,6 +11,12 @@ static int is_type_token(TokenType type);
 static TokenList tokens;
 static int pos;
 
+// Fatal parse errors (parse_file returns nonzero when any occurred).
+// Most parser diagnostics only print and parsing limps on; errors that
+// must fail the build - like the removed [...] literal (COIL-100) -
+// increment this counter.
+static int g_parse_errors = 0;
+
 // Alias Storage
 typedef struct {
     char name[256];
@@ -162,14 +168,20 @@ static ASTNode* parse_primary() {
         strcpy(node->text, t->text);
         advance();
     } else if (match(TOKEN_LBRACKET)) {
-        // Array initializer: [1, 2, 3]
+        // [ ... ] is not a literal in Come (COIL-100): { } is the one
+        // literal syntax for every collection, and [ ] means indexing
+        // or an array type. Report it, skip the bracketed list so the
+        // rest of the file still parses, and fail in parse_file.
+        printf("Error: array literals use { } in Come, not [ ] - e.g. {1, 2, 3} (line %d)\n", t->line);
+        g_parse_errors++;
+        int depth = 1;
+        while (depth > 0 && current()->type != TOKEN_EOF) {
+            if (current()->type == TOKEN_LBRACKET) depth++;
+            else if (current()->type == TOKEN_RBRACKET) depth--;
+            advance();
+        }
         node = ast_new(AST_AGGREGATE_INIT);
         strcpy(node->text, "ARRAY");
-        while (current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) {
-            node->children[node->child_count++] = parse_expression();
-            if (!match(TOKEN_COMMA)) break;
-        }
-        expect(TOKEN_RBRACKET);
     } else if (match(TOKEN_LBRACE)) {
         // Map/Struct initializer: { k: v, ... } or { .field = val, ... }
         node = ast_new(AST_AGGREGATE_INIT);
@@ -1417,6 +1429,7 @@ static void parse_top_level_decl(ASTNode* program) {
 int parse_file(const char* filename, ASTNode** out_ast) {
     if (lex_file(filename, &tokens) != 0) return 1;
     pos = 0;
+    g_parse_errors = 0;
     
     *out_ast = ast_new(AST_PROGRAM);
     
@@ -1484,6 +1497,6 @@ int parse_file(const char* filename, ASTNode** out_ast) {
                 break;
         }
     }
-    
-    return 0;
+
+    return g_parse_errors > 0 ? 2 : 0;
 }
