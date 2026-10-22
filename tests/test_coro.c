@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "come_coro.h"
+#include "come_string.h"
 #include "mem/talloc.h"
 
 static char trace[256];
@@ -18,6 +19,8 @@ static int seen_count[3];
 
 static void child_worker(void* p);
 static void parent_worker(void* p);
+static void check_worker(void* p);
+static int check_seen_ok;
 
 typedef struct { int id; char tag; int turns; } job_t;
 
@@ -93,8 +96,37 @@ int main(void) {
         return 1;
     }
 
+    // COIL-122: ownership transfer on spawn. The buffer starts
+    // owned by the spawner; the spawn sequence steals it into
+    // the coroutine's args block; freeing the spawner's context
+    // afterwards must not harm it, and the coroutine reads the
+    // intact contents.
+    {
+        void* spawner_ctx = mem_talloc_new_ctx(NULL);
+        come_string_t* payload = come_string_new(spawner_ctx, "owned-by-coroutine");
+        come_coro_t* cw = come_coro_create(check_worker, &fake_ctx);
+        char** slot = (char**)come_coro_args(cw, sizeof(char*));
+        *slot = (char*)payload;
+        mem_talloc_steal(slot, payload); // what spawn emits
+        mem_talloc_free(spawner_ctx);    // spawner lets go
+        come_coro_start(cw);
+        for (int i = 0; i < 4 && come_coro_alive() > 0; i++) {
+            come_coro_yield();
+        }
+        if (come_coro_alive() != 0) { printf("FAIL: check worker alive\n"); return 1; }
+        if (!check_seen_ok) { printf("FAIL: transferred buffer corrupted\n"); return 1; }
+    }
+
     printf("COIL-120/121 coro runtime test passed!\n");
     return 0;
+}
+
+static int check_seen_ok = 0;
+
+static void check_worker(void* p) {
+    char** slot = (char**)p;
+    come_string_t* s = (come_string_t*)*slot;
+    if (s && strcmp(s->data, "owned-by-coroutine") == 0) check_seen_ok = 1;
 }
 
 static void child_worker(void* p) {

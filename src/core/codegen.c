@@ -460,6 +460,39 @@ static ASTNode* find_coroutine(const char* name) {
     return NULL;
 }
 
+// Module-level variables of the file being generated
+// (COIL-122): coroutines may not touch them (spec 9.1).
+static char g_module_vars[128][128];
+static int g_module_var_count = 0;
+
+static void collect_module_vars(ASTNode* ast) {
+    g_module_var_count = 0;
+    if (!ast || ast->type != AST_PROGRAM) return;
+    for (int i = 0; i < ast->child_count && g_module_var_count < 128; i++) {
+        ASTNode* ch = ast->children[i];
+        if (ch && ch->type == AST_VAR_DECL) {
+            snprintf(g_module_vars[g_module_var_count++], 128, "%s", ch->text);
+        }
+    }
+}
+
+static int is_module_var(const char* name) {
+    for (int i = 0; i < g_module_var_count; i++) {
+        if (strcmp(g_module_vars[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
+// 1 while generating a coroutine body (COIL-122).
+static int g_in_coroutine = 0;
+
+// Buffer types transfer ownership on spawn (spec 9.1/7);
+// value types are simply copied into the args struct.
+static int is_buffer_type(const char* t) {
+    return t && (strcmp(t, "string") == 0 || strstr(t, "[]") != NULL ||
+                 strncmp(t, "map{", 4) == 0 || strcmp(t, "link") == 0);
+}
+
 // Parameter count of a function/coroutine node: children are
 // [ret, params..., body].
 static int fn_param_count(ASTNode* fn) {
@@ -1074,6 +1107,10 @@ static void generate_expression(FILE* f, ASTNode* node) {
         }
         fprintf(f, "%s", node->text);
     } else if (node->type == AST_IDENTIFIER) {
+        if (g_in_coroutine && is_module_var(node->text) &&
+            !get_local_variable_type(node->text)) {
+            codegen_error("coroutine cannot access module variable '%s' (spec 9.1: a coroutine sees only its own locals and parameters)", node->text);
+        }
         if (strcmp(node->text, "null") == 0) fprintf(f, "NULL");
         else if (expr_is_fn_value(node)) {
             // A named function used as a value: its code reference
@@ -1974,6 +2011,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
         // The parser handles alias.
         
         check_call_args(node); // COIL-109 (spec 8.3)
+        if (find_coroutine(node->text)) {
+            codegen_error("coroutine '%s' cannot be called as a function; start it with spawn (spec 9.1)", node->text);
+        }
         // sprintf / sscanf are the string module's free functions
         // (COIL-117, Come_string.md). A user function of the same
         // name in this module shadows them.
@@ -2210,6 +2250,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
       case AST_FUNCTION: {
         // [RetType] [Name] [Args...] [Block/Body]
         if (node->is_extern) return; // COIL-111: prototype only (forward pass)
+        g_in_coroutine = node->is_coroutine ? 1 : 0; // COIL-122
         emit_line_directive(f, node);
 
         reset_local_variables();
@@ -2733,6 +2774,15 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                         generate_expression(f, node->children[i]);
                     }
                     fprintf(f, ";\n");
+                    // Ownership transfer (COIL-122, spec 9.1):
+                    // a buffer argument changes owner to the
+                    // coroutine - the args block lives in the
+                    // coroutine's own context, so stealing to it
+                    // moves the buffer under the coroutine.
+                    if (is_buffer_type(param->children[1]->text)) {
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "mem_talloc_steal(a, a->%s);\n", param->text);
+                    }
                 }
             }
             emit_indent(f, indent + 4);
@@ -2752,6 +2802,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_RETURN: {
             emit_line_directive(f, node);
             emit_indent(f, indent);
+            if (g_in_coroutine && node->child_count > 0) {
+                codegen_error("coroutines cannot return a value (spec 9.1); results travel through links");
+            }
             if (node->child_count > 0 && expr_is_fn_value(node->children[0]))
                 codegen_error("functions cannot be returned (spec 8.3): '%s'", node->children[0]->text);
             if (strcmp(current_function_return_type, "void") == 0) {
@@ -3579,6 +3632,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         }
         collect_module_fns(ast); // COIL-109
         collect_coroutines(ast); // COIL-120
+        collect_module_vars(ast); // COIL-122
         generate_program(f, ast);
     } else {
         generate_node(f, ast, 0);

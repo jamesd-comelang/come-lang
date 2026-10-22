@@ -861,5 +861,80 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-121 spawn codegen test passed!\033[0m\n");
+
+    // COIL-122: isolation violations are compile errors, and
+    // spawn transfers buffer ownership (a steal into the args
+    // block) while value arguments are plain copies.
+    {
+        const char* ok122 =
+            "module m122\nimport std\n\n"
+            "coroutine w(string s, int n) {\n"
+            "    yield\n"
+            "}\n"
+            "int main() {\n"
+            "    spawn w(\"x\", 1)\n"
+            "    yield\n"
+            "    return 0\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil122.co", ok122)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: buffer spawn program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* of122 = fopen("build/tests/coil122.co.c", "r");
+        if (!of122) { printf("COIL-122: output file missing\n"); return 1; }
+        static char buf122[262144];
+        size_t blen122 = fread(buf122, 1, sizeof(buf122) - 1, of122);
+        fclose(of122);
+        buf122[blen122] = 0;
+        if (!strstr(buf122, "mem_talloc_steal(a, a->s)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: string argument ownership must move at spawn\033[0m\n");
+            return 1;
+        }
+        if (strstr(buf122, "mem_talloc_steal(a, a->n)")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: value argument must be copied, not stolen\033[0m\n");
+            return 1;
+        }
+        const char* bad122a =
+            "module m122b\nimport std\n"
+            "int shared = 1\n"
+            "coroutine w() {\n"
+            "    shared = 2\n"
+            "    yield\n"
+            "}\n"
+            "int main() { spawn w()\n yield\n return 0 }\n";
+        if (!gen_fail("build/tests/coil122bad.co", bad122a)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: module variable write in a coroutine must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad122b =
+            "module m122c\nimport std\n"
+            "int shared = 1\n"
+            "coroutine w() {\n"
+            "    int v = shared\n"
+            "    yield\n"
+            "}\n"
+            "int main() { spawn w()\n yield\n return 0 }\n";
+        if (!gen_fail("build/tests/coil122bad2.co", bad122b)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: module variable read in a coroutine must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad122c =
+            "module m122d\nimport std\n"
+            "coroutine w() { yield }\n"
+            "int main() { w()\n return 0 }\n";
+        if (!gen_fail("build/tests/coil122bad3.co", bad122c)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: calling a coroutine must be a compile error\033[0m\n");
+            return 1;
+        }
+        const char* bad122d =
+            "module m122e\nimport std\n"
+            "coroutine w() { return 5 }\n"
+            "int main() { spawn w()\n yield\n return 0 }\n";
+        if (!gen_fail("build/tests/coil122bad4.co", bad122d)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-122: returning a value from a coroutine must be a compile error\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-122 isolation codegen test passed!\033[0m\n");
     return 0;
 }

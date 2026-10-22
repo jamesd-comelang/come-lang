@@ -1,0 +1,43 @@
+module coro_test
+import std
+
+// COIL-122: a coroutine sees only its own locals and
+// parameters. Buffers passed to spawn arrive intact (their
+// ownership moved with them); value arguments are copies;
+// a helper function with no state of its own is fine to call.
+
+int pure_double(int x) {
+    return x * 2
+}
+
+coroutine inspector(string text, int[] vals, int n) {
+    if (text != "payload") {
+        std.out.printf("FAIL: string arg = %s\n", text)
+    }
+    if (vals.length() != 3 || vals[0] + vals[1] + vals[2] != 60) {
+        std.out.printf("FAIL: array arg contents\n")
+    }
+    int v = pure_double(n)
+    if (v != 42) {
+        std.out.printf("FAIL: helper result %d\n", v)
+    }
+    // Mutating the received array is the coroutine's own
+    // business now: it owns the buffer.
+    vals[0] = 999
+    yield
+    if (vals[0] != 999) {
+        std.out.printf("FAIL: array lost across yield\n")
+    }
+}
+
+int main() {
+    int vals[]
+    vals.append(10)
+    vals.append(20)
+    vals.append(30)
+    spawn inspector("payload", vals, 21)
+    yield
+    yield
+    std.out.printf("PASS: 03-isolation\n")
+    return 0
+}
