@@ -35,7 +35,7 @@ semantics stories build on the final memory layer.
 | COIL-100 | Programmers learn one literal syntax for every collection | §6.4, Come_types | M | — | `{...}` compiles everywhere; `[...]` is a parse error with a helpful message | ☑ |
 | COIL-101 | A fixed array's size is a promise the compiler keeps | §6.4, Come_array §1 | M | COIL-132 | Old promotion test cases fail to compile; fixed arrays pass/return/store unchanged | ☑ |
 | COIL-102 | Map type mistakes are compile errors, not runtime surprises | §6.6, Come_map | L | — | `map{string, int}` programs compile; mixed-type literals are compile errors | ☑ |
-| COIL-103 | A missing map key gives a safe zero value and a checkable error | Come_map §3, §6 | M | COIL-102, COIL-132 | Missing-key read sets `ERR.set()`; method table in Come_map.md fully works | ☐ |
+| COIL-103 | A missing map key gives a safe zero value and a checkable error | Come_map §3, §6 | M | COIL-102, COIL-132 | Missing-key read sets `ERR.set()`; method table in Come_map.md fully works | ☑ |
 | COIL-104 | Structs match C layouts exactly, so packed formats and FFI just work | §6.2 | M | — | Layout matches the equivalent C struct (verified against a C reference in tests) | ☐ |
 | COIL-105 | Errors are one obvious check away, and a fatal exit can't be compiled out | §12, Come_std | S | — | `ERR.set()` usable in conditions; `ERR.fatal` halts in all build modes | ☐ |
 | COIL-106 | Out-of-bounds access reports an error instead of crashing or corrupting memory | Come_array §2, §6.4–6.5 | S | COIL-105 | OOB test cases behave per doc, no crashes | ☐ |

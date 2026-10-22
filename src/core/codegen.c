@@ -254,6 +254,19 @@ static void check_map_expr_type(const char* want, ASTNode* expr, const char* wha
     }
 }
 
+// Is this method call one of the typed-map methods (Come_map.md
+// method table) on a map{K, V} receiver? (COIL-103)
+static int is_typed_map_method(ASTNode* receiver, const char* method) {
+    if (!receiver || receiver->type != AST_IDENTIFIER) return 0;
+    const char* t = get_local_variable_type(receiver->text);
+    if (!t || strncmp(t, "map{", 4) != 0) return 0;
+    return strcmp(method, "length") == 0 || strcmp(method, "has") == 0 ||
+           strcmp(method, "delete") == 0 || strcmp(method, "clear") == 0 ||
+           strcmp(method, "keys") == 0 || strcmp(method, "type") == 0 ||
+           strcmp(method, "owner") == 0 || strcmp(method, "chown") == 0 ||
+           strcmp(method, "dup") == 0;
+}
+
 // Emit an expression in a position that needs a come_string_t*:
 // string literals need an explicit come_string_new wrap there.
 static void emit_string_expr(FILE* f, ASTNode* e) {
@@ -322,7 +335,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
             // when the key is absent.
             if (!map_combo_supported(mkt, mvt)) map_combo_error(mkt, mvt);
             check_map_expr_type(mkt, node->children[1], "key");
-            fprintf(f, "({ void* _p = come_map_get(%s, ", base->text);
+            fprintf(f, "({ void* _p = come_map_get_e(%s, ", base->text);
             emit_string_expr(f, node->children[1]);
             if (strcmp(mvt, "int") == 0) {
                 fprintf(f, "); _p ? *(int*)_p : 0; })");
@@ -516,6 +529,14 @@ static void generate_expression(FILE* f, ASTNode* node) {
                           // Check methods that return strings
                            // Check methods/functions that return strings (NOT len/size/count which return uint)
                            const char* name = arg->text;
+                           // A typed map's type() returns a string (COIL-103)
+                           if (strcmp(name, "type") == 0 && arg->child_count > 0 &&
+                               arg->children[0]->type == AST_IDENTIFIER) {
+                               const char* rt = get_local_variable_type(arg->children[0]->text);
+                               if (rt && strncmp(rt, "map{", 4) == 0) {
+                                   is_str = 1;
+                               }
+                           }
                            
                            if (strcmp(name, "upper") == 0 || strcmp(name, "lower") == 0 || 
                                strcmp(name, "repeat") == 0 || strcmp(name, "replace") == 0 || 
@@ -649,8 +670,63 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  return;
              }
         }
+        // Typed map methods (COIL-103): the Come_map.md method table.
+        // Must precede the string branch, which also claims length/chown.
+        else if (is_typed_map_method(receiver, method)) {
+             const char* rtype = get_local_variable_type(receiver->text);
+             char mkt[160], mvt[160];
+             map_type_parts(rtype, mkt, sizeof(mkt), mvt, sizeof(mvt));
+             if (strcmp(method, "length") == 0) {
+                 fprintf(f, "come_map_len(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ")");
+             } else if (strcmp(method, "has") == 0) {
+                 if (node->child_count > 1) check_map_expr_type(mkt, node->children[1], "key");
+                 fprintf(f, "(come_map_get(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ", ");
+                 if (node->child_count > 1) emit_string_expr(f, node->children[1]);
+                 fprintf(f, ") != NULL)");
+             } else if (strcmp(method, "delete") == 0) {
+                 if (node->child_count > 1) check_map_expr_type(mkt, node->children[1], "key");
+                 fprintf(f, "come_map_remove_e(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ", ");
+                 if (node->child_count > 1) emit_string_expr(f, node->children[1]);
+                 fprintf(f, ")");
+             } else if (strcmp(method, "clear") == 0) {
+                 fprintf(f, "come_map_clear(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ")");
+             } else if (strcmp(method, "keys") == 0) {
+                 fprintf(f, "come_map_keys(COME_CTX, ");
+                 generate_expression(f, receiver);
+                 fprintf(f, ")");
+             } else if (strcmp(method, "type") == 0) {
+                 fprintf(f, "come_string_new(COME_CTX, \"map\")");
+             } else if (strcmp(method, "owner") == 0) {
+                 fprintf(f, "COME_CTX");
+             } else if (strcmp(method, "chown") == 0) {
+                 fprintf(f, "mem_talloc_steal(");
+                 if (node->child_count > 1) generate_expression(f, node->children[1]);
+                 fprintf(f, ", ");
+                 generate_expression(f, receiver);
+                 fprintf(f, ")");
+             } else if (strcmp(method, "dup") == 0) {
+                 // dup(0) shares the map; dup()/dup(n) copies it
+                 if (node->child_count > 1 && node->children[1]->type == AST_NUMBER &&
+                     atoi(node->children[1]->text) == 0) {
+                     generate_expression(f, receiver);
+                 } else {
+                     fprintf(f, "come_map_copy(COME_CTX, ");
+                     generate_expression(f, receiver);
+                     fprintf(f, ")");
+                 }
+             }
+             return;
+        }
         // Detect String methods (including len/length which are shared)
-        else if (strcmp(method, "length") == 0 || strcmp(method, "len") == 0 || 
+        else if (strcmp(method, "length") == 0 || strcmp(method, "len") == 0 ||
                  strcmp(method, "cmp") == 0 || strcmp(method, "casecmp") == 0 ||
                  strcmp(method, "upper") == 0 || strcmp(method, "lower") == 0 ||
                  strcmp(method, "trim") == 0 || strcmp(method, "ltrim") == 0 || strcmp(method, "rtrim") == 0 ||
@@ -1280,6 +1356,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     map_combo_error(mkt, mvt);
                 }
                 if (init_expr && init_expr->type == AST_IDENTIFIER) {
+                    fprintf(f, "come_map_t* %s = ", node->text);
+                    generate_expression(f, init_expr);
+                    fprintf(f, ";\n");
+                } else if (init_expr && init_expr->type != AST_AGGREGATE_INIT &&
+                           !(init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0)) {
+                    // Expression init (dup(), a call returning a map, ...)
                     fprintf(f, "come_map_t* %s = ", node->text);
                     generate_expression(f, init_expr);
                     fprintf(f, ";\n");

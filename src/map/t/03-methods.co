@@ -1,0 +1,105 @@
+module map_test
+import std
+
+// COIL-103: a missing key gives the zero value and sets ERR, and the
+// full Come_map.md method table works: length, has, delete, clear,
+// keys, type, owner, chown, dup.
+
+int main() {
+    map{string, int} m = {"alice": 90, "bob": 85}
+
+    if (m.length() != 2) {
+        std.out.printf("FAIL: length, expected 2, got %d\n", m.length())
+        return 1
+    }
+    if (!m.has("bob") || m.has("zzz")) {
+        std.out.printf("FAIL: has() wrong\n")
+        return 1
+    }
+    if (m.type().cmp("map") != 0) {
+        std.out.printf("FAIL: type() must return 'map'\n")
+        return 1
+    }
+
+    // Missing-key read: zero value + ERR set (checked immediately,
+    // before anything else can touch errno).
+    int ghost = m["ghost"]
+    int e1 = ERR.no()
+    if (ghost != 0 || e1 == 0) {
+        std.out.printf("FAIL: missing read must give 0 and set ERR (got %d, ERR %d)\n", ghost, e1)
+        return 1
+    }
+    ERR.clear()
+    if (ERR.no() != 0) {
+        std.out.printf("FAIL: ERR.clear() must reset ERR\n")
+        return 1
+    }
+    // A successful read leaves ERR alone.
+    int real = m["alice"]
+    if (real != 90 || ERR.no() != 0) {
+        std.out.printf("FAIL: good read must not set ERR\n")
+        return 1
+    }
+
+    // delete: existing key goes away; deleting it again sets ERR.
+    m.delete("bob")
+    if (m.length() != 1 || m.has("bob")) {
+        std.out.printf("FAIL: delete did not remove the entry\n")
+        return 1
+    }
+    m.delete("bob")
+    int e2 = ERR.no()
+    if (e2 == 0) {
+        std.out.printf("FAIL: deleting a missing key must set ERR\n")
+        return 1
+    }
+    ERR.clear()
+
+    // keys() + iteration (order unspecified: check the total).
+    m["carol"] = 77
+    string keys[] = m.keys()
+    if (keys.length() != 2) {
+        std.out.printf("FAIL: keys length, expected 2, got %d\n", keys.length())
+        return 1
+    }
+    int total = 0
+    for (int i = 0; i < keys.length(); i++) {
+        total += m[keys[i]]
+    }
+    if (total != 167) {
+        std.out.printf("FAIL: keys iteration total, expected 167, got %d\n", total)
+        return 1
+    }
+
+    // dup() copies: writing the copy leaves the original alone.
+    map{string, int} c = m.dup()
+    c["alice"] = 1
+    if (c["alice"] != 1 || m["alice"] != 90) {
+        std.out.printf("FAIL: dup() copy is not independent\n")
+        return 1
+    }
+    // dup(0) shares: writing through it is visible in the original.
+    map{string, int} sh = m.dup(0)
+    sh["dave"] = 5
+    if (m["dave"] != 5) {
+        std.out.printf("FAIL: dup(0) must share the map\n")
+        return 1
+    }
+
+    // owner()/chown() run (stealing to the current context is a no-op
+    // in effect, but the calls must work).
+    m.chown(m.owner())
+    if (m["alice"] != 90) {
+        std.out.printf("FAIL: map broken after chown\n")
+        return 1
+    }
+
+    m.clear()
+    if (m.length() != 0 || m.has("alice")) {
+        std.out.printf("FAIL: clear must empty the map\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 03-methods\n")
+    return 0
+}

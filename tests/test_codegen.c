@@ -117,5 +117,48 @@ int main() {
         remove(mcases[i].path);
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-102 typed-map test passed!\033[0m\n");
+
+    // COIL-103: the method table and ERR-on-missing must reach the
+    // runtime helpers in the generated C.
+    const char* p103 = "build/tests/coil103_methods.co";
+    FILE* f3 = fopen(p103, "w");
+    if (!f3) { printf("Codegen test setup failed (cannot write temp file)\n"); return 1; }
+    fputs("module main\nimport std\n\nint main() {\n"
+          "    map{string, int} m = {\"a\": 1}\n"
+          "    int miss = m[\"ghost\"]\n"
+          "    int n = m.length()\n"
+          "    bool h = m.has(\"a\")\n"
+          "    string ks[] = m.keys()\n"
+          "    m.delete(\"a\")\n"
+          "    map{string, int} c = m.dup()\n"
+          "    m.clear()\n"
+          "    return miss + n\n}\n", f3);
+    fclose(f3);
+    ASTNode* ast3 = NULL;
+    if (parse_file(p103, &ast3) != 0 || !ast3) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-103: parse failed\033[0m\n");
+        return 1;
+    }
+    const char* out103 = "build/tests/coil103_out.c";
+    if (generate_c_from_ast(ast3, out103, p103, 0) != 0) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-103: generation failed\033[0m\n");
+        return 1;
+    }
+    ast_free(ast3);
+    remove(p103);
+    FILE* of = fopen(out103, "r");
+    if (!of) { printf("COIL-103: output file missing\n"); return 1; }
+    static char buf[262144];
+    size_t blen = fread(buf, 1, sizeof(buf) - 1, of);
+    fclose(of);
+    buf[blen] = 0;
+    const char* need[4] = { "come_map_get_e", "come_map_keys", "come_map_remove_e", "come_map_copy" };
+    for (int i = 0; i < 4; i++) {
+        if (!strstr(buf, need[i])) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-103: generated C is missing %s\033[0m\n", need[i]);
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-103 map methods test passed!\033[0m\n");
     return 0;
 }

@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "come_map.h"
 #include "mem/talloc.h"
 
@@ -141,4 +142,58 @@ uint32_t come_map_len(const come_map_t* m) {
 
 void come_map_free(come_map_t* m) {
     // mem_talloc_free(m);
+}
+
+// ---- Typed-map support (COIL-103) ----
+
+void* come_map_get_e(come_map_t* m, string key) {
+    void* v = come_map_get(m, key);
+    if (!v) errno = ENOENT;
+    return v;
+}
+
+int come_map_remove_e(come_map_t* m, string key) {
+    if (!come_map_get(m, key)) {
+        errno = ENOENT;
+        return 0;
+    }
+    come_map_remove(m, key);
+    return 1;
+}
+
+void come_map_clear(come_map_t* m) {
+    if (!m) return;
+    for (uint32_t i = 0; i < m->size; i++) {
+        m->entries[i].occupied = false;
+        m->entries[i].key = NULL;
+        m->entries[i].value = NULL;
+    }
+    m->count = 0;
+}
+
+come_string_list_t* come_map_keys(TALLOC_CTX* ctx, come_map_t* m) {
+    if (!m) return NULL;
+    come_string_list_t* list = mem_talloc_alloc(ctx, sizeof(uint32_t) * 2 + sizeof(come_string_t*) * m->count);
+    if (!list) return NULL;
+    list->size = m->count;
+    list->count = m->count;
+    uint32_t j = 0;
+    for (uint32_t i = 0; i < m->size; i++) {
+        if (m->entries[i].occupied) {
+            list->items[j++] = m->entries[i].key;
+        }
+    }
+    return list;
+}
+
+come_map_t* come_map_copy(TALLOC_CTX* ctx, come_map_t* src) {
+    if (!src) return NULL;
+    come_map_t* copy = come_map_new(ctx);
+    if (!copy) return NULL;
+    for (uint32_t i = 0; i < src->size; i++) {
+        if (src->entries[i].occupied) {
+            come_map_put(&copy, src->entries[i].key, src->entries[i].value);
+        }
+    }
+    return copy;
 }
