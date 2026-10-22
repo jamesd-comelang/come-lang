@@ -227,6 +227,33 @@ int main() {
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
 
+    // COIL-133: string literals in argument and return positions
+    // must be materialized as come_string_t - passing the raw C
+    // literal made callees read string headers out of rodata and
+    // crash the caller.
+    {
+        const char* src133 =
+            "module main\nimport std\n\n"
+            "string shout(string s) {\n    return s.upper()\n}\n"
+            "string greet() {\n    return \"hi\"\n}\n"
+            "int main() {\n    string b = shout(\"abc\")\n    return b.length()\n}\n";
+        if (!gen_ok("build/tests/coil133.co", src133)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-133: derived-return program must generate\033[0m\n");
+            return 1;
+        }
+        static char buf133[262144];
+        FILE* of133 = fopen("build/tests/coil133.co.c", "r");
+        size_t bl133 = fread(buf133, 1, sizeof(buf133) - 1, of133);
+        fclose(of133);
+        buf133[bl133] = 0;
+        if (!strstr(buf133, "come_main__shout(come_string_new(COME_CTX, \"abc\"))") ||
+            !strstr(buf133, "return come_string_new(COME_CTX, \"hi\");")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-133: literal argument / return not materialized in generated C\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-133 derived string return test passed!\033[0m\n");
+
     // COIL-110: character-first strings (spec 6.5). A plain
     // string's .length() must generate the character-counting
     // come_string_len, s[i] the wchar accessor, and mutation

@@ -3,14 +3,25 @@ import std
 
 // Returns a string created in this function's scope. Ownership moves
 // to the caller, who must receive the full, intact value.
-//
-// Known limitation (pre-existing, also present before COIL-132):
-// returning a *derived* string — a method result such as
-// name.repeat(3) — crashes the caller. That compiler bug is tracked
-// separately; this test covers the paths that work today.
 string pick() {
     string s = "hello"
     return s
+}
+
+// Returns a DERIVED string: a method result computed from the
+// parameter (COIL-133 - this used to crash the caller).
+string shout(string s) {
+    return s.upper()
+}
+
+// Returns a string literal directly.
+string greet() {
+    return "hi"
+}
+
+// A derived string passed through a second function's return.
+string echo_loud(string s) {
+    return shout(s)
 }
 
 int main() {
@@ -24,17 +35,53 @@ int main() {
         return 1
     }
 
+    // Derived returns (COIL-133): method results and literals must
+    // arrive intact, including when the argument itself is a
+    // literal and when results pass through another function.
+    string loud = shout("abc")
+    if (loud.cmp("ABC") != 0) {
+        std.out.printf("FAIL: derived return wrong: '%s'\n", loud)
+        return 1
+    }
+    string hi = greet()
+    if (hi.cmp("hi") != 0) {
+        std.out.printf("FAIL: literal return wrong: '%s'\n", hi)
+        return 1
+    }
+    string chained = echo_loud("xy")
+    if (chained.cmp("XY") != 0) {
+        std.out.printf("FAIL: chained derived return wrong: '%s'\n", chained)
+        return 1
+    }
+
+    // Two derived strings alive at once keep distinct values.
+    string one = shout("one")
+    string two = shout("two")
+    if (one.cmp("ONE") != 0 || two.cmp("TWO") != 0) {
+        std.out.printf("FAIL: simultaneous derived returns corrupted\n")
+        return 1
+    }
+
+    // Derived returns across many iterations stay exact.
+    for (int i = 0; i < 100; i++) {
+        string r = shout("ab")
+        if (r.cmp("AB") != 0) {
+            std.out.printf("FAIL: derived return wrong at iter %d\n", i)
+            return 1
+        }
+    }
+
     // Derived strings: every transform allocates a new buffer owned by
     // this scope. Across many iterations the results must stay exact —
     // a broken allocator corrupts them quickly.
     for (int i = 0; i < 100; i++) {
         string base = "Ab"
-        string loud = base.repeat(3)
-        if (loud.cmp("AbAbAb") != 0) {
+        string loud2 = base.repeat(3)
+        if (loud2.cmp("AbAbAb") != 0) {
             std.out.printf("FAIL: repeat result wrong at iter %d\n", i)
             return 1
         }
-        string low = loud.lower()
+        string low = loud2.lower()
         if (low.cmp("ababab") != 0) {
             std.out.printf("FAIL: lower result wrong at iter %d\n", i)
             return 1

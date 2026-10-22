@@ -486,20 +486,27 @@ static void emit_fn_param(FILE* f, const char* fn_text, const char* name) {
     }
     fprintf(f, ")");
 }
+// The declared parameter types of a same-module callee, split
+// from its fn: signature. Returns the count (0 when unknown).
+static int call_param_types(ASTNode* call, char parts[][160], int max_parts) {
+    const char* csig = find_module_fn_sig(call->text);
+    if (!csig) return 0;
+    const char* lp = strchr(csig, '(');
+    const char* rp = strrchr(csig, ')');
+    if (!lp || !rp) return 0;
+    char inner[512];
+    snprintf(inner, sizeof(inner), "%.*s", (int)(rp - lp - 1), lp + 1);
+    if (!inner[0]) return 0;
+    return split_types(inner, parts, max_parts);
+}
 // Check a call's arguments against 8.3: a function name may appear
 // only where the callee declares a function parameter, and then
 // its signature must match the declarator exactly. Callees the
 // compiler does not know (other modules, methods) are unchecked.
 static void check_call_args(ASTNode* call) {
-    const char* csig = find_module_fn_sig(call->text);
-    if (!csig) return;
-    const char* lp = strchr(csig, '(');
-    const char* rp = strrchr(csig, ')');
-    if (!lp || !rp) return;
-    char inner[512];
-    snprintf(inner, sizeof(inner), "%.*s", (int)(rp - lp - 1), lp + 1);
     char parts[32][160];
-    int np = inner[0] ? split_types(inner, parts, 32) : 0;
+    int np = call_param_types(call, parts, 32);
+    if (np == 0 && !find_module_fn_sig(call->text)) return;
     for (int i = 0; i < call->child_count && i < np; i++) {
         ASTNode* arg = call->children[i];
         int wants_fn = is_fn_type(parts[i]);
@@ -1364,9 +1371,22 @@ static void generate_expression(FILE* f, ASTNode* node) {
         }
         
         fprintf(f, "%s(", mangled_name);
-        for (int i = 0; i < node->child_count; i++) {
-            if (i > 0) fprintf(f, ", ");
-            generate_expression(f, node->children[i]);
+        {
+            // A string literal is a char* in C; where the callee's
+            // parameter is a string it must be materialized as a
+            // come_string_t first - passing the raw literal made
+            // the callee read string headers out of rodata and
+            // crash the caller (COIL-133).
+            char cparts[32][160];
+            int cnp = call_param_types(node, cparts, 32);
+            for (int i = 0; i < node->child_count; i++) {
+                if (i > 0) fprintf(f, ", ");
+                if (i < cnp && strcmp(cparts[i], "string") == 0 &&
+                    node->children[i]->type == AST_STRING_LITERAL)
+                    emit_string_expr(f, node->children[i]);
+                else
+                    generate_expression(f, node->children[i]);
+            }
         }
         fprintf(f, ")");
     } else if (node->type == AST_AGGREGATE_INIT) {
@@ -1993,7 +2013,14 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 fprintf(f, "return");
                 if (node->child_count > 0) {
                     fprintf(f, " ");
-                    generate_expression(f, node->children[0]);
+                    // Same materialization as call arguments: a
+                    // string function must return a come_string_t,
+                    // not a raw literal (COIL-133).
+                    if (strcmp(current_function_return_type, "string") == 0 &&
+                        node->children[0]->type == AST_STRING_LITERAL)
+                        emit_string_expr(f, node->children[0]);
+                    else
+                        generate_expression(f, node->children[0]);
                 } else {
                     fprintf(f, " 0");
                 }
