@@ -21,9 +21,14 @@ TARGET = $(BUILD_DIR)/come
 # Default: build compiler then examples
 all: $(TARGET) examples
 
-# Build compiler by invoking src Makefile
-$(TARGET):
+# Build compiler by invoking src Makefile. FORCE: this target has no
+# prerequisites of its own, so without it make would never rebuild an
+# existing build/come - a stale compiler then silently misbuilds new
+# sources. The src Makefile has the real dependencies and no-ops fast.
+$(TARGET): FORCE
 	cd $(SRC_DIR) && $(MAKE)
+
+FORCE:
 
 # Build all examples by invoking examples Makefile
 examples: $(TARGET)
@@ -125,5 +130,5 @@ dist: dist-local
 	./packaging/build_deb.sh $$VERSION
 
 
-.PHONY: all examples run-examples test test-come clean
+.PHONY: all examples run-examples test test-come clean FORCE
 
