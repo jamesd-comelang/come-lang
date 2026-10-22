@@ -415,7 +415,22 @@ static void generate_expression(FILE* f, ASTNode* node) {
             is_import)) {
             
             skip_receiver = 1;
-            
+
+            // ERR.set() is a predicate, not a call: true when an error
+            // is recorded (COIL-105). ERR.fatal(msg) halts via the
+            // runtime; its argument needs a string-object wrap.
+            if (strcmp(receiver->text, "ERR")==0 && strcmp(method, "set")==0) {
+                 fprintf(f, "(come_ERR_no() != 0)");
+                 return;
+            }
+            if (strcmp(receiver->text, "ERR")==0 && strcmp(method, "fatal")==0) {
+                 fprintf(f, "come_ERR_fatal(");
+                 if (node->child_count > 1) emit_string_expr(f, node->children[1]);
+                 else fprintf(f, "NULL");
+                 fprintf(f, ")");
+                 return;
+            }
+
             if (strcmp(receiver->text, "mem")==0 && strcmp(method, "cpy")==0) {
                  strcpy(c_func, "memcpy");
              } else if (strcmp(receiver->text, "std")==0 && strcmp(method, "printf")==0) {
@@ -431,9 +446,32 @@ static void generate_expression(FILE* f, ASTNode* node) {
              }
         } 
         // Detect std.out.printf / std.err.printf
-        else if (receiver->type == AST_MEMBER_ACCESS && 
+        else if (receiver->type == AST_MEMBER_ACCESS &&
                  strcmp(receiver->children[0]->text, "std") == 0) {
-            
+
+             // std.out.puts / std.err.puts (COIL-105: the spec's ERR
+             // example writes with std.err.puts; neither existed)
+             if ((strcmp(receiver->text, "out") == 0 || strcmp(receiver->text, "err") == 0) && strcmp(method, "puts") == 0) {
+                 const char* stream = strcmp(receiver->text, "out") == 0 ? "stdout" : "stderr";
+                 fprintf(f, "({ fputs(");
+                 if (node->child_count > 1) {
+                     ASTNode* a = node->children[1];
+                     if (a->type == AST_STRING_LITERAL) {
+                         generate_expression(f, a);
+                     } else {
+                         fprintf(f, "(");
+                         generate_expression(f, a);
+                         fprintf(f, " ? ");
+                         generate_expression(f, a);
+                         fprintf(f, "->data : \"\")");
+                     }
+                 } else {
+                     fprintf(f, "\"\"");
+                 }
+                 fprintf(f, ", %s); fputc(10, %s); 0; })", stream, stream);
+                 return;
+             }
+
              if ((strcmp(receiver->text, "out") == 0 || strcmp(receiver->text, "err") == 0) && strcmp(method, "printf") == 0) {
                  strcpy(c_func, "fprintf");
                  if (strcmp(receiver->text, "out") == 0) fprintf(f, "fprintf(stdout, ");
@@ -1993,6 +2031,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "extern int come_ERR_no(void);\n");
         fprintf(f, "extern come_string_t* come_ERR_str(void);\n");
         fprintf(f, "extern void come_ERR_clear(void);\n");
+        fprintf(f, "extern void come_ERR_fatal(come_string_t* msg);\n");
         // We need the type for ERR object too
         fprintf(f, "typedef struct come_std__ERR_t come_std__ERR_t;\n");
         fprintf(f, "extern come_std__ERR_t come_std__ERR;\n");

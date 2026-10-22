@@ -1,0 +1,50 @@
+module core_test
+import std
+
+// COIL-105: ERR.set() is the one obvious error check, usable in
+// conditions; ERR.clear() resets it. (ERR.fatal's halt is covered
+// by the C codegen test - it exits the process by design.)
+
+int main() {
+    ERR.clear()
+    if (ERR.set()) {
+        std.out.printf("FAIL: ERR must be clear after ERR.clear()\n")
+        return 1
+    }
+
+    // Provoke a real error: a missing map key (COIL-103).
+    map{string, int} m = {"a": 1}
+    int ghost = m["ghost"]
+    if (ghost != 0) {
+        std.out.printf("FAIL: missing key must read 0\n")
+        return 1
+    }
+
+    // The spec's pattern: check with ERR.set(), report with ERR.str().
+    bool reported = false
+    if (ERR.set()) {
+        if (ERR.no() == 0) {
+            std.out.printf("FAIL: ERR.set() true but ERR.no() is 0\n")
+            return 1
+        }
+        if (ERR.str().length() == 0) {
+            std.out.printf("FAIL: ERR.str() must describe the error\n")
+            return 1
+        }
+        reported = true
+    }
+    if (!reported) {
+        std.out.printf("FAIL: ERR.set() must be true after an error\n")
+        return 1
+    }
+
+    ERR.clear()
+    if (ERR.set()) {
+        std.out.printf("FAIL: ERR.set() must be false after clear\n")
+        return 1
+    }
+
+    // std.out.puts / std.err.puts exist and write their line.
+    std.out.puts("PASS: 07-err")
+    return 0
+}

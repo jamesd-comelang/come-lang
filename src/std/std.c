@@ -331,3 +331,10 @@ void come_ERR_clear() {
     come_std__ERR_t__clear(&come_std__ERR);
 }
 
+// ERR.fatal(msg): halt the program immediately, in every build.
+// A plain runtime call - there is no build mode that removes it.
+void come_ERR_fatal(come_string_t* msg) {
+    fprintf(stderr, "Fatal error: %s\n", (msg && msg->data) ? msg->data : "unknown error");
+    exit(1);
+}
+

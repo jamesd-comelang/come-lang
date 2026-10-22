@@ -204,5 +204,44 @@ int main() {
         return 1;
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
+
+    // COIL-105: ERR.set() must generate the predicate form and
+    // ERR.fatal(msg) the runtime halt call.
+    const char* p105 = "build/tests/coil105_err.co";
+    FILE* f5 = fopen(p105, "w");
+    if (!f5) { printf("Codegen test setup failed (cannot write temp file)\n"); return 1; }
+    fputs("module main\nimport std\n\nint main() {\n"
+          "    if (ERR.set()) {\n"
+          "        ERR.fatal(\"cannot continue\")\n"
+          "    }\n"
+          "    return 0\n}\n", f5);
+    fclose(f5);
+    ASTNode* ast5 = NULL;
+    if (parse_file(p105, &ast5) != 0 || !ast5) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-105: parse failed\033[0m\n");
+        return 1;
+    }
+    const char* out105 = "build/tests/coil105_out.c";
+    if (generate_c_from_ast(ast5, out105, p105, 0) != 0) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-105: generation failed\033[0m\n");
+        return 1;
+    }
+    ast_free(ast5);
+    remove(p105);
+    FILE* of5 = fopen(out105, "r");
+    if (!of5) { printf("COIL-105: output file missing\n"); return 1; }
+    static char buf5[262144];
+    size_t blen5 = fread(buf5, 1, sizeof(buf5) - 1, of5);
+    fclose(of5);
+    buf5[blen5] = 0;
+    if (!strstr(buf5, "(come_ERR_no() != 0)")) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-105: ERR.set() predicate missing in generated C\033[0m\n");
+        return 1;
+    }
+    if (!strstr(buf5, "come_ERR_fatal(come_string_new(")) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-105: ERR.fatal call missing in generated C\033[0m\n");
+        return 1;
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-105 ERR test passed!\033[0m\n");
     return 0;
 }
