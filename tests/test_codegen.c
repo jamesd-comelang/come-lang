@@ -160,5 +160,49 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-103 map methods test passed!\033[0m\n");
+
+    // COIL-104: struct layout modifiers must reach the generated C
+    // as GCC attributes; a default struct must carry none. (Runtime
+    // layout vs the C ABI reference is covered in src/core/t/06-layout.co.)
+    const char* p104 = "build/tests/coil104_layout.co";
+    FILE* f4 = fopen(p104, "w");
+    if (!f4) { printf("Codegen test setup failed (cannot write temp file)\n"); return 1; }
+    fputs("module main\nimport std\n\n"
+          "struct Plain {\n    byte a\n    int b\n}\n\n"
+          "packed struct Packed {\n    byte a\n    int b\n}\n\n"
+          "align(16) struct Aligned {\n    int v\n}\n\n"
+          "int main() {\n    return 0\n}\n", f4);
+    fclose(f4);
+    ASTNode* ast4 = NULL;
+    if (parse_file(p104, &ast4) != 0 || !ast4) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-104: parse failed\033[0m\n");
+        return 1;
+    }
+    const char* out104 = "build/tests/coil104_out.c";
+    if (generate_c_from_ast(ast4, out104, p104, 0) != 0) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-104: generation failed\033[0m\n");
+        return 1;
+    }
+    ast_free(ast4);
+    remove(p104);
+    FILE* of4 = fopen(out104, "r");
+    if (!of4) { printf("COIL-104: output file missing\n"); return 1; }
+    static char buf4[262144];
+    size_t blen4 = fread(buf4, 1, sizeof(buf4) - 1, of4);
+    fclose(of4);
+    buf4[blen4] = 0;
+    if (!strstr(buf4, "struct __attribute__((packed)) Packed {")) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-104: packed attribute missing in generated C\033[0m\n");
+        return 1;
+    }
+    if (!strstr(buf4, "struct __attribute__((aligned(16))) Aligned {")) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-104: aligned(16) attribute missing in generated C\033[0m\n");
+        return 1;
+    }
+    if (!strstr(buf4, "struct Plain {")) {
+        printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-104: default struct must have no attributes\033[0m\n");
+        return 1;
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-104 struct layout test passed!\033[0m\n");
     return 0;
 }

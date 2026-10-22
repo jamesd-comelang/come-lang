@@ -1609,7 +1609,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_STRUCT_DECL: {
             emit_line_directive(f, node);
             emit_indent(f, indent);
-            fprintf(f, "struct %s {\n", node->text);
+            fprintf(f, "struct");
+            if (node->layout_packed) fprintf(f, " __attribute__((packed))");
+            if (node->layout_align > 0) fprintf(f, " __attribute__((aligned(%d)))", node->layout_align);
+            fprintf(f, " %s {\n", node->text);
             for (int i = 0; i < node->child_count; i++) {
                  // Skip methods
                  if (node->children[i]->type == AST_FUNCTION) continue; 

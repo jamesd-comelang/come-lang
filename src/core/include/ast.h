@@ -58,6 +58,8 @@ typedef struct ASTNode {
     int child_count;
     int source_line;  // Line number in original COME source file
     int array_size;   // For array type nodes: fixed size (T[N]), 0 = dynamic/not an array (COIL-101)
+    int layout_packed; // For struct decls: 1 = packed (no padding) (COIL-104)
+    int layout_align;  // For struct decls: required alignment, 0 = default (COIL-104)
 } ASTNode;
 ASTNode* ast_new(ASTNodeType type);
 void ast_free(ASTNode* node);

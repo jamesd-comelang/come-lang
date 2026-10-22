@@ -52,6 +52,8 @@ static ASTNode* ast_clone(ASTNode* node) {
     strcpy(copy->text, node->text);
     copy->source_line = node->source_line;
     copy->array_size = node->array_size;
+    copy->layout_packed = node->layout_packed;
+    copy->layout_align = node->layout_align;
     copy->child_count = node->child_count;
     for (int i = 0; i < node->child_count; i++) {
         copy->children[i] = ast_clone(node->children[i]);
@@ -101,6 +103,8 @@ ASTNode* ast_new(ASTNodeType type) {
     n->text[0] = '\0';
     n->source_line = (pos < tokens.count) ? tokens.tokens[pos].line : 0;
     n->array_size = 0;
+    n->layout_packed = 0;
+    n->layout_align = 0;
     return n;
 }
 
@@ -786,6 +790,57 @@ static ASTNode* parse_identifier_statement() {
     return parse_expression_statement();
 }
 
+// Struct layout modifiers (COIL-104): 'packed' and 'align(n)' may
+// precede a struct declaration in either order. The lookahead keeps
+// ordinary identifiers named packed/align usable as variables.
+static int align_pattern_at(int p) {
+    // tokens[p] == "align", then ( NUMBER ) then 'struct' or 'packed'
+    if (p + 4 >= tokens.count) return 0;
+    if (tokens.tokens[p + 1].type != TOKEN_LPAREN) return 0;
+    if (tokens.tokens[p + 2].type != TOKEN_NUMBER) return 0;
+    if (tokens.tokens[p + 3].type != TOKEN_RPAREN) return 0;
+    if (tokens.tokens[p + 4].type == TOKEN_STRUCT) return 1;
+    return tokens.tokens[p + 4].type == TOKEN_IDENTIFIER &&
+           strcmp(tokens.tokens[p + 4].text, "packed") == 0 &&
+           p + 5 < tokens.count && tokens.tokens[p + 5].type == TOKEN_STRUCT;
+}
+
+static int at_struct_modifier() {
+    Token* t = current();
+    if (t->type != TOKEN_IDENTIFIER) return 0;
+    if (strcmp(t->text, "packed") == 0) {
+        if (pos + 1 < tokens.count && tokens.tokens[pos + 1].type == TOKEN_STRUCT) return 1;
+        return pos + 1 < tokens.count && tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER &&
+               strcmp(tokens.tokens[pos + 1].text, "align") == 0 && align_pattern_at(pos + 1);
+    }
+    if (strcmp(t->text, "align") == 0) return align_pattern_at(pos);
+    return 0;
+}
+
+// Consume the modifier sequence; current() ends at 'struct'.
+// Returns 1 when 'packed' was present; *out_align gets the align(n).
+static int parse_struct_modifiers(int* out_align) {
+    int packed = 0;
+    *out_align = 0;
+    while (current()->type == TOKEN_IDENTIFIER &&
+           (strcmp(current()->text, "packed") == 0 || strcmp(current()->text, "align") == 0)) {
+        if (strcmp(current()->text, "packed") == 0) {
+            packed = 1;
+            advance();
+        } else {
+            advance(); // align
+            if (match(TOKEN_LPAREN)) {
+                if (current()->type == TOKEN_NUMBER) {
+                    *out_align = atoi(current()->text);
+                    advance();
+                }
+                expect(TOKEN_RPAREN);
+            }
+        }
+    }
+    return packed;
+}
+
 static ASTNode* parse_struct_statement() {
     advance(); // struct
     if (expect(TOKEN_IDENTIFIER)) {
@@ -873,10 +928,24 @@ static ASTNode* parse_alias_statement() {
 
 static ASTNode* parse_statement() {
     Token* t = current();
-    
+
+    // Struct definition with layout modifiers (COIL-104)
+    if (at_struct_modifier()) {
+        int m_align = 0;
+        int m_packed = parse_struct_modifiers(&m_align);
+        if (current()->type == TOKEN_STRUCT) {
+            ASTNode* sn = parse_struct_statement();
+            if (sn) {
+                sn->layout_packed = m_packed;
+                sn->layout_align = m_align;
+            }
+            return sn;
+        }
+    }
+
     // Check for struct definition explicitly
-    if (t->type == TOKEN_STRUCT && pos+2 < tokens.count && 
-        tokens.tokens[pos+1].type == TOKEN_IDENTIFIER && 
+    if (t->type == TOKEN_STRUCT && pos+2 < tokens.count &&
+        tokens.tokens[pos+1].type == TOKEN_IDENTIFIER &&
         tokens.tokens[pos+2].type == TOKEN_LBRACE) {
           return parse_struct_statement();
     }
@@ -1564,6 +1633,23 @@ int parse_file(const char* filename, ASTNode** out_ast) {
                 parse_alias(*out_ast);
                 break;
             default:
+                // Struct definition with layout modifiers (COIL-104)
+                if (at_struct_modifier()) {
+                    int m_align = 0;
+                    int m_packed = parse_struct_modifiers(&m_align);
+                    if (current()->type == TOKEN_STRUCT && pos + 2 < tokens.count &&
+                        tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER &&
+                        tokens.tokens[pos + 2].type == TOKEN_LBRACE) {
+                        int before = (*out_ast)->child_count;
+                        parse_struct(*out_ast);
+                        if ((*out_ast)->child_count > before) {
+                            ASTNode* sn = (*out_ast)->children[(*out_ast)->child_count - 1];
+                            sn->layout_packed = m_packed;
+                            sn->layout_align = m_align;
+                        }
+                        break;
+                    }
+                }
                 parse_top_level_decl(*out_ast);
                 break;
         }

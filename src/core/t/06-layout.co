@@ -1,0 +1,147 @@
+module core_test
+import std
+
+// COIL-104: struct layout matches C exactly. The expected offsets
+// below are the C ABI reference values (checked against a C
+// program using offsetof/sizeof):
+//   struct D { byte a; int b; byte c }        a=0 b=4 c=8,  size 12
+//   packed struct P { byte a; int b; byte c } a=0 b=1 c=5,  size 6
+//   align(16) struct L inside Outer            line at offset 16
+// Unions with byte-field views make the layout observable.
+
+struct D {
+    byte a
+    int b
+    byte c
+}
+
+packed struct P {
+    byte a
+    int b
+    byte c
+}
+
+align(16) struct L {
+    int v
+}
+
+struct Outer {
+    byte x
+    L line
+}
+
+struct B12 {
+    byte f0
+    byte f1
+    byte f2
+    byte f3
+    byte f4
+    byte f5
+    byte f6
+    byte f7
+    byte f8
+    byte f9
+    byte f10
+    byte f11
+}
+
+struct B6 {
+    byte f0
+    byte f1
+    byte f2
+    byte f3
+    byte f4
+    byte f5
+}
+
+struct B32 {
+    byte f0
+    byte f1
+    byte f2
+    byte f3
+    byte f4
+    byte f5
+    byte f6
+    byte f7
+    byte f8
+    byte f9
+    byte f10
+    byte f11
+    byte f12
+    byte f13
+    byte f14
+    byte f15
+    byte f16
+    byte f17
+    byte f18
+    byte f19
+    byte f20
+    byte f21
+    byte f22
+    byte f23
+    byte f24
+    byte f25
+    byte f26
+    byte f27
+    byte f28
+    byte f29
+    byte f30
+    byte f31
+}
+
+union UD {
+    D d
+    B12 v
+}
+
+union UP {
+    P p
+    B6 v
+}
+
+union UO {
+    Outer o
+    B32 v
+}
+
+int main() {
+    // Default layout: b lands at offset 4, c at 8.
+    union UD u
+    u.d.a = 0x5A
+    u.d.b = 0x11223344
+    u.d.c = 0x3C
+    if (u.v.f0 != 0x5A || u.v.f4 != 0x44 || u.v.f5 != 0x33 || u.v.f6 != 0x22 || u.v.f7 != 0x11 || u.v.f8 != 0x3C) {
+        std.out.printf("FAIL: default struct layout does not match C\n")
+        return 1
+    }
+
+    // Packed layout: fields back-to-back, b at offset 1, c at 5.
+    union UP w
+    w.p.a = 0x5A
+    w.p.b = 0x11223344
+    w.p.c = 0x3C
+    if (w.v.f0 != 0x5A || w.v.f1 != 0x44 || w.v.f2 != 0x33 || w.v.f3 != 0x22 || w.v.f4 != 0x11 || w.v.f5 != 0x3C) {
+        std.out.printf("FAIL: packed struct layout wrong\n")
+        return 1
+    }
+
+    // align(16): the L member of Outer starts at offset 16.
+    union UO o
+    o.o.x = 0x5A
+    o.o.line.v = 0x11223344
+    if (o.v.f0 != 0x5A || o.v.f4 != 0 || o.v.f16 != 0x44 || o.v.f17 != 0x33 || o.v.f18 != 0x22 || o.v.f19 != 0x11) {
+        std.out.printf("FAIL: align(16) layout wrong\n")
+        return 1
+    }
+
+    // The modifier words still work as ordinary identifiers.
+    int packed = 7
+    packed = packed + 1
+    if (packed != 8) {
+        std.out.printf("FAIL: variable named packed broken\n")
+        return 1
+    }
+
+    std.out.printf("PASS: 06-layout\n")
+    return 0
+}
