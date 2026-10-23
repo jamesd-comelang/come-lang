@@ -784,3 +784,6 @@ spacing and indentation, and running it twice changes nothing.
   you want the exact syntax.
 - [`DEVELOPER.md`](DEVELOPER.md) — if you'd like to work on
   Come itself.
+- [`LLM_PROMPT.md`](LLM_PROMPT.md) — using an AI assistant?
+  Paste that prompt into it first; it teaches the model to
+  write correct Come instead of plausible C.

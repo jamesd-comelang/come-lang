@@ -130,6 +130,8 @@ in C and declare their Come surface in `.co` files.
 
 ## Documentation
 
+- [LLM prompt](LLM_PROMPT.md) — paste into any LLM to
+  teach it Come well enough to write correct Come code
 - [User guide](USER_GUIDE.md) — learn the language:
   first programs, arrays, strings, maps, structs and
   references, errors, ownership, modules, coroutines,
