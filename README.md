@@ -130,6 +130,10 @@ in C and declare their Come surface in `.co` files.
 
 ## Documentation
 
+- [User guide](USER_GUIDE.md) — learn the language:
+  first programs, arrays, strings, maps, structs and
+  references, errors, ownership, modules, coroutines,
+  and testing your own code
 - [Language specification](docs/Come_spec.md) — syntax and core
   semantics (§1–§17)
 - [Grammar (EBNF)](docs/grammar.ebnf) — the published grammar;
