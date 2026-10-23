@@ -5,6 +5,8 @@
 #include <string.h>
 #include <stdarg.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 #include <errno.h>
 #include <libgen.h>
@@ -109,6 +111,18 @@ static int run_cmd(const char *fmt, ...) {
     va_end(ap);
     if (g_verbose) fprintf(stderr, "[CMD] %s\n", buf);
     return system(buf);
+}
+
+// Extra C flags for every compile and link this process runs,
+// taken from the COME_CFLAGS environment variable (unset =
+// none). `come test --race` and `--cover` set it for their
+// child builds (COIL-138); users may set it for plain builds.
+static const char *cc_extra_flags(void) {
+    static char buf[1024];
+    const char *v = getenv("COME_CFLAGS");
+    if (!v || !*v) return "";
+    snprintf(buf, sizeof(buf), " %s", v);
+    return buf;
 }
 
 static void check_build_essentials(void) {
@@ -239,7 +253,12 @@ static void compile_file(const char *source_path, const char *forced_o_path,
     
     char c_dir[PATH_MAX];
     strcpy(c_dir, c_file);
-    dirname(c_dir);
+    // dirname's return value matters: for a slash-less name
+    // ("out.c") glibc returns "." without modifying the
+    // buffer, and ensure_dir on the unmodified name would
+    // mkdir a directory called "out.c" and fail the write.
+    char *dir_part = dirname(c_dir);
+    if (dir_part != c_dir) strcpy(c_dir, dir_part);
     ensure_dir(c_dir);
 
     char o_file[PATH_MAX];
@@ -338,16 +357,16 @@ static void compile_file(const char *source_path, const char *forced_o_path,
              snprintf(cmd, sizeof(cmd), 
                 "gcc -c -Wall -Wno-cpp -Wno-implicit-function-declaration -D__STDC_WANT_LIB_EXT1__=1 "
                 "-I\"%s\" "
-                "\"%s\" -o \"%s\"",
+                "\"%s\" -o \"%s\"%s",
                 include_dir,
-                c_file, o_file);
+                c_file, o_file, cc_extra_flags());
         } else {
              snprintf(cmd, sizeof(cmd), 
                 "gcc -c -Wall -Wno-cpp -Wno-implicit-function-declaration -D__STDC_WANT_LIB_EXT1__=1 "
                 "-I%s/src/include -I%s/src/core/include "
-                "\"%s\" -o \"%s\"",
+                "\"%s\" -o \"%s\"%s",
                 project_base, project_base,
-                c_file, o_file);
+                c_file, o_file, cc_extra_flags());
         }
             
         if (run_cmd(cmd) != 0) {
@@ -525,21 +544,883 @@ static void compile_import(const char *import_name, const char *current_file, in
 }
 
 
+/* ---------- Developer commands (COIL-138) ---------- */
+
+// Absolute path of the running compiler, for self-invocation
+// (check/run/test build through the normal `build` path in a
+// child process, so their diagnostics and caching behave
+// exactly like a user's build).
+static void self_exe(char *out, size_t sz) {
+    ssize_t n = readlink("/proc/self/exe", out, sz - 1);
+    if (n == -1) { snprintf(out, sz, "come"); return; }
+    out[n] = 0;
+}
+
+// Single-quote a string for /bin/sh.
+static void shell_quote(const char *in, char *out, size_t sz) {
+    size_t o = 0;
+    if (o + 1 < sz) out[o++] = '\'';
+    for (const char *p = in; *p && o + 5 < sz; p++) {
+        if (*p == '\'') { memcpy(out + o, "'\\''", 4); o += 4; }
+        else out[o++] = *p;
+    }
+    if (o + 1 < sz) out[o++] = '\'';
+    out[o] = 0;
+}
+
+static int make_scratch(char *out, size_t sz, const char *tag) {
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    snprintf(out, sz, "%s/come-%s-XXXXXX", tmp, tag);
+    return mkdtemp(out) != NULL;
+}
+
+static void rm_rf(const char *path) {
+    char q[PATH_MAX + 8], cmd[PATH_MAX + 32];
+    shell_quote(path, q, sizeof(q));
+    snprintf(cmd, sizeof(cmd), "rm -rf %s", q);
+    if (system(cmd) != 0) { /* best effort */ }
+}
+
+static int decode_status(int st) {
+    if (WIFEXITED(st)) return WEXITSTATUS(st);
+    if (WIFSIGNALED(st)) return 128 + WTERMSIG(st);
+    return 1;
+}
+
+// Print a captured log file to stderr, indented, capped.
+static void dump_log(const char *path, int max_lines) {
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[1024];
+    int n = 0;
+    while (fgets(line, sizeof(line), f) && n < max_lines) {
+        fprintf(stderr, "    %s", line);
+        if (line[strlen(line) - 1] != '\n') fputc('\n', stderr);
+        n++;
+    }
+    fclose(f);
+}
+
+// Build `input` (a .co file or a project directory) into
+// scratch/prog through a child `come build`, capturing the
+// child's output to scratch/build.log. Returns 0 on success.
+static int build_into_scratch(const char *self, const char *input,
+                              const char *scratch, char *bin_out, size_t bin_sz) {
+    char qi[PATH_MAX + 8], qb[PATH_MAX + 8], ql[PATH_MAX + 8], cmd[16384];
+    snprintf(bin_out, bin_sz, "%s/prog", scratch);
+    shell_quote(input, qi, sizeof(qi));
+    shell_quote(bin_out, qb, sizeof(qb));
+    char logp[PATH_MAX];
+    snprintf(logp, sizeof(logp), "%s/build.log", scratch);
+    shell_quote(logp, ql, sizeof(ql));
+    snprintf(cmd, sizeof(cmd), "\"%s\" build %s -o %s > %s 2>&1", self, qi, qb, ql);
+    if (g_verbose) fprintf(stderr, "[CMD] %s\n", cmd);
+    int rc = system(cmd);
+    return (rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0) ? 0 : 1;
+}
+
+/* ----- come check: compile without linking or running ----- */
+
+static int cmd_check(int argc, char *argv[]) {
+    const char *input = NULL;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0) g_verbose = 1;
+        else input = argv[i];
+    }
+    if (!input) {
+        fprintf(stderr, "Usage: come check <file.co|project-dir>\n");
+        return 1;
+    }
+    char self[PATH_MAX], scratch[PATH_MAX], bin[PATH_MAX];
+    self_exe(self, sizeof(self));
+    if (!make_scratch(scratch, sizeof(scratch), "check")) die("cannot create a temp dir");
+    int bad = build_into_scratch(self, input, scratch, bin, sizeof(bin));
+    if (bad) {
+        char logp[PATH_MAX];
+        snprintf(logp, sizeof(logp), "%s/build.log", scratch);
+        dump_log(logp, 60);
+        fprintf(stderr, "check failed: %s\n", input);
+        rm_rf(scratch);
+        return 1;
+    }
+    printf("check ok: %s\n", input);
+    rm_rf(scratch);
+    return 0;
+}
+
+/* ----- come run: build to a temp binary, run it, forward args ----- */
+
+static int cmd_run(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: come run <file.co> [--] [args...]\n");
+        return 1;
+    }
+    const char *input = argv[2];
+    int arg0 = 3;
+    if (arg0 < argc && strcmp(argv[arg0], "--") == 0) arg0++;
+    char self[PATH_MAX], scratch[PATH_MAX], bin[PATH_MAX];
+    self_exe(self, sizeof(self));
+    if (!make_scratch(scratch, sizeof(scratch), "run")) die("cannot create a temp dir");
+    if (build_into_scratch(self, input, scratch, bin, sizeof(bin)) != 0) {
+        char logp[PATH_MAX];
+        snprintf(logp, sizeof(logp), "%s/build.log", scratch);
+        dump_log(logp, 60);
+        rm_rf(scratch);
+        return 1;
+    }
+    char cmd[16384], q[PATH_MAX + 8];
+    shell_quote(bin, q, sizeof(q));
+    int pos = snprintf(cmd, sizeof(cmd), "%s", q);
+    for (int i = arg0; i < argc; i++) {
+        shell_quote(argv[i], q, sizeof(q));
+        pos += snprintf(cmd + pos, sizeof(cmd) - pos, " %s", q);
+    }
+    if (g_verbose) fprintf(stderr, "[CMD] %s\n", cmd);
+    int rc = system(cmd);
+    rm_rf(scratch);
+    if (rc == -1) return 1;
+    return decode_status(rc);
+}
+
+/* ----- come test: build and run every .co under any t/ dir ----- */
+
+#define TEST_TIMEOUT_S 30
+#define MAX_TESTS 4096
+
+static char g_test_paths[MAX_TESTS][PATH_MAX];
+static int g_test_count = 0;
+
+static void discover_tests(const char *dir, int depth) {
+    if (depth > 24 || g_test_count >= MAX_TESTS) return;
+    // If this directory is named "t", its .co files are tests
+    // (the Makefile sweep's rule); do not descend further.
+    char base[PATH_MAX];
+    snprintf(base, sizeof(base), "%s", dir);
+    const char *bn = strrchr(base, '/');
+    bn = bn ? bn + 1 : base;
+    if (strcmp(bn, "t") == 0) {
+        static char paths[128][PATH_MAX];
+        int n = scan_co_dir(dir, paths, 128);
+        for (int i = 0; i < n && g_test_count < MAX_TESTS; i++)
+            snprintf(g_test_paths[g_test_count++], PATH_MAX, "%s", paths[i]);
+        return;
+    }
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        const char *name = e->d_name;
+        if (name[0] == '.') continue;                 // .git, .ccache, dotdirs
+        if (strcmp(name, "build") == 0) continue;
+        char child[PATH_MAX];
+        snprintf(child, sizeof(child), "%s/%s", dir, name);
+        struct stat st;
+        if (stat(child, &st) == 0 && S_ISDIR(st.st_mode))
+            discover_tests(child, depth + 1);
+    }
+    closedir(d);
+}
+
+static int cmp_str(const void *a, const void *b) {
+    return strcmp((const char *)a, (const char *)b);
+}
+
+// When set (come test --race), test binaries run under
+// `setarch -R`: ThreadSanitizer refuses to start when the
+// kernel maps the process at an address its shadow layout
+// cannot use ("unexpected memory mapping"), which happens
+// under full ASLR in some VM/container setups. Disabling
+// randomization for the test child is the standard remedy.
+static int g_race_wrap = 0;
+
+// Run bin with output captured to logpath. Returns the exit
+// code (>= 0), -sig when killed by a signal, or -1000 on
+// timeout. elapsed_ms receives the wall time.
+static int run_capture(const char *bin, const char *logpath, int timeout_s,
+                       double *elapsed_ms) {
+    struct timespec t0, t1;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    pid_t pid = fork();
+    if (pid == 0) {
+        FILE *lf = fopen(logpath, "w");
+        if (lf) { dup2(fileno(lf), 1); dup2(fileno(lf), 2); fclose(lf); }
+        if (g_race_wrap) {
+            char machine[64] = "x86_64";
+            struct utsname un;
+            if (uname(&un) == 0) snprintf(machine, sizeof(machine), "%s", un.machine);
+            execlp("setarch", "setarch", machine, "-R", bin, (char *)NULL);
+            // setarch missing after all: fall through to direct exec
+        }
+        execl(bin, bin, (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0) return -1;
+    int status = 0, done = 0, timed_out = 0;
+    while (!done) {
+        pid_t r = waitpid(pid, &status, WNOHANG);
+        if (r == pid) done = 1;
+        else {
+            clock_gettime(CLOCK_MONOTONIC, &t1);
+            double el = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+            if (el > timeout_s) { kill(pid, SIGKILL); waitpid(pid, &status, 0); timed_out = 1; done = 1; }
+            else {
+                struct timespec ts = { 0, 2000000 };
+                nanosleep(&ts, NULL);
+            }
+        }
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    *elapsed_ms = ((t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9) * 1000.0;
+    if (timed_out) return -1000;
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return -WTERMSIG(status);
+    return -1;
+}
+
+static int file_contains(const char *path, const char *needle) {
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    static char buf[65536];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return strstr(buf, needle) != NULL;
+}
+
+// Line coverage of one test's .co source from the gcov report
+// of its generated C (the C carries #line directives pointing
+// back at the .co file). Fills exec/hit line counts and a
+// compact uncovered-ranges string. Returns 0 when no report.
+static int test_coverage(const char *work, const char *test_abs,
+                         long *exec_out, long *hit_out,
+                         char *uncov, size_t uncov_sz) {
+    // basename without .co
+    char base[256];
+    snprintf(base, sizeof(base), "%s", test_abs);
+    char *bn = strrchr(base, '/');
+    bn = bn ? bn + 1 : base;
+    char stem[256];
+    snprintf(stem, sizeof(stem), "%s", bn);
+    char *dot = strrchr(stem, '.');
+    if (dot) *dot = 0;
+
+    char gcovdir[PATH_MAX];
+    snprintf(gcovdir, sizeof(gcovdir), "%s/gcov", work);
+    ensure_dir(gcovdir);
+    // gcov works from the object file: it finds the notes
+    // and data beside it and writes one report per source,
+    // including the .co file the #line directives name.
+    char ofile[PATH_MAX], objdir[PATH_MAX], cmd[16384];
+    snprintf(ofile, sizeof(ofile), "%s/build/%s.o", work, stem);
+    snprintf(objdir, sizeof(objdir), "%s/build", work);
+    snprintf(cmd, sizeof(cmd), "cd \"%s\" && gcov -o \"%s\" \"%s\" > gcov.log 2>&1",
+             gcovdir, objdir, ofile);
+    if (system(cmd) != 0) return 0;
+
+    char gcovfile[PATH_MAX];
+    snprintf(gcovfile, sizeof(gcovfile), "%s/%s.co.gcov", gcovdir, stem);
+    FILE *f = fopen(gcovfile, "r");
+    if (!f) return 0;
+    long exec = 0, hit = 0;
+    int ranges[24][2];
+    int nr = 0, open_from = -1, prev = -2;
+    char line[4096];
+    while (fgets(line, sizeof(line), f)) {
+        char *c1 = strchr(line, ':');
+        if (!c1) continue;
+        char cnt[32];
+        size_t cl = (size_t)(c1 - line) < 31 ? (size_t)(c1 - line) : 31;
+        memcpy(cnt, line, cl); cnt[cl] = 0;
+        // trim spaces
+        char *cp = cnt;
+        while (*cp == ' ') cp++;
+        char *ep = cp + strlen(cp);
+        while (ep > cp && ep[-1] == ' ') *--ep = 0;
+        if (strcmp(cp, "-") == 0 || strcmp(cp, "$") == 0) continue;
+        int lno = atoi(c1 + 1);
+        if (lno <= 0) continue;
+        int is_hit;
+        if (strcmp(cp, "#####") == 0 || strcmp(cp, "=====") == 0) is_hit = 0;
+        else if (cp[0] >= '0' && cp[0] <= '9') is_hit = 1;
+        else continue;
+        exec++;
+        if (is_hit) { hit++; open_from = -1; prev = -2; }
+        else {
+            if (open_from == -1 || lno != prev + 1) {
+                if (nr < 24) { ranges[nr][0] = lno; ranges[nr][1] = lno; nr++; }
+                open_from = lno;
+            } else if (nr > 0) ranges[nr - 1][1] = lno;
+            prev = lno;
+        }
+    }
+    fclose(f);
+    *exec_out = exec;
+    *hit_out = hit;
+    if (nr == 0) { snprintf(uncov, uncov_sz, "none"); return 1; }
+    int pos = 0;
+    for (int i = 0; i < nr; i++) {
+        if (ranges[i][0] == ranges[i][1])
+            pos += snprintf(uncov + pos, uncov_sz - pos, "%s%d", i ? ", " : "", ranges[i][0]);
+        else
+            pos += snprintf(uncov + pos, uncov_sz - pos, "%s%d-%d", i ? ", " : "", ranges[i][0], ranges[i][1]);
+    }
+    return 1;
+}
+
+static int cmd_test(int argc, char *argv[]) {
+    const char *root = ".";
+    int bench = 0, race = 0, cover = 0;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--bench") == 0) bench = 1;
+        else if (strcmp(argv[i], "--race") == 0) race = 1;
+        else if (strcmp(argv[i], "--cover") == 0) cover = 1;
+        else if (strcmp(argv[i], "-v") == 0) g_verbose = 1;
+        else root = argv[i];
+    }
+    char root_abs[PATH_MAX];
+    if (!realpath(root, root_abs)) {
+        fprintf(stderr, "come test: no such directory: %s\n", root);
+        return 1;
+    }
+    g_test_count = 0;
+    discover_tests(root_abs, 0);
+    if (g_test_count == 0) {
+        fprintf(stderr, "come test: no tests found under %s (looked for .co files in t/ directories)\n", root);
+        return 1;
+    }
+    qsort(g_test_paths, g_test_count, PATH_MAX, cmp_str);
+
+    // Instrumented builds go through COME_CFLAGS (read by the
+    // child builds at compile and link time). The per-test
+    // scratch working directories keep their objects and
+    // coverage data out of the project's own build tree.
+    if (race && cover) setenv("COME_CFLAGS", "-fsanitize=thread --coverage -g", 1);
+    else if (race) setenv("COME_CFLAGS", "-fsanitize=thread -g", 1);
+    else if (cover) setenv("COME_CFLAGS", "--coverage", 1);
+    if (race && system("command -v setarch > /dev/null 2>&1") == 0) g_race_wrap = 1;
+
+    char self[PATH_MAX], scratch[PATH_MAX];
+    self_exe(self, sizeof(self));
+    if (!make_scratch(scratch, sizeof(scratch), "test")) die("cannot create a temp dir");
+
+    int passed = 0, failed = 0;
+    long tot_exec = 0, tot_hit = 0;
+    printf("Running %d test%s from %s\n", g_test_count, g_test_count == 1 ? "" : "s", root);
+    for (int i = 0; i < g_test_count; i++) {
+        const char *path = g_test_paths[i];
+        const char *disp = path;
+        if (strncmp(path, root_abs, strlen(root_abs)) == 0) {
+            disp = path + strlen(root_abs);
+            while (*disp == '/') disp++;
+        }
+        char work[PATH_MAX];
+        snprintf(work, sizeof(work), "%s/t%d", scratch, i);
+        ensure_dir(work);
+        char bin[PATH_MAX];
+        // Build with the scratch dir as the child's working
+        // directory: the driver roots its caches there.
+        char qi[PATH_MAX + 8], qb[PATH_MAX + 8], qw[PATH_MAX + 8], cmd[16384], buildlog[PATH_MAX];
+        snprintf(bin, sizeof(bin), "%s/prog", work);
+        snprintf(buildlog, sizeof(buildlog), "%s/build.log", work);
+        shell_quote(path, qi, sizeof(qi));
+        shell_quote(bin, qb, sizeof(qb));
+        shell_quote(work, qw, sizeof(qw));
+        snprintf(cmd, sizeof(cmd), "cd %s && \"%s\" build %s -o %s > build.log 2>&1",
+                 qw, self, qi, qb);
+        int brc = system(cmd);
+        if (brc == -1 || !WIFEXITED(brc) || WEXITSTATUS(brc) != 0) {
+            printf("FAIL %s (build failed)\n", disp);
+            dump_log(buildlog, 40);
+            failed++;
+            continue;
+        }
+        char runlog[PATH_MAX];
+        snprintf(runlog, sizeof(runlog), "%s/run.log", work);
+        double ms = 0.0;
+        int runs = bench ? 5 : 1;
+        double total_ms = 0.0;
+        int rc = 0;
+        for (int r = 0; r < runs; r++) {
+            rc = run_capture(bin, runlog, TEST_TIMEOUT_S, &ms);
+            total_ms += ms;
+            if (rc != 0) break;
+        }
+        if (rc != 0) {
+            const char *why = "failed";
+            char whybuf[64];
+            if (rc == -1000) { snprintf(whybuf, sizeof(whybuf), "timeout after %ds", TEST_TIMEOUT_S); why = whybuf; }
+            else if (rc < 0) { snprintf(whybuf, sizeof(whybuf), "killed by signal %d", -rc); why = whybuf; }
+            else { snprintf(whybuf, sizeof(whybuf), "exit %d", rc); why = whybuf; }
+            printf("FAIL %s (%s)\n", disp, why);
+            dump_log(runlog, 40);
+            failed++;
+            continue;
+        }
+        if (race && file_contains(runlog, "ThreadSanitizer")) {
+            printf("FAIL %s (data race reported)\n", disp);
+            dump_log(runlog, 40);
+            failed++;
+            continue;
+        }
+        passed++;
+        if (bench) printf("PASS %s (avg %.1f ms over %d runs)\n", disp, total_ms / runs, runs);
+        else printf("PASS %s (%.0f ms)\n", disp, total_ms);
+        if (cover) {
+            long ex = 0, ht = 0;
+            char uncov[512];
+            if (test_coverage(work, path, &ex, &ht, uncov, sizeof(uncov)) && ex > 0) {
+                tot_exec += ex; tot_hit += ht;
+                printf("  coverage: %.0f%% (%ld/%ld lines); uncovered: %s\n",
+                       100.0 * ht / ex, ht, ex, uncov);
+            } else {
+                printf("  coverage: n/a\n");
+            }
+        }
+    }
+    printf("Results: %d passed, %d failed\n", passed, failed);
+    if (cover && tot_exec > 0)
+        printf("Line coverage: %.0f%% (%ld/%ld lines)\n", 100.0 * tot_hit / tot_exec, tot_hit, tot_exec);
+    rm_rf(scratch);
+    return failed ? 1 : 0;
+}
+
+/* ----- come fmt: canonical formatting, in place -----
+ *
+ * The parser has line-sensitive rules (the postfix
+ * same-line rule, the line-leading &(struct T) rule), so
+ * fmt never adds or removes a line: each source line maps
+ * to exactly one output line. Within a line it canonicalizes
+ * the leading indentation (4 spaces per brace level, case
+ * bodies one extra) and the spacing between tokens. String
+ * and char literals and comments pass through byte-for-byte;
+ * only code tokens are re-spaced. Formatting an
+ * already-formatted file changes nothing (idempotent).
+ */
+
+enum { FK_WORD, FK_STR, FK_COMMENT, FK_OP };
+
+typedef struct { char text[512]; int kind; int prefix; } FTok;
+
+static const char *fmt_ops[] = {
+    "<<=", ">>=", "...", "==", "!=", "<=", ">=", "&&", "||",
+    "++", "--", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=",
+    "<<", ">>", "->", NULL
+};
+
+static int fmt_is_keyword_paren(const char *w) {
+    return strcmp(w, "if") == 0 || strcmp(w, "for") == 0 ||
+           strcmp(w, "while") == 0 || strcmp(w, "switch") == 0;
+}
+
+// Whether a "{" in this position opens a block (function
+// body, if/for/while/switch body, else/do body) rather than
+// a literal or a type. Decided by the preceding token (or
+// line start): ")" ends a header, else/do introduce blocks.
+static int fmt_brace_is_block(const FTok *prev, int have_prev) {
+    if (!have_prev) return 1;
+    if (prev->kind == FK_OP && strcmp(prev->text, ")") == 0) return 1;
+    if (prev->kind == FK_WORD &&
+        (strcmp(prev->text, "else") == 0 || strcmp(prev->text, "do") == 0)) return 1;
+    if (prev->kind == FK_OP && strcmp(prev->text, "}") == 0) return 1;
+    return 0;
+}
+
+// Space between token a (already emitted; a_prefix says a was
+// a prefix unary) and token b (b_prefix says b is one)?
+// a_block says a is a block-opening "{"; b_block says b, when
+// a "{", opens a block.
+static int fmt_space(const FTok *a, int a_prefix, int a_block,
+                     const FTok *b, int b_prefix, int b_block, int b_close_block) {
+    const char *x = a->text, *y = b->text;
+    if (b->kind == FK_OP) {
+        if (strcmp(y, ")") == 0 || strcmp(y, "]") == 0 ||
+            strcmp(y, ",") == 0 || strcmp(y, ";") == 0 ||
+            strcmp(y, ".") == 0 || strcmp(y, ":") == 0) return 0;
+        if (strcmp(y, "(") == 0)
+            return (a->kind == FK_WORD && fmt_is_keyword_paren(x)) ? 1 : 0;
+        if (strcmp(y, "[") == 0) return 0;
+        if (strcmp(y, "{") == 0) {
+            if (strcmp(x, "map") == 0 || strcmp(x, "(") == 0) return 0;
+            return 1;
+        }
+        if (strcmp(y, "}") == 0) {
+            if (strcmp(x, "{") == 0) return 0;        // {}
+            return b_close_block ? 1 : 0;             // block: " }", literal: "}"
+        }
+        if ((strcmp(y, "++") == 0 || strcmp(y, "--") == 0) && !b_prefix) return 0;
+        if (b_prefix && (strcmp(x, "(") == 0 || strcmp(x, "[") == 0 ||
+                         strcmp(x, "{") == 0)) return 0;
+        return 1;  // binary operators, ?, and the rest
+    }
+    if (a->kind == FK_OP) {
+        if (strcmp(x, "(") == 0 || strcmp(x, "[") == 0 ||
+            strcmp(x, ".") == 0) return 0;
+        if (strcmp(x, "{") == 0) {
+            if (strcmp(y, "}") == 0) return 0;      // {}
+            return a_block ? 1 : 0;
+        }
+        if (a_prefix) return 0;
+        return 1;  // after , ; : and binary operators
+    }
+    return 1;      // word/word, word/literal, literal/word
+}
+
+typedef struct {
+    int in_block_comment;
+    int depth;        // brace nesting before the current line
+    int case_extra;   // inside a case body
+    int case_depth;   // the depth at which the case body runs
+    int brace_kind[128];  // per open brace: 1 = block, 0 = literal/type
+    int brace_top;
+} FmtState;
+
+// Format one line into out (no trailing newline). Updates st.
+static void fmt_line(const char *line, FmtState *st, char *out, size_t out_sz) {
+    // --- tokenize ---
+    static FTok toks[1024];
+    int nt = 0;
+    int began_in_block = st->in_block_comment;
+    const char *trail_comment = NULL;
+    int i = 0, n = (int)strlen(line);
+    while (i < n) {
+        char c = line[i];
+        if (st->in_block_comment) {
+            int start = i;
+            while (i < n && !(line[i] == '*' && i + 1 < n && line[i + 1] == '/')) i++;
+            if (i < n) { i += 2; st->in_block_comment = 0; }
+            if (nt < 1024) {
+                int len = i - start < 511 ? i - start : 511;
+                memcpy(toks[nt].text, line + start, len);
+                toks[nt].text[len] = 0; toks[nt].kind = FK_COMMENT; toks[nt].prefix = 0; nt++;
+            }
+            continue;
+        }
+        if (c == ' ' || c == '\t' || c == '\r') { i++; continue; }
+        if (c == '/' && i + 1 < n && line[i + 1] == '/') { trail_comment = line + i; break; }
+        if (c == '/' && i + 1 < n && line[i + 1] == '*') {
+            int start = i;
+            i += 2;
+            while (i < n && !(line[i] == '*' && i + 1 < n && line[i + 1] == '/')) i++;
+            if (i < n) i += 2; else st->in_block_comment = 1;
+            if (nt < 1024) {
+                int len = i - start < 511 ? i - start : 511;
+                memcpy(toks[nt].text, line + start, len);
+                toks[nt].text[len] = 0; toks[nt].kind = FK_COMMENT; toks[nt].prefix = 0; nt++;
+            }
+            continue;
+        }
+        if (c == '"' || c == '\'') {
+            int start = i;
+            i++;
+            while (i < n && line[i] != c) { if (line[i] == '\\' && i + 1 < n) i++; i++; }
+            if (i < n) i++;
+            if (nt < 1024) {
+                int len = i - start < 511 ? i - start : 511;
+                memcpy(toks[nt].text, line + start, len);
+                toks[nt].text[len] = 0; toks[nt].kind = FK_STR; toks[nt].prefix = 0; nt++;
+            }
+            continue;
+        }
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+            int start = i;
+            while (i < n && ((line[i] >= 'a' && line[i] <= 'z') || (line[i] >= 'A' && line[i] <= 'Z') ||
+                             (line[i] >= '0' && line[i] <= '9') || line[i] == '_')) i++;
+            if (nt < 1024) {
+                int len = i - start < 511 ? i - start : 511;
+                memcpy(toks[nt].text, line + start, len);
+                toks[nt].text[len] = 0; toks[nt].kind = FK_WORD; toks[nt].prefix = 0; nt++;
+            }
+            continue;
+        }
+        if (c >= '0' && c <= '9') {
+            int start = i;
+            // Come numbers may carry digit separators
+            // (10'000'000): an apostrophe followed by a
+            // digit belongs to the number, it does not
+            // open a character literal.
+            while (i < n && ((line[i] >= '0' && line[i] <= '9') || (line[i] >= 'a' && line[i] <= 'z') ||
+                             (line[i] >= 'A' && line[i] <= 'Z') || line[i] == '.' || line[i] == '_' ||
+                             (line[i] == '\'' && i + 1 < n && line[i + 1] >= '0' && line[i + 1] <= '9'))) i++;
+            if (nt < 1024) {
+                int len = i - start < 511 ? i - start : 511;
+                memcpy(toks[nt].text, line + start, len);
+                toks[nt].text[len] = 0; toks[nt].kind = FK_WORD; toks[nt].prefix = 0; nt++;
+            }
+            continue;
+        }
+        // operators and punctuation, longest match first
+        int matched = 0;
+        for (int k = 0; fmt_ops[k]; k++) {
+            size_t L = strlen(fmt_ops[k]);
+            if (strncmp(line + i, fmt_ops[k], L) == 0) {
+                if (nt < 1024) {
+                    snprintf(toks[nt].text, sizeof(toks[nt].text), "%s", fmt_ops[k]);
+                    toks[nt].kind = FK_OP; toks[nt].prefix = 0; nt++;
+                }
+                i += (int)L; matched = 1; break;
+            }
+        }
+        if (matched) continue;
+        if (strchr("+-*/%=<>&|^~!?:;,.()[]{}", c)) {
+            if (nt < 1024) {
+                toks[nt].text[0] = c; toks[nt].text[1] = 0;
+                toks[nt].kind = FK_OP; toks[nt].prefix = 0; nt++;
+            }
+            i++;
+            continue;
+        }
+        i++;  // unknown char: skip (invalid Come anyway)
+    }
+
+    // A line wholly inside a block comment keeps its bytes.
+    if (began_in_block && nt == 1 && toks[0].kind == FK_COMMENT && !trail_comment) {
+        snprintf(out, out_sz, "%s", line);
+        // rtrim
+        size_t L = strlen(out);
+        while (L > 0 && (out[L - 1] == ' ' || out[L - 1] == '\t' || out[L - 1] == '\r')) out[--L] = 0;
+        return;
+    }
+
+    // --- classify prefix operators ---
+    for (int k = 0; k < nt; k++) {
+        if (toks[k].kind != FK_OP) continue;
+        const char *t = toks[k].text;
+        if (strcmp(t, "!") && strcmp(t, "~") && strcmp(t, "-") &&
+            strcmp(t, "&") && strcmp(t, "*") && strcmp(t, "++") && strcmp(t, "--"))
+            continue;
+        int prefix = 0;
+        if (k == 0) prefix = 1;
+        else {
+            const FTok *pv = &toks[k - 1];
+            if (pv->kind == FK_OP && strcmp(pv->text, ")") && strcmp(pv->text, "]") &&
+                !(pv->prefix && (strcmp(pv->text, "++") == 0 || strcmp(pv->text, "--") == 0)))
+                prefix = 1;
+            else if (pv->kind == FK_WORD &&
+                     (strcmp(pv->text, "return") == 0 || strcmp(pv->text, "case") == 0))
+                prefix = 1;
+        }
+        toks[k].prefix = prefix;
+    }
+
+    // --- indentation level for this line ---
+    int level = st->depth;
+    int first_close = (nt > 0 && toks[0].kind == FK_OP && strcmp(toks[0].text, "}") == 0);
+    int first_case = (nt > 0 && toks[0].kind == FK_WORD &&
+                      (strcmp(toks[0].text, "case") == 0 || strcmp(toks[0].text, "default") == 0));
+    if (first_close) level = st->depth - 1;
+    else if (!first_case) level = st->depth + st->case_extra;
+    if (level < 0) level = 0;
+
+    // --- emit ---
+    // Brace blockness is decided left to right on a scratch
+    // copy of the kind stack; the real stack is updated in
+    // the state pass below.
+    int kind_scratch[1100];
+    int kstop = st->brace_top;
+    for (int k = 0; k < kstop && k < 1100; k++) kind_scratch[k] = st->brace_kind[k];
+    int pos = 0;
+    for (int k = 0; k < level * 4 && pos < (int)out_sz - 1; k++) out[pos++] = ' ';
+    out[pos] = 0;
+    for (int k = 0; k < nt; k++) {
+        int b_block = 0, a_block = 0, b_close_block = 0;
+        if (toks[k].kind == FK_OP && strcmp(toks[k].text, "{") == 0)
+            b_block = fmt_brace_is_block(k > 0 ? &toks[k - 1] : NULL, k > 0);
+        if (toks[k].kind == FK_OP && strcmp(toks[k].text, "}") == 0)
+            b_close_block = (kstop > 0) ? kind_scratch[kstop - 1] : 0;
+        if (k > 0 && toks[k - 1].kind == FK_OP && strcmp(toks[k - 1].text, "{") == 0)
+            a_block = (kstop > 0) ? kind_scratch[kstop - 1] : 0;
+        if (k > 0) {
+            int sp = fmt_space(&toks[k - 1], toks[k - 1].prefix, a_block,
+                               &toks[k], toks[k].prefix, b_block, b_close_block);
+            if (sp && pos < (int)out_sz - 1) out[pos++] = ' ';
+            out[pos] = 0;
+        }
+        int w = snprintf(out + pos, out_sz - pos, "%s", toks[k].text);
+        if (w > 0) pos += w;
+        if (toks[k].kind == FK_OP && strcmp(toks[k].text, "{") == 0) {
+            if (kstop < 1100) kind_scratch[kstop++] = b_block;
+        } else if (toks[k].kind == FK_OP && strcmp(toks[k].text, "}") == 0) {
+            if (kstop > 0) kstop--;
+        }
+    }
+    if (trail_comment) {
+        char tc[1024];
+        snprintf(tc, sizeof(tc), "%s", trail_comment);
+        size_t L = strlen(tc);
+        while (L > 0 && (tc[L - 1] == ' ' || tc[L - 1] == '\t' || tc[L - 1] == '\r')) tc[--L] = 0;
+        if (nt > 0) pos += snprintf(out + pos, out_sz - pos, "  %s", tc);
+        else {
+            // comment-only line: it sits at the current level
+            pos = 0;
+            for (int k = 0; k < level * 4 && pos < (int)out_sz - 1; k++) out[pos++] = ' ';
+            out[pos] = 0;
+            pos += snprintf(out + pos, out_sz - pos, "%s", tc);
+        }
+    }
+    out[pos] = 0;
+
+    // --- update state ---
+    for (int k = 0; k < nt; k++) {
+        if (toks[k].kind != FK_OP) continue;
+        if (strcmp(toks[k].text, "{") == 0) {
+            st->depth++;
+            if (st->brace_top < 128)
+                st->brace_kind[st->brace_top++] =
+                    fmt_brace_is_block(k > 0 ? &toks[k - 1] : NULL, k > 0);
+        } else if (strcmp(toks[k].text, "}") == 0) {
+            st->depth--;
+            if (st->brace_top > 0) st->brace_top--;
+        }
+    }
+    if (st->depth < 0) st->depth = 0;
+    if (first_case) { st->case_extra = 1; st->case_depth = level + 1; }
+    else if (first_close) st->case_extra = 0;
+    // Leaving the switch (depth back below the case body)
+    // ends the case body's extra indentation.
+    if (st->case_extra && st->depth + st->case_extra < st->case_depth) st->case_extra = 0;
+}
+
+// Format one file in place; returns 1 when it changed.
+static int fmt_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "fmt: cannot read %s\n", path); return -1; }
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *src = malloc(sz + 2);
+    size_t rd = fread(src, 1, sz, f);
+    (void)rd;
+    fclose(f);
+    src[sz] = 0;
+
+    // Output bound: reformatting can add spaces but never
+    // more than ~2 per source char plus indentation.
+    size_t cap = (size_t)sz * 3 + 65536;
+    char *dst = malloc(cap);
+    size_t dpos = 0;
+    FmtState st = { 0, 0, 0 };
+    // Split manually: strtok would collapse consecutive
+    // newlines and drop blank lines, renumbering the file -
+    // fmt must preserve the line structure exactly.
+    {
+        const char *p = src;
+        static char lbuf[65536];
+        static char obuf[65536];
+        while (1) {
+            const char *nl = strchr(p, '\n');
+            size_t len = nl ? (size_t)(nl - p) : strlen(p);
+            if (!nl && len == 0) break;
+            if (len >= sizeof(lbuf)) len = sizeof(lbuf) - 1;
+            memcpy(lbuf, p, len); lbuf[len] = 0;
+            fmt_line(lbuf, &st, obuf, sizeof(obuf));
+            size_t L = strlen(obuf);
+            memcpy(dst + dpos, obuf, L); dpos += L;
+            dst[dpos++] = '\n';
+            if (!nl) break;
+            p = nl + 1;
+        }
+    }
+    dst[dpos] = 0;
+    int changed = (strcmp(src, dst) != 0);
+    if (changed) {
+        FILE *w = fopen(path, "wb");
+        if (!w) { fprintf(stderr, "fmt: cannot write %s\n", path); free(src); free(dst); return -1; }
+        fwrite(dst, 1, dpos, w);
+        fclose(w);
+        printf("fmt: %s\n", path);
+    }
+    free(src); free(dst);
+    return changed;
+}
+
+static void fmt_collect(const char *path, char list[][PATH_MAX], int *count, int max) {
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        fprintf(stderr, "fmt: no such file or directory: %s\n", path);
+        return;
+    }
+    if (S_ISREG(st.st_mode)) {
+        if (*count < max) snprintf(list[(*count)++], PATH_MAX, "%s", path);
+        return;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        DIR *d = opendir(path);
+        if (!d) return;
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            if (strcmp(e->d_name, "build") == 0) continue;
+            char child[PATH_MAX];
+            snprintf(child, sizeof(child), "%s/%s", path, e->d_name);
+            struct stat cst;
+            if (stat(child, &cst) != 0) continue;
+            if (S_ISDIR(cst.st_mode)) fmt_collect(child, list, count, max);
+            else if (S_ISREG(cst.st_mode)) {
+                size_t L = strlen(child);
+                if (L > 3 && strcmp(child + L - 3, ".co") == 0 && *count < max)
+                    snprintf(list[(*count)++], PATH_MAX, "%s", child);
+            }
+        }
+        closedir(d);
+    }
+}
+
+static int cmd_fmt(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: come fmt <file.co|dir> [...]\n");
+        return 1;
+    }
+    static char list[4096][PATH_MAX];
+    int count = 0;
+    for (int i = 2; i < argc; i++) fmt_collect(argv[i], list, &count, 4096);
+    qsort(list, count, PATH_MAX, cmp_str);
+    int changed = 0;
+    for (int i = 0; i < count; i++) {
+        int r = fmt_file(list[i]);
+        if (r < 0) return 1;
+        if (r > 0) changed++;
+    }
+    if (changed == 0) printf("fmt: all files already formatted\n");
+    return 0;
+}
+
 /* ---------- Main ---------- */
 
+static void print_usage(void) {
+    fprintf(stderr,
+        "Usage:\n"
+        "  come build <file.co|dir> [-o output]   compile and link\n"
+        "  come genc <file.co> -o <out.c>          emit C only\n"
+        "  come check <file.co|dir>                compile, no link or run\n"
+        "  come run <file.co> [--] [args...]       build to a temp binary and run it\n"
+        "  come test [root] [--cover] [--race] [--bench]\n"
+        "                                          build and run the .co tests in t/ dirs\n"
+        "  come fmt <file.co|dir> [...]            reformat sources in place\n");
+}
+
 int main(int argc, char *argv[]) {
-    // Ensure we have gcc before doing anything
+    setbuf(stdout, NULL);
+
+    // Developer commands (COIL-138). fmt needs no C toolchain.
+    if (argc >= 2 && strcmp(argv[1], "fmt") == 0) return cmd_fmt(argc, argv);
+
+    // Ensure we have gcc before doing anything else
     check_build_essentials();
 
-    setbuf(stdout, NULL);
+    if (argc >= 2 && strcmp(argv[1], "check") == 0) return cmd_check(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "run") == 0) return cmd_run(argc, argv);
+    if (argc >= 2 && strcmp(argv[1], "test") == 0) return cmd_test(argc, argv);
+
     if (argc < 3) {
-        fprintf(stderr, "Usage: come build <file.co|.> [-o output]\n");
+        print_usage();
         return 1;
     }
 
     const char *cmd = argv[1];
     if (strcmp(cmd, "build") != 0 && strcmp(cmd, "genc") != 0) {
         fprintf(stderr, "Unknown command: %s\n", cmd);
+        print_usage();
         return 1;
     }
     
@@ -673,7 +1554,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, " -ldl");
+    pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, "%s -ldl", cc_extra_flags());
 
     if (run_cmd(link_cmd) != 0) {
         die("Linking failed");

@@ -37,6 +37,7 @@ bash tests/run_coro_test.sh
 bash tests/run_spec_test.sh
 bash tests/run_grammar_test.sh
 bash tests/run_errors_test.sh
+bash tests/run_cli_test.sh
 bash tests/run_install_test.sh
 bash tests/run_readme_test.sh
 

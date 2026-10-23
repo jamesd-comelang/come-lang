@@ -43,6 +43,40 @@ come build hello.co
 ./hello
 ```
 
+## Commands
+
+```sh
+come build hello.co          # compile and link (come genc emits C only)
+come run hello.co -- args    # build to a temp binary and run it,
+                               # forwarding the args and the exit code
+come check hello.co           # compile only - no link, no run
+come test                     # build and run the .co tests in t/ dirs
+come test --bench             # ... timing each test over 5 runs
+come test --race              # ... rebuilt with ThreadSanitizer
+come test --cover             # ... with per-file line coverage
+come fmt hello.co             # reformat sources in place
+```
+
+`come test [root]` discovers every `.co` file in any `t/`
+directory below the root (default: the current directory),
+builds each in an isolated scratch directory, and reports
+per-test results with a summary; the exit code is nonzero
+when anything fails. A test that runs longer than 30
+seconds is killed and reported as a timeout. `--cover`
+reports line coverage of the `.co` source itself (the
+generated C carries `#line` directives back to it, and gcov
+reads them); `--race` instruments the generated code - the
+prebuilt runtime library is not instrumented. All C
+compiles and links honor a `COME_CFLAGS` environment
+variable with extra flags, which is how the `--race` and
+`--cover` modes are wired.
+
+`come fmt` is deliberately conservative: it never adds or
+removes a line (the parser has line-sensitive rules), it
+only canonicalizes indentation and spacing within a line,
+and string/char literals and comments pass through
+byte-for-byte. Formatting a formatted file changes nothing.
+
 ## The language in brief
 
 - **Modules are the only compilation unit.** Each file declares one
@@ -122,6 +156,10 @@ checks), compiles and runs every Come-language test under
 `src/**/t/` (auto-discovered — a new test joins the suite just by
 being added there), and runs the examples as smoke tests.
 Anything failing stops the run.
+
+The same sweep is available outside the repo through
+`come test` (see Commands above), which is how a Come
+project runs its own `t/` tests.
 
 ## License
 
