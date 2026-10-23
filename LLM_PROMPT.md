@@ -342,6 +342,26 @@ int answer() {          // plain functions are exported
   literals are not fully usable cross-module yet; pass
   structs by value/reference between modules instead of
   constructing foreign literals.
+- **Instances.** A module with module-level variables has
+  state. A function that uses a module variable (or calls
+  one that does) is *stateful* and can ONLY be called on
+  an instance: `var w = window_module.create()`, then
+  `w.set_title("B")`. Calling a stateful function through
+  the namespace (`window_module.set_title("x")`) is a
+  compile error - the namespace never implies a singleton.
+  Stateless functions work both ways (`mod.f()` and
+  `w.f()`). `w.destroy()` runs the module's `exit()`,
+  frees the instance's memory, and is safe to repeat; any
+  later call on `w` sets ERR ("module instance has been
+  destroyed") and returns the zero value - it never
+  crashes. `create()` on a module with no variables is a
+  compile error. An instance's type is written as the
+  module's name (`void use(window_module w) {...}`).
+  Instances live in locals and parameters; functions
+  cannot return them. A module defining `main()` is a
+  program: its variables are plain globals, no instance
+  needed. In a stateful module, `init()`/`exit()` run per
+  instance (at create/destroy), not at import/program end.
 
 ## Coroutines and links
 

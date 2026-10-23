@@ -14,6 +14,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
 //   g_codegen_chain_imports: the group's union import list, used
 //     for the init/exit chain instead of this file's own imports.
 extern int g_codegen_suppress_singletons;
+extern int g_codegen_state_home;
 extern int g_codegen_group_has_init;
 extern int g_codegen_group_has_exit;
 extern const char** g_codegen_chain_imports;
@@ -31,4 +32,25 @@ void codegen_register_module_exports(const char* module, const char** names, int
 // generating any of them, so cross-file references are
 // not mistaken for undefined names.
 void codegen_register_group_symbols(const char* module, const char** names, int count);
+
+// Module state registry (COIL-140): the driver analyzes each
+// user module at parse time - its module-level variables and
+// which functions use them, directly or through calls - and
+// registers the result so codegen can split the namespace
+// surface from the instance surface.
+void codegen_register_module_state(const char* module,
+                                   const char** var_names,
+                                   const char** var_types, int var_count,
+                                   const char** stateful,
+                                   const char** chains, int stateful_count,
+                                   int has_main,
+                                   const char** fn_names, const char** fn_rets,
+                                   const char** fn_params, int fn_count);
+const char* codegen_module_fn_ret(const char* module, const char* fn);
+int codegen_module_fn_count(const char* module);
+int codegen_module_fn_at(const char* module, int i, const char** name,
+                         const char** ret, const char** params);
+int codegen_module_has_state(const char* module);
+int codegen_fn_stateful(const char* module, const char* fn, const char** chain_out);
+int codegen_module_var_index(const char* module, const char* name, const char** type_out);
 #endif

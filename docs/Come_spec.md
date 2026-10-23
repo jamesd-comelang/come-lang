@@ -250,6 +250,109 @@ Rules:
 Design pattern: because `module_init()` is automatic, use it to establish a
 **known safe state** and defer heavy resource allocation to explicit calls.
 
+## 3.6 Two ways to use a module: namespace and instances
+
+A module can be used in two ways (COIL-140):
+
+```come
+import math
+
+var n = math.sqrt(25)          // namespace use
+```
+
+```come
+import window_module
+
+var WindowB = window_module.create()   // instance use
+WindowB.set_title("Window B")
+WindowB.destroy()
+```
+
+**Namespace use** calls a module's functions, types, and
+constants directly. It never creates an instance and never
+implies a singleton: there is no hidden module object
+behind a namespace call.
+
+**Instance use** creates an independent module instance
+with its own mutable state, its own allocation-tree root,
+and its own lifecycle. Instances share the module's code
+and nothing else.
+
+The split is decided by **state**: a module-level variable
+is module state. A function is **stateful** when its body
+uses a module variable, or calls a stateful function of
+its own module - statefulness is a static property,
+computed once at compile time as a fixpoint over the
+module's call graph (the `init`/`exit` hooks of a stateful
+module are stateful by definition). Then:
+
+- A **stateless** function can be called both ways. On the
+  namespace it runs as itself; on an instance it runs
+  through the instance, so the destroyed-instance rule
+  below applies to it too. The surfaces are nested - a
+  name never means two different things.
+- A **stateful** function can only be called on an
+  instance. Calling one on the namespace is a compile
+  error that names the witness chain:
+
+  ```text
+  'counter.bump' cannot be called on the namespace: it uses module state (bump -> count) - create an instance first: var x = counter.create(), then x.bump(...)
+  ```
+
+- A module with no module-level variables has no state to
+  instantiate: `create()` on it is a compile error.
+- A module that defines `main()` is a program, not a
+  library: its state is the program's own, used exactly as
+  before this section existed.
+
+**Lifecycle.** `create()` allocates the instance, runs
+the module variables' initializers into it, then runs the
+module's `init()` hook bound to the instance (the §3.5
+hooks of a stateful module run per instance, not at
+import). Allocations made by stateful functions belong to
+the instance's root, not the module context. `destroy()`
+runs the `exit()` hook, frees the instance's root -
+reclaiming everything the instance owns - and marks the
+instance destroyed. `destroy()` is idempotent, and the
+handle stays a valid (dead) value afterwards; it is owned
+by the creating module's context and is reclaimed with it
+at program end.
+
+**Using a destroyed instance is safe.** Any call on a
+destroyed (or never assigned) instance sets `ERR`
+(`EBADF`, "module instance has been destroyed") and
+returns the zero value of the function's return type. It
+never crashes and never touches freed memory.
+
+**Declaring and passing instances.** An instance value's
+type is written as the module's name:
+
+```come
+void use_it(window_module w) {
+    w.set_title("from use_it")
+}
+
+var w = window_module.create()   // or: window_module w = window_module.create()
+use_it(w)
+```
+
+Rules and limits of this version:
+
+- The variables of a module with instances are declared
+  in one file of the module (its *state home*); the
+  functions may live in any of its files.
+- Methods (functions on a type) cannot use module state;
+  the compiler reports the state chain and asks for the
+  access to move into a plain function.
+- Coroutines cannot use module state, as before (§9.1),
+  and cannot call stateful functions.
+- An instance lives in a local variable or a parameter.
+  Functions cannot return instances, and instances cannot
+  be struct fields yet.
+- Module variable initializers are expressions; build
+  buffers in `init()` (append, resize) rather than with
+  literal initializers.
+
 # 4. Constants and Enumerations
 
 ## 4.1 Constants

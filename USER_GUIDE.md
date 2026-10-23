@@ -644,6 +644,61 @@ spec's §3.4 note) — passing structs by value or reference
 between your own modules works; constructing another module's
 struct literal in your file may not yet.
 
+**Stateful modules: instances.** The modules above are
+*stateless* - pure functions you call through the namespace
+(`helpers.answer()`). A module that keeps **module-level
+variables** has state, and state belongs to an *instance*:
+
+```come
+module window_module
+
+string title = "untitled"
+
+void set_title(string t) {
+    title = t
+}
+
+string get_title() {
+    return title
+}
+```
+
+```come
+var WindowB = window_module.create()
+WindowB.set_title("Window B")
+std.out.printf("%s\n", WindowB.get_title())   // Window B
+WindowB.destroy()
+```
+
+The rules:
+
+- A function that uses a module variable (directly, or by
+  calling another function that does) is **stateful** and
+  can only be called on an instance. Calling it through
+  the namespace - `window_module.set_title("x")` - is a
+  compile error that shows you why. There is no hidden
+  singleton behind the namespace.
+- A function that touches no state can be called both
+  ways: `window_module.twice(21)` and `w.twice(21)` are
+  the same function.
+- `create()` runs the variables' initializers and the
+  module's `init()`, per instance; each instance allocates
+  in its own root. `destroy()` runs `exit()` and frees
+  everything the instance owns. Two instances never see
+  each other's state.
+- Calling anything on a destroyed instance is safe: it
+  sets `ERR` ("module instance has been destroyed") and
+  returns the zero value. `destroy()` itself is safe to
+  call twice.
+- An instance's type is the module's name, so instances
+  can be passed to functions:
+  `void use_it(window_module w) { ... }`.
+- `create()` on a module with no variables is a compile
+  error - there is nothing to instantiate.
+- Your entry module (the one with `main`) is a program,
+  not a library: its module variables work as plain
+  globals, exactly as in §12's examples.
+
 ## 13. Coroutines and links
 
 A **coroutine** is a function that runs alongside others,

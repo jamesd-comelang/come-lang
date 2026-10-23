@@ -64,6 +64,9 @@ static void list_free(StringList *head) {
 
 /* ---------- Utilities ---------- */
 
+static void analyze_module(const char *module_name, ASTNode **asts,
+                           const char **files, int nast);
+
 static void die(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -151,6 +154,7 @@ typedef struct {
     int has_exit;          // some file of the group defines an exit hook
     const char** imports;  // union of the group's imports
     int import_count;
+    int is_state_home;     // this file declares the module's variables (COIL-140)
 } ModuleGroup;
 
 static void compile_file(const char *source_path, const char *forced_o_path,
@@ -218,6 +222,17 @@ static void compile_file(const char *source_path, const char *forced_o_path,
                 if (n > 0) codegen_register_module_exports(ast->text, names, n);
             }
         }
+    }
+
+    // 1c. Module state analysis (COIL-140): single-file
+    // modules only - directory groups are analyzed as a
+    // unit by compile_group. System modules keep their
+    // runtime surface untouched.
+    if (!(group && group->is_group) && !file_is_system_module(abs_path) &&
+        ast->type == AST_PROGRAM && ast->text[0]) {
+        ASTNode *one = ast;
+        const char *one_file = abs_path;
+        analyze_module(ast->text, &one, &one_file, 1);
     }
 
     // 2. Scan for imports and recurse
@@ -304,6 +319,7 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         // nested import compiles are unaffected, reset right after.
         int grouped = (group && group->is_group);
         g_codegen_suppress_singletons = (grouped && !group->is_primary) ? 1 : 0;
+        g_codegen_state_home = grouped ? (group->is_state_home ? 1 : 0) : 1;
         g_codegen_group_has_init = (grouped && group->is_primary) ? group->has_init : -1;
         g_codegen_group_has_exit = (grouped && group->is_primary) ? group->has_exit : -1;
         g_codegen_chain_imports = (grouped && group->is_primary) ? group->imports : NULL;
@@ -313,6 +329,7 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         g_codegen_system_module = file_is_system_module(abs_path);
         int gen_rc = generate_c_from_ast(ast, c_file, abs_path, 1);
         g_codegen_suppress_singletons = 0;
+        g_codegen_state_home = 1;
         g_codegen_group_has_init = -1;
         g_codegen_group_has_exit = -1;
         g_codegen_chain_imports = NULL;
@@ -408,6 +425,207 @@ static int scan_co_dir(const char *dir, char paths[][PATH_MAX], int max_paths) {
     return out_n;
 }
 
+
+// === Module state analysis (COIL-140) ===
+// One pass over a module's files at parse time: collect its
+// module-level variables and its functions, then compute
+// statefulness as a fixpoint over the call graph - a
+// function is stateful when its body mentions a module
+// variable or calls a stateful function. The walk does not
+// track shadowing (a local named like a module variable
+// marks the function stateful); codegen's own resolution
+// decides each individual use, so over-marking only costs
+// an instance parameter the body may not need, never a
+// wrong call. Each stateful function keeps a witness chain
+// ("tick -> bump -> count") for the namespace error.
+typedef struct { char name[128]; char type[160]; char file[PATH_MAX]; } AnaVar;
+typedef struct {
+    char name[128];
+    char ret[64];
+    char params[512];
+    ASTNode *body;
+    int is_coro, is_method, is_extern, direct;
+    char direct_var[128];
+    int edges[64], edge_count;
+    int stateful;
+    char chain[320];
+} AnaFn;
+
+static void ana_walk(ASTNode *n, AnaVar *vars, int var_count,
+                     AnaFn *fns, int fn_count, AnaFn *cur) {
+    if (!n) return;
+    if (n->type == AST_IDENTIFIER) {
+        for (int i = 0; i < var_count; i++)
+            if (strcmp(n->text, vars[i].name) == 0) {
+                cur->direct = 1;
+                snprintf(cur->direct_var, sizeof(cur->direct_var), "%s", vars[i].name);
+            }
+    }
+    for (int i = 0; i < n->child_count; i++)
+        ana_walk(n->children[i], vars, var_count, fns, fn_count, cur);
+}
+
+// Edges are gathered in a second walk that knows the
+// module's own name (for self-prefixed calls).
+static void ana_walk_edges(ASTNode *n, const char *module_name,
+                           AnaFn *fns, int fn_count, AnaFn *cur) {
+    if (!n) return;
+    const char *callee = NULL;
+    if (n->type == AST_CALL) callee = n->text;
+    else if (n->type == AST_METHOD_CALL && n->child_count > 0 &&
+             n->children[0] && n->children[0]->type == AST_IDENTIFIER &&
+             strcmp(n->children[0]->text, module_name) == 0)
+        callee = n->text;
+    if (callee) {
+        for (int i = 0; i < fn_count; i++)
+            if (strcmp(fns[i].name, callee) == 0 && cur->edge_count < 64) {
+                int seen = 0;
+                for (int j = 0; j < cur->edge_count; j++)
+                    if (cur->edges[j] == i) seen = 1;
+                if (!seen) cur->edges[cur->edge_count++] = i;
+            }
+    }
+    for (int i = 0; i < n->child_count; i++)
+        ana_walk_edges(n->children[i], module_name, fns, fn_count, cur);
+}
+
+static char g_ana_home_file[PATH_MAX];
+
+static void analyze_module(const char *module_name, ASTNode **asts,
+                           const char **files, int nast) {
+    g_ana_home_file[0] = 0;
+    static AnaVar vars[64];
+    static AnaFn fns[192];
+    int var_count = 0, fn_count = 0;
+    for (int a = 0; a < nast; a++) {
+        ASTNode *ast = asts[a];
+        if (!ast || ast->type != AST_PROGRAM) continue;
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode *ch = ast->children[i];
+            if (!ch) continue;
+            if (ch->type == AST_VAR_DECL && ch->text[0] && var_count < 64) {
+                AnaVar *v = &vars[var_count++];
+                memset(v, 0, sizeof(*v));
+                snprintf(v->name, sizeof(v->name), "%s", ch->text);
+                if (ch->child_count > 1 && ch->children[1])
+                    snprintf(v->type, sizeof(v->type), "%s", ch->children[1]->text);
+                else
+                    snprintf(v->type, sizeof(v->type), "int");
+                snprintf(v->file, sizeof(v->file), "%s", files[a]);
+            } else if (ch->type == AST_FUNCTION && ch->text[0] && fn_count < 192) {
+                AnaFn *fn = &fns[fn_count++];
+                memset(fn, 0, sizeof(*fn));
+                snprintf(fn->name, sizeof(fn->name), "%s", ch->text);
+                fn->is_coro = ch->is_coroutine;
+                fn->is_extern = ch->is_extern;
+                fn->is_method = strchr(ch->text, '.') != NULL;
+                if (ch->child_count > 0 && ch->children[0])
+                    snprintf(fn->ret, sizeof(fn->ret), "%s", ch->children[0]->text);
+                fn->params[0] = 0;
+                for (int k = 1; k < ch->child_count; k++) {
+                    ASTNode *pr = ch->children[k];
+                    if (!pr || pr->type == AST_BLOCK) break;
+                    if (pr->type != AST_VAR_DECL || pr->child_count < 2) continue;
+                    if (fn->params[0]) strncat(fn->params, ",", sizeof(fn->params) - strlen(fn->params) - 1);
+                    strncat(fn->params, pr->children[1]->text, sizeof(fn->params) - strlen(fn->params) - 1);
+                }
+                for (int k = 0; k < ch->child_count; k++)
+                    if (ch->children[k] && ch->children[k]->type == AST_BLOCK)
+                        fn->body = ch->children[k];
+            }
+        }
+    }
+    if (var_count > 0) snprintf(g_ana_home_file, sizeof(g_ana_home_file), "%s", vars[0].file);
+    int has_main = 0;
+    for (int i = 0; i < fn_count; i++)
+        if (strcmp(fns[i].name, "main") == 0 && !fns[i].is_coro) has_main = 1;
+    // One state home: initializers become instance fields,
+    // and exactly one file can emit them. (A module with
+    // main() is a program and keeps singleton state, so the
+    // instance rules below do not apply to it.)
+    if (!has_main)
+        for (int i = 1; i < var_count; i++)
+            if (strcmp(vars[i].file, vars[0].file) != 0)
+                die("module '%s': module variables are declared in more than one file (%s and %s) - "
+                    "a module with instances keeps its variables in one file (its state home)",
+                    module_name, vars[0].file, vars[i].file);
+    for (int i = 0; i < fn_count; i++) {
+        if (!fns[i].body) continue;
+        ana_walk(fns[i].body, vars, var_count, fns, fn_count, &fns[i]);
+        ana_walk_edges(fns[i].body, module_name, fns, fn_count, &fns[i]);
+    }
+    // Fixpoint. Coroutines stay out (their isolation rule
+    // already forbids module state); lifecycle hooks are
+    // stateful whenever the module has state.
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int i = 0; i < fn_count; i++) {
+            AnaFn *fn = &fns[i];
+            if (fn->stateful || fn->is_coro) continue;
+            if (fn->direct) {
+                char nm[128], dv[128];
+                snprintf(nm, sizeof(nm), "%s", fn->name);
+                snprintf(dv, sizeof(dv), "%s", fn->direct_var);
+                fn->stateful = 1;
+                snprintf(fn->chain, sizeof(fn->chain), "%s -> %s", nm, dv);
+                changed = 1;
+                continue;
+            }
+            for (int j = 0; j < fn->edge_count; j++) {
+                AnaFn *t = &fns[fn->edges[j]];
+                if (t->stateful) {
+                    char nm[128], tc[320];
+                    snprintf(nm, sizeof(nm), "%s", fn->name);
+                    snprintf(tc, sizeof(tc), "%s", t->chain);
+                    fn->stateful = 1;
+                    snprintf(fn->chain, sizeof(fn->chain), "%s -> %s", nm, tc);
+                    changed = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (var_count > 0) {
+        for (int i = 0; i < fn_count; i++) {
+            AnaFn *fn = &fns[i];
+            if (fn->is_coro) continue;
+            if (strcmp(fn->name, "init") == 0 || strcmp(fn->name, "module_init") == 0 ||
+                strcmp(fn->name, "exit") == 0 || strcmp(fn->name, "module_exit") == 0) {
+                if (!fn->stateful) {
+                    fn->stateful = 1;
+                    char nm[128];
+                    snprintf(nm, sizeof(nm), "%s", fn->name);
+                    snprintf(fn->chain, sizeof(fn->chain), "%s (module lifecycle)", nm);
+                }
+            }
+            if (fn->stateful && fn->is_method && !has_main)
+                die("module '%s': method '%s' uses module state (%s) - methods cannot "
+                    "use module state in this version; move the state access into a "
+                    "plain function of the module", module_name, fn->name, fn->chain);
+        }
+    }
+    const char *vnames[64], *vtypes[64];
+    for (int i = 0; i < var_count; i++) { vnames[i] = vars[i].name; vtypes[i] = vars[i].type; }
+    const char *sf[192], *sc[192];
+    int sn = 0;
+    for (int i = 0; i < fn_count; i++)
+        if (fns[i].stateful && !fns[i].is_coro) { sf[sn] = fns[i].name; sc[sn] = fns[i].chain; sn++; }
+    const char *fnn[192], *fnr[192], *fnp[192];
+    int fnn_count = 0;
+    for (int i = 0; i < fn_count; i++) {
+        AnaFn *fn = &fns[i];
+        if (fn->is_coro || fn->is_method || fn->is_extern) continue;
+        if (strcmp(fn->name, "main") == 0) continue;
+        if (strcmp(fn->name, "init") == 0 || strcmp(fn->name, "module_init") == 0 ||
+            strcmp(fn->name, "exit") == 0 || strcmp(fn->name, "module_exit") == 0) continue;
+        fnn[fnn_count] = fn->name; fnr[fnn_count] = fn->ret; fnp[fnn_count] = fn->params;
+        fnn_count++;
+    }
+    codegen_register_module_state(module_name, vnames, vtypes, var_count, sf, sc, sn, has_main,
+                                  fnn, fnr, fnp, fnn_count);
+}
+
 // Compile all files of a directory module as one module (COIL-108).
 // A pre-scan verifies every file declares the module, finds the
 // group's init/exit hooks, and unions its imports for the chain.
@@ -420,11 +638,17 @@ static void compile_group(char paths[][PATH_MAX], int count, const char *module_
     // not mistaken for undefined names.
     const char *symbols[1024];
     int symbol_count = 0;
+    // The pre-scan ASTs are kept until the state analysis
+    // has read them (COIL-140), then freed together.
+    ASTNode *asts[64];
+    const char *ast_files[64];
+    int ast_count = 0;
     for (int i = 0; i < count; i++) {
         ASTNode *ast = NULL;
         if (parse_file(paths[i], &ast) != 0 || !ast) {
             die("Parsing failed: %s", paths[i]);
         }
+        if (ast_count < 64) { asts[ast_count] = ast; ast_files[ast_count] = paths[i]; ast_count++; }
         for (int j = 0; j < ast->child_count; j++) {
             ASTNode *ch = ast->children[j];
             if (!ch) continue;
@@ -466,13 +690,16 @@ static void compile_group(char paths[][PATH_MAX], int count, const char *module_
                     has_exit = 1;
             }
         }
-        ast_free(ast);
     }
+    analyze_module(module_name, asts, ast_files, ast_count);
+    for (int i = 0; i < ast_count; i++) ast_free(asts[i]);
     codegen_register_group_symbols(module_name, symbols, symbol_count);
     for (int i = 0; i < count; i++) {
         ModuleGroup g;
         g.is_group = 1;
         g.is_primary = (i == 0);
+        g.is_state_home = (g_ana_home_file[0] &&
+                           strcmp(paths[i], g_ana_home_file) == 0) ? 1 : 0;
         g.has_init = has_init;
         g.has_exit = has_exit;
         g.imports = imports;

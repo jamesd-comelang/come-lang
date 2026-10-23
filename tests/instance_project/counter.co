@@ -1,0 +1,38 @@
+module counter
+import std
+
+int count = 5
+string label = "ctr"
+string log[]
+
+void init() {
+    log.append("init")
+}
+
+void exit() {
+    std.out.printf("counter exit label=%s count=%d log=%d\n", label, count, log.length())
+}
+
+void bump() {
+    count = count + 1
+}
+
+int get() {
+    return count
+}
+
+string name() {
+    return label
+}
+
+void rename(string s) {
+    label = s
+}
+
+int log_len() {
+    return log.length()
+}
+
+int twice(int x) {
+    return x * 2
+}

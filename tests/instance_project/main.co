@@ -1,0 +1,35 @@
+module main
+import std
+import counter
+import panel
+import plain
+
+void use_it(panel p) {
+    p.raise(5)
+}
+
+int main() {
+    var a = counter.create()
+    var b = counter.create()
+    a.bump()
+    a.bump()
+    b.bump()
+    a.rename("A")
+    std.out.printf("a=%d %s b=%d %s log=%d twice=%d\n", a.get(), a.name(), b.get(), b.name(), a.log_len(), a.twice(21))
+    var p = panel.create()
+    use_it(p)
+    p.raise(2)
+    std.out.printf("panel=%d %s %d\n", p.read(), p.label(), p.triple(14))
+    a.destroy()
+    b.destroy()
+    p.destroy()
+    ERR.clear()
+    int z = a.get()
+    string zn = a.name()
+    int t = a.twice(3)
+    std.out.printf("dead get=%d name-len=%d twice=%d set=%d msg=%s\n", z, zn.length(), t, ERR.set() ? 1: 0, ERR.str())
+    a.destroy()
+    std.out.printf("double destroy ok\n")
+    std.out.printf("ns stateless=%d plain=%d\n", counter.twice(10), plain.sq(9))
+    return 0
+}

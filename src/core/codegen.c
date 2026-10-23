@@ -24,6 +24,7 @@ static int g_codegen_errors = 0;
 
 // COIL-108: directory-module group control (see codegen.h).
 int g_codegen_suppress_singletons = 0;
+int g_codegen_state_home = 1; // COIL-140: this file declares the module variables (the driver clears it for non-home files of a group)
 int g_codegen_group_has_init = -1;
 int g_codegen_group_has_exit = -1;
 const char** g_codegen_chain_imports = NULL;
@@ -101,7 +102,9 @@ static int g_gen_line_map = 1;
 // Track current function return type for correct return statement generation
 static char current_function_return_type[128] = "";
 static char current_function_name[128] = "";
-static int g_in_fn_body = 0;   // arming ERR source sites (COIL-139)
+static int g_in_fn_body = 0;
+static int g_fn_instance_form = 0; // COIL-140: body being generated is instance-form
+static int g_module_level = 0;     // COIL-140: generating a top-level node   // arming ERR source sites (COIL-139)
 static char current_module[256] = "main"; // Default to main if unspecified
 static char* current_imports[256];
 static int current_import_count = 0;
@@ -724,7 +727,10 @@ static int is_module_var(const char* name) {
     for (int i = 0; i < g_module_var_count; i++) {
         if (strcmp(g_module_vars[i], name) == 0) return 1;
     }
-    return 0;
+    // The driver's registry also knows the module's
+    // variables declared in another file of the group
+    // (COIL-140).
+    return codegen_module_var_index(current_module, name, NULL) >= 0;
 }
 
 // Module-level constants and enum names of the file being
@@ -794,6 +800,169 @@ void codegen_register_group_symbols(const char* module, const char** names, int 
     slot->count = 0;
     for (int i = 0; i < count && slot->count < 512; i++)
         snprintf(slot->names[slot->count++], 128, "%s", names[i]);
+}
+
+
+// === Module state registry (COIL-140) ===
+// Filled by the driver at parse time for every user module:
+// the module-level variables (name + Come type) and the set
+// of stateful functions with a witness chain each ("bump ->
+// count", "tick -> bump -> count"). Code generated for a
+// module WITH variables splits into an instance surface
+// (stateful functions, bound to an instance) and a namespace
+// surface (the rest).
+#define MAX_MODULE_STATES 32
+typedef struct {
+    char module[64];
+    char var_names[64][64];
+    char var_types[64][160];
+    int var_count;
+    char stateful[192][64];
+    char chains[192][320];
+    int stateful_count;
+    int has_main;
+    char fn_names[192][64];
+    char fn_rets[192][64];
+    char fn_params[192][512];
+    int fn_count;
+} ModuleState;
+static ModuleState g_module_states[MAX_MODULE_STATES];
+static int g_module_state_count = 0;
+
+static int cur_module_has_state(void);
+
+void codegen_register_module_state(const char* module,
+                                   const char** var_names,
+                                   const char** var_types, int var_count,
+                                   const char** stateful,
+                                   const char** chains, int stateful_count,
+                                   int has_main,
+                                   const char** fn_names, const char** fn_rets,
+                                   const char** fn_params, int fn_count) {
+    ModuleState* slot = NULL;
+    for (int i = 0; i < g_module_state_count; i++)
+        if (strcmp(g_module_states[i].module, module) == 0) slot = &g_module_states[i];
+    if (!slot) {
+        if (g_module_state_count >= MAX_MODULE_STATES) return;
+        slot = &g_module_states[g_module_state_count++];
+        memset(slot, 0, sizeof(*slot));
+        snprintf(slot->module, sizeof(slot->module), "%s", module);
+    }
+    slot->var_count = 0;
+    for (int i = 0; i < var_count && slot->var_count < 64; i++) {
+        snprintf(slot->var_names[slot->var_count], 64, "%s", var_names[i]);
+        snprintf(slot->var_types[slot->var_count], 160, "%s", var_types[i]);
+        slot->var_count++;
+    }
+    slot->has_main = has_main;
+    slot->fn_count = 0;
+    for (int i = 0; i < fn_count && slot->fn_count < 192; i++) {
+        snprintf(slot->fn_names[slot->fn_count], 64, "%s", fn_names[i]);
+        snprintf(slot->fn_rets[slot->fn_count], 64, "%s", fn_rets[i]);
+        snprintf(slot->fn_params[slot->fn_count], 512, "%s", fn_params[i]);
+        slot->fn_count++;
+    }
+    slot->stateful_count = 0;
+    for (int i = 0; i < stateful_count && slot->stateful_count < 192; i++) {
+        snprintf(slot->stateful[slot->stateful_count], 64, "%s", stateful[i]);
+        snprintf(slot->chains[slot->stateful_count], 320, "%s", chains[i]);
+        slot->stateful_count++;
+    }
+}
+
+static ModuleState* module_state_of(const char* module) {
+    for (int i = 0; i < g_module_state_count; i++)
+        if (strcmp(g_module_states[i].module, module) == 0) return &g_module_states[i];
+    return NULL;
+}
+
+int codegen_module_has_state(const char* module) {
+    ModuleState* ms = module_state_of(module);
+    // A module that defines main() is a program: its state
+    // is the program's own singleton, not an instance
+    // surface (COIL-140).
+    return ms && ms->var_count > 0 && !ms->has_main;
+}
+
+int codegen_fn_stateful(const char* module, const char* fn, const char** chain_out) {
+    ModuleState* ms = module_state_of(module);
+    if (!ms) return 0;
+    for (int i = 0; i < ms->stateful_count; i++)
+        if (strcmp(ms->stateful[i], fn) == 0) {
+            if (chain_out) *chain_out = ms->chains[i];
+            return 1;
+        }
+    return 0;
+}
+
+// The type a name has for dispatch purposes: a local's
+// recorded type, or - inside an instance-form body - a
+// module variable's declared type from the registry
+// (COIL-140). Module variables are not locals, so without
+// this the method/array dispatch cannot see their types.
+static const char* dispatch_type_of(const char* name) {
+    const char* t = get_local_variable_type(name);
+    if (!t) {
+        // Not a local: a module variable of the current
+        // module has its declared type (COIL-140). This
+        // also gives singleton modules typed module
+        // variables for dispatch - indexing one used to
+        // fail with "element type is not known".
+        const char* rt = NULL;
+        if (codegen_module_var_index(current_module, name, &rt) >= 0) t = rt;
+    }
+    return t;
+}
+
+const char* codegen_module_fn_ret(const char* module, const char* fn) {
+    ModuleState* ms = module_state_of(module);
+    if (!ms) return NULL;
+    for (int i = 0; i < ms->fn_count; i++)
+        if (strcmp(ms->fn_names[i], fn) == 0) return ms->fn_rets[i];
+    return NULL;
+}
+
+// If `call` (AST_METHOD_CALL) calls a registered module
+// function - through the namespace (receiver is the module
+// name) or through an instance variable - return that
+// function's registered return type, else NULL (COIL-140).
+static const char* method_call_module_ret(ASTNode* call) {
+    if (!call || call->type != AST_METHOD_CALL || call->child_count < 1 ||
+        !call->children[0] || call->children[0]->type != AST_IDENTIFIER)
+        return NULL;
+    const char* rn = call->children[0]->text;
+    const char* lt = get_local_variable_type(rn);
+    if (lt && strncmp(lt, "instance:", 9) == 0)
+        return codegen_module_fn_ret(lt + 9, call->text);
+    if (lt && codegen_module_has_state(lt))
+        return codegen_module_fn_ret(lt, call->text);
+    return codegen_module_fn_ret(rn, call->text);
+}
+
+int codegen_module_fn_count(const char* module) {
+    ModuleState* ms = module_state_of(module);
+    return ms ? ms->fn_count : 0;
+}
+
+int codegen_module_fn_at(const char* module, int i, const char** name,
+                         const char** ret, const char** params) {
+    ModuleState* ms = module_state_of(module);
+    if (!ms || i < 0 || i >= ms->fn_count) return 0;
+    if (name) *name = ms->fn_names[i];
+    if (ret) *ret = ms->fn_rets[i];
+    if (params) *params = ms->fn_params[i];
+    return 1;
+}
+
+int codegen_module_var_index(const char* module, const char* name, const char** type_out) {
+    ModuleState* ms = module_state_of(module);
+    if (!ms) return -1;
+    for (int i = 0; i < ms->var_count; i++)
+        if (strcmp(ms->var_names[i], name) == 0) {
+            if (type_out) *type_out = ms->var_types[i];
+            return i;
+        }
+    return -1;
 }
 
 static int is_group_symbol(const char* name) {
@@ -1103,7 +1272,7 @@ static void expr_coarse_type(ASTNode* e, char* out, size_t n) {
         case AST_NUMBER: snprintf(out, n, "int"); break;
         case AST_BOOL_LITERAL: snprintf(out, n, "bool"); break;
         case AST_IDENTIFIER: {
-            const char* t = get_local_variable_type(e->text);
+            const char* t = dispatch_type_of(e->text);
             if (t) snprintf(out, n, "%s", t);
             break;
         }
@@ -1124,7 +1293,7 @@ static void check_map_expr_type(const char* want, ASTNode* expr, const char* wha
 // method table) on a map{K, V} receiver? (COIL-103)
 static int is_typed_map_method(ASTNode* receiver, const char* method) {
     if (!receiver || receiver->type != AST_IDENTIFIER) return 0;
-    const char* t = get_local_variable_type(receiver->text);
+    const char* t = dispatch_type_of(receiver->text);
     if (!t || strncmp(t, "map{", 4) != 0) return 0;
     return strcmp(method, "length") == 0 || strcmp(method, "has") == 0 ||
            strcmp(method, "delete") == 0 || strcmp(method, "clear") == 0 ||
@@ -1154,7 +1323,7 @@ static int expr_is_stringish(ASTNode* e) {
     if (!e) return 0;
     if (e->type == AST_STRING_LITERAL) return 1;
     if (e->type == AST_IDENTIFIER) {
-        const char* t = get_local_variable_type(e->text);
+        const char* t = dispatch_type_of(e->text);
         return t && strcmp(t, "string") == 0;
     }
     if (e->type == AST_BINARY_OP && strcmp(e->text, "+") == 0 && e->child_count >= 2) {
@@ -1166,6 +1335,10 @@ static int expr_is_stringish(ASTNode* e) {
     if (e->type == AST_CALL) {
         const char* sig = find_module_fn_sig(e->text);
         return sig && strncmp(sig, "come_string_t", 14) == 0;
+    }
+    if (e->type == AST_METHOD_CALL) {
+        const char* rr = method_call_module_ret(e);
+        if (rr) return strcmp(rr, "string") == 0;
     }
     return 0;
 }
@@ -1543,7 +1716,7 @@ static void emit_map_put(FILE* f, const char* map_var, const char* vtype, ASTNod
 // type is not knowable here.
 static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
     if (!e) return NULL;
-    if (e->type == AST_IDENTIFIER) return get_local_variable_type(e->text);
+    if (e->type == AST_IDENTIFIER) return dispatch_type_of(e->text);
     if (e->type == AST_MEMBER_ACCESS && e->child_count >= 1 &&
         e->children[0]->type == AST_IDENTIFIER) {
         const char* ot = get_local_variable_type(e->children[0]->text);
@@ -1768,6 +1941,13 @@ static void generate_expression(FILE* f, ASTNode* node) {
             if (is_extern_fn(node->text)) fprintf(f, "%s", node->text);
             else fprintf(f, "come_%s__%s", current_module, node->text);
         }
+        else if (g_fn_instance_form && is_module_var(node->text) &&
+                 !get_local_variable_type(node->text)) {
+            // In an instance-form body a module variable is
+            // a field of the instance (COIL-140); a local of
+            // the same name still shadows it.
+            fprintf(f, "(__inst->%s)", node->text);
+        }
         else fprintf(f, "%s", node->text);
     } else if (node->type == AST_UNARY_OP) {
         if (strcmp(node->text, "&") == 0) {
@@ -1945,7 +2125,54 @@ static void generate_expression(FILE* f, ASTNode* node) {
         char c_func[16384];
         int skip_receiver = 0;
         ASTNode* receiver = node->children[0];
-        
+
+        // Module instances (COIL-140): a local whose type is
+        // an instance of an imported module (recorded as
+        // "instance:<mod>", or the module's name used as the
+        // type) calls the module's functions bound to that
+        // instance. c_func is set here and the shared tail
+        // emits it with the receiver as the first argument,
+        // like any method: stateful functions take the
+        // instance directly, stateless ones go through the
+        // generated __inst wrapper (which guards the call).
+        const char* inst_mod = NULL;
+        if (receiver->type == AST_IDENTIFIER) {
+            const char* rt = get_local_variable_type(receiver->text);
+            if (rt) {
+                if (strncmp(rt, "instance:", 9) == 0) inst_mod = rt + 9;
+                else if (codegen_module_has_state(rt)) inst_mod = rt;
+            }
+            if (inst_mod) {
+                // Emitted in full here: the generic dispatch
+                // below would mistake the "instance:<mod>"
+                // type for a struct type. The receiver goes
+                // first (it is a pointer already); a string
+                // literal argument is materialized, as for
+                // same-module calls (COIL-133).
+                if (strcmp(method, "create") == 0) {
+                    codegen_error("'%s' is already an instance of module '%s': create() belongs on the module name (%s.create())", receiver->text, inst_mod, inst_mod);
+                    return;
+                }
+                if (strcmp(method, "destroy") == 0) {
+                    fprintf(f, "come_%s__destroy(%s)", inst_mod, receiver->text);
+                    return;
+                }
+                if (codegen_fn_stateful(inst_mod, method, NULL))
+                    fprintf(f, "come_%s__%s(%s", inst_mod, method, receiver->text);
+                else
+                    fprintf(f, "come_%s__%s__inst(%s", inst_mod, method, receiver->text);
+                for (int i = 1; i < node->child_count; i++) {
+                    fprintf(f, ", ");
+                    if (node->children[i]->type == AST_STRING_LITERAL)
+                        emit_string_expr(f, node->children[i]);
+                    else
+                        generate_expression(f, node->children[i]);
+                }
+                fprintf(f, ")");
+                return;
+            }
+        }
+
         // Detect module static calls
         int is_import = 0;
         if (receiver->type == AST_IDENTIFIER) {
@@ -2000,6 +2227,26 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  emit_err_site_args(f, node);
                  fprintf(f, ")");
                  return;
+            }
+
+            // Module instances (COIL-140): create() builds
+            // an instance of a stateful module; a stateful
+            // function has no namespace call - the error
+            // names the witness chain the analysis computed.
+            if (is_import && strcmp(method, "create") == 0) {
+                 if (!codegen_module_has_state(receiver->text)) {
+                     codegen_error("module '%s' has no state to instantiate: create() needs a module with module-level variables - call its functions through the namespace instead", receiver->text);
+                     return;
+                 }
+                 fprintf(f, "come_%s__create()", receiver->text);
+                 return;
+            }
+            if (is_import) {
+                 const char* chain = NULL;
+                 if (codegen_fn_stateful(receiver->text, method, &chain)) {
+                     codegen_error("'%s.%s' cannot be called on the namespace: it uses module state (%s) - create an instance first: var x = %s.create(), then x.%s(...)", receiver->text, method, chain, receiver->text, method);
+                     return;
+                 }
             }
 
             // std.qsort(arr, cmp): byte-array sort with a named
@@ -2257,6 +2504,10 @@ static void generate_expression(FILE* f, ASTNode* node) {
                           if (type && (strcmp(type, "string") == 0 || strcmp(type, "come_string_t") == 0)) {
                               is_str = 1;
                           }
+                          if (!is_str && arg->type == AST_IDENTIFIER) {
+                              const char* dt = dispatch_type_of(arg->text);
+                              if (dt && strcmp(dt, "string") == 0) is_str = 1;
+                          }
                       } else if (arg->type == AST_METHOD_CALL || arg->type == AST_CALL) {
                           // Check methods that return strings
                            // Check methods/functions that return strings (NOT len/size/count which return uint)
@@ -2272,14 +2523,21 @@ static void generate_expression(FILE* f, ASTNode* node) {
                                }
                            }
                            
-                           if (strcmp(name, "upper") == 0 || strcmp(name, "lower") == 0 || 
-                               strcmp(name, "repeat") == 0 || strcmp(name, "replace") == 0 || 
-                               strcmp(name, "trim") == 0 || strcmp(name, "ltrim") == 0 || 
-                               strcmp(name, "rtrim") == 0 || strcmp(name, "substr") == 0 || 
-                               strcmp(name, "join") == 0 || strcmp(name, "new") == 0 || 
+                           if (strcmp(name, "upper") == 0 || strcmp(name, "lower") == 0 ||
+                               strcmp(name, "repeat") == 0 || strcmp(name, "replace") == 0 ||
+                               strcmp(name, "trim") == 0 || strcmp(name, "ltrim") == 0 ||
+                               strcmp(name, "rtrim") == 0 || strcmp(name, "substr") == 0 ||
+                               strcmp(name, "join") == 0 || strcmp(name, "new") == 0 ||
                                strcmp(name, "str") == 0 || strcmp(name, "gets") == 0 ||
                                strcmp(name, "where") == 0) {
                                is_str = 1;
+                           }
+                           // A namespace or instance call into
+                           // a registered module whose function
+                           // returns string (COIL-140).
+                           if (!is_str && arg->type == AST_METHOD_CALL) {
+                               const char* rr = method_call_module_ret(arg);
+                               if (rr && strcmp(rr, "string") == 0) is_str = 1;
                            }
                      } else if (arg->type == AST_ARRAY_ACCESS) {
                          // String element access: string[] element or a
@@ -2453,7 +2711,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
         else if (strcmp(method, "put") == 0 || strcmp(method, "get") == 0 || strcmp(method, "remove") == 0) {
              int is_map = 0;
              if (receiver->type == AST_IDENTIFIER) {
-                 const char* type = get_local_variable_type(receiver->text);
+                 const char* type = dispatch_type_of(receiver->text);
                  if (type && (strcmp(type, "map") == 0 || strcmp(type, "come_map_t") == 0)) {
                      is_map = 1;
                  }
@@ -2515,7 +2773,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
         // Typed map methods (COIL-103): the Come_map.md method table.
         // Must precede the string branch, which also claims length/chown.
         else if (is_typed_map_method(receiver, method)) {
-             const char* rtype = get_local_variable_type(receiver->text);
+             const char* rtype = dispatch_type_of(receiver->text);
              char mkt[160], mvt[160];
              map_type_parts(rtype, mkt, sizeof(mkt), mvt, sizeof(mvt));
              if (strcmp(method, "length") == 0) {
@@ -2909,7 +3167,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
 
             // Generic method: method(receiver, ...)
             // e.g. nport(addr)
-            strcpy(c_func, method);
+            if (!inst_mod) strcpy(c_func, method);
         }
         
         fprintf(f, "%s(", c_func);
@@ -3143,7 +3401,24 @@ static void generate_expression(FILE* f, ASTNode* node) {
              snprintf(mangled_name, sizeof(mangled_name), "come_%s__%s", current_module, node->text);
         }
         
+        // COIL-140: a plain call to a stateful function of
+        // this module passes the caller's instance along.
+        // Only an instance-form body has one; anywhere else
+        // the call is an error (a coroutine's isolation, or
+        // a stateless function the analysis should have
+        // marked - which cannot happen, so this is a guard).
+        int inst_call = 0;
+        if (cur_module_has_state() &&
+            codegen_fn_stateful(current_module, node->text, NULL)) {
+            if (g_in_coroutine)
+                codegen_error("coroutine cannot call '%s': it uses module state, and coroutines are isolated from module state (spec 9.1)", node->text);
+            else if (!g_fn_instance_form)
+                codegen_error("'%s' uses module state: it can only be called from another stateful function of '%s', or on an instance (var x = %s.create())", node->text, current_module, current_module);
+            else
+                inst_call = 1;
+        }
         fprintf(f, "%s(", mangled_name);
+        if (inst_call) fprintf(f, "__inst");
         {
             // A string literal is a char* in C; where the callee's
             // parameter is a string it must be materialized as a
@@ -3153,7 +3428,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
             char cparts[32][160];
             int cnp = call_param_types(node, cparts, 32);
             for (int i = 0; i < node->child_count; i++) {
-                if (i > 0) fprintf(f, ", ");
+                if (i > 0 || inst_call) fprintf(f, ", ");
                 if (i < cnp && strcmp(cparts[i], "string") == 0 &&
                     node->children[i]->type == AST_STRING_LITERAL)
                     emit_string_expr(f, node->children[i]);
@@ -3383,9 +3658,70 @@ static void generate_expression(FILE* f, ASTNode* node) {
 
 static void generate_node(FILE* f, ASTNode* node, int indent);
 
+// === Module instances (COIL-140) ===
+static int cur_module_has_state(void) {
+    return codegen_module_has_state(current_module);
+}
+
+static int fn_is_hook(const char* n) {
+    return strcmp(n, "init") == 0 || strcmp(n, "module_init") == 0 ||
+           strcmp(n, "exit") == 0 || strcmp(n, "module_exit") == 0;
+}
+
+// A function takes the instance form when its module has
+// state and the analysis marked it stateful (lifecycle
+// hooks always do). Coroutines never do: their isolation
+// rule forbids module state outright.
+static int fn_instance_form(ASTNode* fn) {
+    if (!fn || fn->is_coroutine) return 0;
+    if (!cur_module_has_state()) return 0;
+    return codegen_fn_stateful(current_module, fn->text, NULL) ||
+           fn_is_hook(fn->text);
+}
+
+// The return statement for a call on a destroyed instance:
+// the zero value of the function's return type.
+static void emit_instance_zero_return(FILE* f, ASTNode* fn) {
+    ASTNode* ret = fn->children[0];
+    if (!ret || strcmp(ret->text, "void") == 0) {
+        fprintf(f, "return;");
+        return;
+    }
+    if (ret->text[0] == '(') {
+        fprintf(f, "return (come_%s__%s_ret_t){0};", current_module, fn->text);
+        return;
+    }
+    if (codegen_module_has_state(ret->text)) {
+        fprintf(f, "return NULL;");
+        return;
+    }
+    char ct[300];
+    come_type_to_c(ret->text, ct, sizeof(ct));
+    fprintf(f, "return (%s){0};", ct);
+}
+
+// The guard every instance-form function opens with: a
+// destroyed (or never created) instance sets ERR and the
+// call returns the zero value - using one is always safe.
+static void emit_instance_guard(FILE* f, ASTNode* fn, int indent) {
+    emit_indent(f, indent);
+    fprintf(f, "if (!__inst || !__inst->alive) { come_ERR_set(EBADF, \"module instance has been destroyed\"); ");
+    emit_instance_zero_return(f, fn);
+    fprintf(f, " }\n");
+    // Inside the body the module context macro binds to
+    // the instance's own allocation root: a local with the
+    // global's name shadows it for this function only.
+    emit_indent(f, indent);
+    fprintf(f, "TALLOC_CTX* come_%s__ctx = __inst->ctx;\n", current_module);
+    emit_indent(f, indent);
+    fprintf(f, "(void)come_%s__ctx;\n", current_module);
+}
+
 static void generate_program(FILE* f, ASTNode* node) {
     for (int i = 0; i < node->child_count; i++) {
+        g_module_level = 1;
         generate_node(f, node->children[i], 0);
+        g_module_level = 0;
         fputc('\n', f);
     }
 }
@@ -3414,6 +3750,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
       case AST_FUNCTION: {
         // [RetType] [Name] [Args...] [Block/Body]
         if (node->is_extern) return; // COIL-111: prototype only (forward pass)
+        g_module_level = 0; // COIL-140: a function body is never module level
         g_in_coroutine = node->is_coroutine ? 1 : 0; // COIL-122
         emit_line_directive(f, node);
 
@@ -3434,6 +3771,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
         
         ASTNode* ret_type = node->children[0];
+        if (codegen_module_has_state(ret_type->text)) {
+            codegen_error("functions cannot return a module instance in this version: create the instance in the caller, or pass it in as a parameter");
+        }
         int body_idx = node->child_count - 1;
 
         strncpy(current_function_name, node->text, sizeof(current_function_name) - 1);
@@ -3496,6 +3836,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 
         if (node->is_coroutine) strcat(func_name, "__impl");
 
+        // COIL-140: instance-form functions take the
+        // instance as a hidden first parameter.
+        int inst_form = fn_instance_form(node);
+
         emit_indent(f, indent);
 
         // Return type
@@ -3507,6 +3851,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         
         // Args
         int has_args = 0;
+
+        if (inst_form) {
+            fprintf(f, "come_%s__instance_t* __inst", current_module);
+            has_args = 1;
+        }
         
         // Special case: nport injector
         if (strcmp(node->text, "nport") == 0) {
@@ -3542,6 +3891,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     fprintf(f, "come_string_list_t %s", arg->text);
                 } else if (strcmp(type->text, "link") == 0) {
                    fprintf(f, "come_link_t* %s", arg->text);
+                } else if (codegen_module_has_state(type->text)) {
+                   // A module instance parameter (COIL-140):
+                   // the module's name is the type.
+                   fprintf(f, "come_%s__instance_t* %s", type->text, arg->text);
                 } else if (is_ref_type(type->text)) {
                    // &(struct Vec3) p -> struct Vec3* p (COIL-136)
                    char ct[300];
@@ -3567,10 +3920,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         if (body->type == AST_BLOCK) {
             fprintf(f, " {\n");
 
-            
+            if (inst_form) emit_instance_guard(f, node, indent + 4);
             int prev_in_fn = g_in_fn_body;
+            int prev_inst = g_fn_instance_form;
             g_in_fn_body = 1;
+            g_fn_instance_form = inst_form;
             generate_block_children(f, body, indent + 4);
+            g_fn_instance_form = prev_inst;
             g_in_fn_body = prev_in_fn;
             if (is_main) {
                 emit_indent(f, indent + 4);
@@ -3628,6 +3984,45 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         if (strcmp(type_node->text, "var") == 0 && init_expr) {
             const char* inferred = infer_assign_type(init_expr);
             if (inferred) update_local_variable_type(node->text, inferred);
+        }
+
+        // COIL-140: in a stateful module, a module-level
+        // variable emits no C global - it lives in the
+        // module's instances (the state home file re-emits
+        // its initializer in __init_fields).
+        if (g_module_level && cur_module_has_state() &&
+            codegen_module_var_index(current_module, node->text, NULL) >= 0) {
+            break;
+        }
+
+        // COIL-140: a module instance variable - declared
+        // with the module's name as its type, or inferred
+        // from a create() call. The C value is the instance
+        // pointer; the local's recorded type marks it so
+        // method calls dispatch as instance calls.
+        {
+            const char* imod = NULL;
+            if (codegen_module_has_state(type_node->text)) imod = type_node->text;
+            else if (init_expr && init_expr->type == AST_METHOD_CALL &&
+                     strcmp(init_expr->text, "create") == 0 &&
+                     init_expr->child_count > 0 &&
+                     init_expr->children[0]->type == AST_IDENTIFIER &&
+                     codegen_module_has_state(init_expr->children[0]->text))
+                imod = init_expr->children[0]->text;
+            if (imod && !g_module_level) {
+                static char ibuf[320];
+                snprintf(ibuf, sizeof(ibuf), "instance:%.80s", imod);
+                update_local_variable_type(node->text, ibuf);
+                emit_indent(f, indent);
+                fprintf(f, "come_%s__instance_t* %s = ", imod, node->text);
+                if (init_expr && !(init_expr->type == AST_NUMBER &&
+                                   strcmp(init_expr->text, "0") == 0))
+                    generate_expression(f, init_expr);
+                else
+                    fprintf(f, "NULL");
+                fprintf(f, ";\n");
+                break;
+            }
         }
 
         if (is_ref_type(type_node->text)) {
@@ -3899,10 +4294,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     }
                       } else if (arg->type == AST_METHOD_CALL) {
                     char* m = arg->text;
-                    if (strcmp(m, "upper")==0 || strcmp(m, "lower")==0 || strcmp(m, "repeat")==0 || 
-                        strcmp(m, "replace")==0 || strcmp(m, "trim")==0 || strcmp(m, "ltrim")==0 || 
-                        strcmp(m, "rtrim")==0 || strcmp(m, "join")==0 || strcmp(m, "substr")==0 || 
-                        strcmp(m, "regex_replace")==0 || strcmp(m, "str")==0 || strcmp(m, "where")==0) {
+                    const char* mret = method_call_module_ret(arg);
+                    if (strcmp(m, "upper")==0 || strcmp(m, "lower")==0 || strcmp(m, "repeat")==0 ||
+                        strcmp(m, "replace")==0 || strcmp(m, "trim")==0 || strcmp(m, "ltrim")==0 ||
+                        strcmp(m, "rtrim")==0 || strcmp(m, "join")==0 || strcmp(m, "substr")==0 ||
+                        strcmp(m, "regex_replace")==0 || strcmp(m, "str")==0 || strcmp(m, "where")==0 ||
+                        (mret && strcmp(mret, "string") == 0)) {
                          fprintf(f, "(");
                          generate_expression(f, arg);
                          fprintf(f, ")->data");
@@ -4723,6 +5120,204 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 }
 
 
+
+// Render one parameter of a wrapper signature, mirroring
+// the definition's own rendering so the two always agree.
+static void emit_wrapper_param(FILE* f, ASTNode* arg, int with_name) {
+    ASTNode* type = arg->children[1];
+    const char* nm = with_name ? arg->text : "";
+    if (is_fn_type(type->text)) {
+        emit_fn_param(f, type->text, with_name ? arg->text : NULL);
+    } else if (strstr(type->text, "[]")) {
+        char raw[64];
+        strncpy(raw, type->text, strlen(type->text) - 2);
+        raw[strlen(type->text) - 2] = 0;
+        if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t %s", nm);
+        else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t %s", nm);
+        else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t %s", nm);
+        else fprintf(f, "come_array_t %s", nm);
+    } else if (strcmp(type->text, "link") == 0) {
+        fprintf(f, "come_link_t* %s", nm);
+    } else if (codegen_module_has_state(type->text)) {
+        fprintf(f, "come_%s__instance_t* %s", type->text, nm);
+    } else if (is_ref_type(type->text)) {
+        char ct[300];
+        come_type_to_c(type->text, ct, sizeof(ct));
+        fprintf(f, "%s %s", ct, nm);
+    } else if (strcmp(type->text, "string") == 0) {
+        fprintf(f, "come_string_t %s", nm);
+    } else {
+        fprintf(f, "%s %s", type->text, nm);
+    }
+}
+
+// The instance wrapper for a stateless function of a
+// stateful module (COIL-140): instance calls reach the
+// plain function through here so the destroyed-instance
+// guard applies to every method of the instance.
+static void emit_instance_wrapper(FILE* f, ASTNode* fn) {
+    ASTNode* ret = fn->children[0];
+    int body_idx = fn->child_count - 1;
+    if (ret->text[0] == '(')
+        fprintf(f, "come_%s__%s_ret_t come_%s__%s__inst(come_%s__instance_t* __inst",
+                current_module, fn->text, current_module, fn->text, current_module);
+    else if (strcmp(ret->text, "string") == 0)
+        fprintf(f, "come_string_t come_%s__%s__inst(come_%s__instance_t* __inst",
+                current_module, fn->text, current_module);
+    else
+        fprintf(f, "%s come_%s__%s__inst(come_%s__instance_t* __inst",
+                ret->text, current_module, fn->text, current_module);
+    for (int i = 1; i < body_idx; i++) {
+        ASTNode* arg = fn->children[i];
+        if (arg->type != AST_VAR_DECL) continue;
+        fprintf(f, ", ");
+        emit_wrapper_param(f, arg, 1);
+    }
+    fprintf(f, ") {\n");
+    emit_instance_guard(f, fn, 4);
+    fprintf(f, "    ");
+    if (strcmp(ret->text, "void") != 0) fprintf(f, "return ");
+    fprintf(f, "come_%s__%s(", current_module, fn->text);
+    int first = 1;
+    for (int i = 1; i < body_idx; i++) {
+        ASTNode* arg = fn->children[i];
+        if (arg->type != AST_VAR_DECL) continue;
+        if (!first) fprintf(f, ", ");
+        fprintf(f, "%s", arg->text);
+        first = 0;
+    }
+    fprintf(f, ");\n}\n\n");
+}
+
+
+// Render one parameter type of an imported function's
+// prototype (the type text only; the rendering mirrors the
+// prototype pre-pass in the defining file).
+static void emit_proto_param(FILE* f, const char* t) {
+    while (*t == ' ') t++;
+    if (is_fn_type(t)) {
+        emit_fn_param(f, t, NULL);
+    } else if (strlen(t) >= 2 && strcmp(t + strlen(t) - 2, "[]") == 0) {
+        char raw[64];
+        snprintf(raw, sizeof(raw), "%.*s", (int)strlen(t) - 2, t);
+        if (strcmp(raw, "int") == 0) fprintf(f, "come_int_array_t");
+        else if (strcmp(raw, "byte") == 0) fprintf(f, "come_byte_array_t");
+        else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t");
+        else fprintf(f, "come_array_t");
+    } else if (strcmp(t, "string") == 0) {
+        fprintf(f, "come_string_t");
+    } else if (strcmp(t, "link") == 0) {
+        fprintf(f, "come_link_t*");
+    } else if (codegen_module_has_state(t)) {
+        fprintf(f, "come_%s__instance_t*", t);
+    } else if (is_ref_type(t)) {
+        char ct[300];
+        come_type_to_c(t, ct, sizeof(ct));
+        fprintf(f, "%s", ct);
+    } else {
+        fprintf(f, "%s", t);
+    }
+}
+
+// Prototypes for a stateful module's functions, emitted
+// into an importer's file (COIL-140): without them a call
+// to a string-returning function would be implicitly
+// declared as returning int and corrupt the value - the
+// pre-existing gap for plain modules is recorded in the
+// findings list; instance modules are exact from the start.
+static void emit_import_prototypes(FILE* f, const char* mod) {
+    int n = codegen_module_fn_count(mod);
+    for (int i = 0; i < n; i++) {
+        const char *nm, *ret, *params;
+        if (!codegen_module_fn_at(mod, i, &nm, &ret, &params)) continue;
+        int st = codegen_fn_stateful(mod, nm, NULL);
+        char rbuf[320];
+        if (ret[0] == '(') snprintf(rbuf, sizeof(rbuf), "come_%s__%s_ret_t", mod, nm);
+        else if (strcmp(ret, "string") == 0) snprintf(rbuf, sizeof(rbuf), "come_string_t");
+        else snprintf(rbuf, sizeof(rbuf), "%s", ret);
+        char parts[32][160];
+        int np = params[0] ? split_types(params, parts, 32) : 0;
+        fprintf(f, "%s come_%s__%s(", rbuf, mod, nm);
+        if (st) fprintf(f, "come_%s__instance_t*", mod);
+        else if (np == 0) fprintf(f, "void");
+        for (int j = 0; j < np; j++) {
+            if (st || j > 0) fprintf(f, ", ");
+            emit_proto_param(f, parts[j]);
+        }
+        fprintf(f, ");\n");
+        if (!st) {
+            fprintf(f, "%s come_%s__%s__inst(come_%s__instance_t*", rbuf, mod, nm, mod);
+            for (int j = 0; j < np; j++) {
+                fprintf(f, ", ");
+                emit_proto_param(f, parts[j]);
+            }
+            fprintf(f, ");\n");
+        }
+    }
+}
+
+// The instance runtime of a stateful module, emitted by
+// its state home file after all functions: field
+// initializers (the module variables' own initializers,
+// re-homed), create(), and destroy().
+static void emit_instance_runtime(FILE* f, ASTNode* ast) {
+    int has_init = g_codegen_group_has_init;
+    int has_exit = g_codegen_group_has_exit;
+    if (has_init < 0 || has_exit < 0) {
+        int hi = 0, he = 0;
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode* ch = ast->children[i];
+            if (!ch || ch->type != AST_FUNCTION) continue;
+            if (strcmp(ch->text, "init") == 0 || strcmp(ch->text, "module_init") == 0) hi = 1;
+            if (strcmp(ch->text, "exit") == 0 || strcmp(ch->text, "module_exit") == 0) he = 1;
+        }
+        if (has_init < 0) has_init = hi;
+        if (has_exit < 0) has_exit = he;
+    }
+    fprintf(f, "static void come_%s__init_fields(come_%s__instance_t* __inst) {\n",
+            current_module, current_module);
+    fprintf(f, "    TALLOC_CTX* come_%s__ctx = __inst->ctx;\n", current_module);
+    {
+        int save = g_fn_instance_form;
+        g_fn_instance_form = 1;
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode* v = ast->children[i];
+            if (!v || v->type != AST_VAR_DECL) continue;
+            if (codegen_module_var_index(current_module, v->text, NULL) < 0) continue;
+            ASTNode* init = v->child_count > 0 ? v->children[0] : NULL;
+            // The parser's dummy 0 for "no initializer":
+            // the field is already zero from create's memset.
+            if (!init || (init->type == AST_NUMBER && strcmp(init->text, "0") == 0)) continue;
+            fprintf(f, "    __inst->%s = ", v->text);
+            if (init->type == AST_STRING_LITERAL) {
+                fprintf(f, "come_string_new(COME_CTX, ");
+                generate_expression(f, init);
+                fprintf(f, ")");
+            } else {
+                generate_expression(f, init);
+            }
+            fprintf(f, ";\n");
+        }
+        g_fn_instance_form = save;
+    }
+    if (has_init) fprintf(f, "    come_%s__init_local(__inst);\n", current_module);
+    fprintf(f, "}\n\n");
+    fprintf(f, "come_%s__instance_t* come_%s__create(void) {\n", current_module, current_module);
+    fprintf(f, "    come_%s__instance_t* __inst = mem_talloc_alloc(come_%s__ctx, sizeof(come_%s__instance_t));\n",
+            current_module, current_module, current_module);
+    fprintf(f, "    memset(__inst, 0, sizeof(come_%s__instance_t));\n", current_module);
+    fprintf(f, "    __inst->ctx = mem_talloc_new_ctx(NULL);\n");
+    fprintf(f, "    __inst->alive = 1;\n");
+    fprintf(f, "    come_%s__init_fields(__inst);\n", current_module);
+    fprintf(f, "    return __inst;\n}\n\n");
+    fprintf(f, "void come_%s__destroy(come_%s__instance_t* __inst) {\n", current_module, current_module);
+    fprintf(f, "    if (!__inst || !__inst->alive) return;\n");
+    if (has_exit) fprintf(f, "    come_%s__exit_local(__inst);\n", current_module);
+    fprintf(f, "    mem_talloc_free(__inst->ctx);\n");
+    fprintf(f, "    memset(__inst, 0, sizeof(come_%s__instance_t));\n", current_module);
+    fprintf(f, "}\n\n");
+}
+
 int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_file, int gen_line_map) {
     FILE* f = fopen(out_file, "w");
     if (!f) return 1;
@@ -4869,6 +5464,37 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     }
     // Macros for method dispatch
     fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);
+
+    // Module instances (COIL-140): a stateful module's
+    // variables become the fields of its instance struct.
+    // The struct is defined here, before every prototype;
+    // importers get an opaque forward typedef plus the
+    // create/destroy declarations.
+    if (cur_module_has_state()) {
+        ModuleState* ms = module_state_of(current_module);
+        fprintf(f, "typedef struct come_%s__instance_s {\n", current_module);
+        fprintf(f, "    TALLOC_CTX* ctx;\n");
+        fprintf(f, "    int alive;\n");
+        for (int i = 0; i < ms->var_count; i++) {
+            char ct[300];
+            come_type_to_c(ms->var_types[i], ct, sizeof(ct));
+            fprintf(f, "    %s %s;\n", ct, ms->var_names[i]);
+        }
+        fprintf(f, "} come_%s__instance_t;\n", current_module);
+        fprintf(f, "come_%s__instance_t* come_%s__create(void);\n", current_module, current_module);
+        fprintf(f, "void come_%s__destroy(come_%s__instance_t*);\n\n", current_module, current_module);
+    }
+    for (int i = 0; i < current_import_count; i++) {
+        if (codegen_module_has_state(current_imports[i])) {
+            fprintf(f, "typedef struct come_%s__instance_s come_%s__instance_t;\n",
+                    current_imports[i], current_imports[i]);
+            fprintf(f, "come_%s__instance_t* come_%s__create(void);\n",
+                    current_imports[i], current_imports[i]);
+            fprintf(f, "void come_%s__destroy(come_%s__instance_t*);\n",
+                    current_imports[i], current_imports[i]);
+            emit_import_prototypes(f, current_imports[i]);
+        }
+    }
     
     // Module memory context
     if (g_codegen_suppress_singletons) {
@@ -5014,7 +5640,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
             }
         }
     }
-    if (has_local_init) {
+    if (has_local_init && !cur_module_has_state()) {
         fprintf(f, "    come_%s__init_local();\n", current_module);
     }
     // Register this module's exit: run_exits replays registrations
@@ -5040,7 +5666,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
             }
         }
     }
-    if (has_local_exit) {
+    if (has_local_exit && !cur_module_has_state()) {
         fprintf(f, "    come_%s__exit_local();\n", current_module);
     }
     // Imported modules' exits are NOT called from here: each module
@@ -5195,8 +5821,13 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
              if (strcmp(child->text, "nport")==0) {
                  fprintf(f, "struct TCP_ADDR* self"); 
              }
-             
-             int first = (strcmp(child->text, "nport")==0) ? 0 : 1;
+
+             // COIL-140: instance-form prototypes carry the
+             // hidden instance parameter too.
+             int inst_first = fn_instance_form(child);
+             if (inst_first) fprintf(f, "come_%s__instance_t*", current_module);
+
+             int first = (strcmp(child->text, "nport")==0 || inst_first) ? 0 : 1;
              
              for (int j=start_args; j<child->child_count; j++) {
                  if (child->children[j]->type == AST_BLOCK) break;
@@ -5221,6 +5852,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                        } else {
                             if (strcmp(type->text, "string")==0) fprintf(f, "come_string_t");
                             else if (strcmp(type->text, "link")==0) fprintf(f, "come_link_t*");
+                            else if (codegen_module_has_state(type->text)) fprintf(f, "come_%s__instance_t*", type->text);
                             else if (is_ref_type(type->text)) {
                                 // &(struct Vec3) -> struct Vec3* (COIL-136)
                                 char ct[300];
@@ -5249,6 +5881,26 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         collect_tuple_fns(ast); // COIL-127
         collect_const_names(ast); // COIL-129
         generate_program(f, ast);
+        // COIL-140: instance wrappers for this file's
+        // stateless functions, and the instance runtime in
+        // the state home file.
+        if (cur_module_has_state()) {
+            for (int i = 0; i < ast->child_count; i++) {
+                ASTNode* ch = ast->children[i];
+                if (!ch || ch->type != AST_FUNCTION || ch->is_coroutine ||
+                    ch->is_extern || fn_is_hook(ch->text))
+                    continue;
+                if (strcmp(ch->text, "main") == 0) continue;
+                if (strchr(ch->text, '_') && isupper(ch->text[0])) continue; // struct method
+                int has_body = 0;
+                for (int k = 0; k < ch->child_count; k++)
+                    if (ch->children[k] && ch->children[k]->type == AST_BLOCK) has_body = 1;
+                if (!has_body) continue;
+                if (!codegen_fn_stateful(current_module, ch->text, NULL))
+                    emit_instance_wrapper(f, ch);
+            }
+            if (g_codegen_state_home) emit_instance_runtime(f, ast);
+        }
     } else {
         generate_node(f, ast, 0);
     }

@@ -1,0 +1,8 @@
+module main
+import std
+import plain
+
+int main() {
+    var m = plain.create()
+    return 0
+}

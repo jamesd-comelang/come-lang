@@ -283,6 +283,24 @@ section numbers below refer to `docs/Come_spec.md`.
   error. Constants and types are **not** yet namespaced in
   generated C — `geom.PI` / `geom.Point` do not resolve;
   that gap is tracked in §8.
+- **Two surfaces (§3.6, COIL-140).** The driver analyzes
+  every user module at parse time (variables, call graph,
+  a statefulness fixpoint with witness chains) and
+  registers it with codegen. In a module with variables,
+  stateful functions are generated in *instance form*
+  (hidden `__inst` parameter; module variables become
+  instance fields; the body opens with a destroyed-instance
+  guard and a context shadow binding `COME_CTX` to the
+  instance's root); stateless functions keep the plain form
+  plus a generated `__inst` wrapper. `mod.create()` /
+  `w.destroy()` map to runtime functions emitted by the
+  file that declares the variables (the *state home*);
+  namespace calls to stateful functions are compile errors
+  naming the chain. A module defining `main()` is exempt -
+  it is a program, and its state stays a singleton.
+  Importers of a stateful module get exact prototypes
+  (plain modules still rely on implicit declarations -
+  findings list).
 
 ### Errors (§12)
 

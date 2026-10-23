@@ -1,0 +1,17 @@
+module panel
+
+void raise(int d) {
+    level = level + d
+}
+
+int read() {
+    return level
+}
+
+string label() {
+    return name
+}
+
+int triple(int x) {
+    return x * 3
+}

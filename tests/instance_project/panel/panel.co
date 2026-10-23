@@ -1,0 +1,9 @@
+module panel
+import std
+
+string name = "panel"
+int level = 0
+
+void exit() {
+    std.out.printf("panel exit level=%d\n", level)
+}

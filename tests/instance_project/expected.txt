@@ -1,0 +1,8 @@
+a=7 A b=6 ctr log=1 twice=42
+panel=7 panel 42
+counter exit label=A count=7 log=1
+counter exit label=ctr count=6 log=1
+panel exit level=7
+dead get=0 name-len=0 twice=0 set=1 msg=module instance has been destroyed
+double destroy ok
+ns stateless=20 plain=81

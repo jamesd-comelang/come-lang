@@ -1,0 +1,8 @@
+module main
+import std
+import counter
+
+int main() {
+    counter.bump()
+    return 0
+}

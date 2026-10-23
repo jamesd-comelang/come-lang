@@ -1307,5 +1307,67 @@ int main() {
         }
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-129 error-quality codegen test passed!\033[0m\n");
+
+    // COIL-140: with a stateful module registered (as the
+    // driver does at parse time), codegen emits the
+    // instance surface: the state struct, instance-form
+    // stateful functions with the destroyed-instance guard,
+    // field access through __inst, a wrapper for the
+    // stateless function, and create/destroy - and no C
+    // global for the module variable.
+    {
+        const char* vn[] = {"count"};
+        const char* vt[] = {"int"};
+        const char* sf[] = {"bump", "get"};
+        const char* sc[] = {"bump -> count", "get -> count"};
+        const char* fnn[] = {"bump", "get", "twice"};
+        const char* fnr[] = {"void", "int", "int"};
+        const char* fnp[] = {"", "", "int"};
+        codegen_register_module_state("w140", vn, vt, 1, sf, sc, 2, 0,
+                                      fnn, fnr, fnp, 3);
+        const char* src140 =
+            "module w140\n\n"
+            "int count = 5\n\n"
+            "void bump() {\n"
+            "    count = count + 1\n"
+            "}\n\n"
+            "int get() {\n"
+            "    return count\n"
+            "}\n\n"
+            "int twice(int x) {\n"
+            "    return x * 2\n"
+            "}\n";
+        if (!gen_ok("build/tests/coil140.co", src140)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-140: generation failed\033[0m\n");
+            return 1;
+        }
+        FILE* of140 = fopen("build/tests/coil140.co.c", "r");
+        if (!of140) { printf("COIL-140: output file missing\n"); return 1; }
+        static char buf140[262144];
+        size_t blen140 = fread(buf140, 1, sizeof(buf140) - 1, of140);
+        fclose(of140);
+        buf140[blen140] = 0;
+        const char* pins[] = {
+            "} come_w140__instance_t;",
+            "void come_w140__bump(come_w140__instance_t* __inst)",
+            "module instance has been destroyed",
+            "(__inst->count)",
+            "int come_w140__twice__inst(come_w140__instance_t* __inst, int x)",
+            "come_w140__instance_t* come_w140__create(void) {",
+            "void come_w140__destroy(come_w140__instance_t* __inst) {",
+            "__inst->count = 5;",
+        };
+        for (size_t pi = 0; pi < sizeof(pins) / sizeof(pins[0]); pi++) {
+            if (!strstr(buf140, pins[pi])) {
+                printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-140: missing in generated C: %s\033[0m\n", pins[pi]);
+                return 1;
+            }
+        }
+        if (strstr(buf140, "\nint count = 5;")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-140: a C global was emitted for an instance variable\033[0m\n");
+            return 1;
+        }
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-140 instance codegen test passed!\033[0m\n");
     return 0;
 }
