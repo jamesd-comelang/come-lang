@@ -140,6 +140,9 @@ in C and declare their Come surface in `.co` files.
   [Maps](docs/Come_map.md), [Standard library](docs/Come_std.md)
 - [Project layout](docs/Come_project_layout.md)
 - [Roadmap](docs/ROADMAP.md) — how v1.0.0 was built, story by story
+- [Developer guide](DEVELOPER.md) — building and testing the
+  compiler, architecture, contribution workflow, and the
+  recorded design decisions
 
 ## Testing
 
