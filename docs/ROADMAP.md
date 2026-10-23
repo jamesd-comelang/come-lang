@@ -6,7 +6,7 @@ Built from the v2 spec (`Come_spec.md`) and the type/stdlib docs
 when its acceptance line holds and a test covers it.
 
 Stories are numbered **COIL-100** upward, globally across releases
-(next free number: **COIL-136**).
+(next free number: **COIL-137**).
 
 Story titles state the **value delivered** — who gains what — in one
 read. Implementation detail belongs in the Spec and Acceptance columns,
@@ -111,6 +111,16 @@ growing buffer can never leave an alias pointing at freed memory.
 | Story | Title | Spec | Size | Depends | Acceptance | Done |
 |-------|-------|------|------|---------|------------|------|
 | COIL-135 | Aliases survive growth: one split-header value design for arrays, strings and maps | §7 | L | v1.0.0 | Header lives inline in the variable (data pointer, count, capacity, owner context); only the data block is heap-allocated; growth allocates a fresh data block and forks aliases into valid snapshots; C and .co tests pin alias-over-growth for arrays and maps; spec, type docs and README revised | ☑ |
+
+## v1.1.0 — Struct references
+
+Theme: a struct is a value; when a function must mutate a
+caller's struct, the reference is explicit at the declaration
+and at the call site.
+
+| Story | Title | Spec | Size | Depends | Acceptance | Done |
+|-------|-------|------|------|---------|------------|------|
+| COIL-136 | Structs are values, references are explicit: &(struct T) parameters and &x call sites | §6.2, §7 | L | v1.0.0 | Struct assignment and by-value parameters copy the fields (buffer fields copy their headers, sharing data); `&(struct T)` declares a non-owning reference parameter or variable, `&x` takes a reference at the call site, `.` accesses members through values and references alike; missing or stray `&` is a compile error naming the fix; references to non-struct types, reference fields, and reference returns are rejected; C and .co tests pin value copies, buffer-handle sharing, mutation through references, and &a/&a aliasing; spec and Come_types.md revised | ☑ |
 
 ## Post-v1 backlog (explicitly deferred by the spec)
 

@@ -297,3 +297,105 @@ grep -qF "'geom.secret' is not exported by module 'geom'" "$SCRATCH/exp/u.log" |
 echo "ERRORS: not_exported ok"
 
 echo "Error-quality suite: all 20 cases name the rule and the fix."
+
+# COIL-136: the reference mistakes. Each names the rule and
+# the fix, like the cases above.
+check ref_missing_amp "needs a reference: pass &variable" <<'EOF'
+module main
+import std
+
+struct Vec3 {
+    int x
+    int y
+    int z
+}
+
+int draw_line(&(struct Vec3) p1) {
+    return p1.x
+}
+
+int main() {
+    var a = struct Vec3{1, 2, 3}
+    return draw_line(a)
+}
+EOF
+
+check ref_stray_amp "is not a reference: remove the '&'" <<'EOF'
+module main
+import std
+
+struct Vec3 {
+    int x
+    int y
+    int z
+}
+
+int by_val(struct Vec3 v) {
+    return v.x
+}
+
+int main() {
+    var a = struct Vec3{1, 2, 3}
+    return by_val(&a)
+}
+EOF
+
+check ref_temporary "cannot take a reference to a temporary" <<'EOF'
+module main
+import std
+
+struct Vec3 {
+    int x
+    int y
+    int z
+}
+
+int draw_line(&(struct Vec3) p1) {
+    return p1.x
+}
+
+int main() {
+    return draw_line(&struct Vec3{1, 2, 3})
+}
+EOF
+
+check ref_field "a struct field cannot be a reference" <<'EOF'
+module main
+import std
+
+struct Vec3 {
+    int x
+    int y
+    int z
+}
+
+struct Holder {
+    int tag
+    &(struct Vec3) v
+}
+
+int main() {
+    return 0
+}
+EOF
+
+check ref_return "is only allowed for a function parameter or a local variable" <<'EOF'
+module main
+import std
+
+struct Vec3 {
+    int x
+    int y
+    int z
+}
+
+&(struct Vec3) pick(struct Vec3 v) {
+    return v
+}
+
+int main() {
+    return 0
+}
+EOF
+
+echo "COIL-136 reference cases: all 5 name the rule and the fix."

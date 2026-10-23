@@ -1,0 +1,131 @@
+module core_test
+import std
+
+// COIL-136 coverage: structs are values (assignment and
+// pass-by-value copy the fields; buffer fields copy their
+// headers, sharing data); references are explicit -
+// &(struct Vec3) declares a non-owning reference, &x takes
+// one at the call site, . accesses members through values
+// and references alike; the typed literal struct Vec3{...}
+// is a value (spec 6.2).
+
+struct Vec3 {
+    int x
+    int y
+    int z
+}
+
+struct Bag {
+    int tag
+    int nums[]
+    struct Vec3 v
+}
+
+int Vec3.bump() {
+    self.x = self.x + 1
+    return self.x
+}
+
+int Vec3.sum() {
+    return self.x + self.y + self.z
+}
+
+int by_val(struct Vec3 v, struct Bag b) {
+    v.x = 99
+    b.nums[0] = 77
+    b.tag = 55
+    return v.x
+}
+
+int draw_line(&(struct Vec3) p1, &(struct Vec3) p2) {
+    p1.x = 10
+    return p2.x
+}
+
+struct Vec3 ident(&(struct Vec3) p) {
+    return p
+}
+
+int touch(&(struct Vec3) p) {
+    int b = p.bump()
+    int s = p.sum()
+    if (p.bytesize() != 12) { std.out.printf("FAIL: ref bytesize %d\n", p.bytesize()); return -1 }
+    if (p.length() != 3) { std.out.printf("FAIL: ref length\n"); return -1 }
+    string t = p.type()
+    if (t != "struct") { std.out.printf("FAIL: ref type\n"); return -1 }
+    return b + s
+}
+
+int main() {
+    // Value copy: scalar fields are independent.
+    var a = struct Vec3{1, 2, 3}
+    var b = a
+    b.x = 42
+    if (a.x != 1 || b.x != 42) { std.out.printf("FAIL: value copy\n"); return 1 }
+
+    // Buffer fields: the header is copied, the data shared -
+    // element writes cross over, a resize does not.
+    struct Bag g
+    g.tag = 1
+    g.nums.resize(2)
+    g.nums[0] = 5
+    g.nums[1] = 6
+    var g2 = g
+    if (g2.nums[0] != 5) { std.out.printf("FAIL: field share\n"); return 1 }
+    g2.nums[1] = 60
+    if (g.nums[1] != 60) { std.out.printf("FAIL: field share write\n"); return 1 }
+    g2.nums.resize(9)
+    if (g.nums.length() != 2 || g2.nums.length() != 9) { std.out.printf("FAIL: field fork %d %d\n", g.nums.length(), g2.nums.length()); return 1 }
+    g2.tag = 2
+    if (g.tag != 1) { std.out.printf("FAIL: field tag copy\n"); return 1 }
+
+    // Pass by value: scalar isolated, buffer elements shared.
+    int r = by_val(a, g)
+    if (r != 99 || a.x != 1) { std.out.printf("FAIL: by value\n"); return 1 }
+    if (g.nums[0] != 77) { std.out.printf("FAIL: by value buffer\n"); return 1 }
+    if (g.tag != 1) { std.out.printf("FAIL: by value tag\n"); return 1 }
+
+    // The same variable referenced twice aliases.
+    int rr = draw_line(&a, &a)
+    if (a.x != 10 || rr != 10) { std.out.printf("FAIL: draw_line alias\n"); return 1 }
+
+    // A reference variable: mutate, rebind, assign through.
+    var c = struct Vec3{7, 8, 9}
+    &(struct Vec3) r1 = &a
+    r1.y = 20
+    if (a.y != 20) { std.out.printf("FAIL: ref local\n"); return 1 }
+    r1 = &c
+    r1.y = 80
+    if (c.y != 80 || a.y != 20) { std.out.printf("FAIL: ref rebind\n"); return 1 }
+    r1 = struct Vec3{100, 101, 102}
+    if (c.x != 100 || c.y != 101 || a.x != 10) { std.out.printf("FAIL: ref assign through\n"); return 1 }
+
+    // A reference variable passes onward without '&'.
+    int rr2 = draw_line(r1, &a)
+    if (c.x != 10 || rr2 != 10) { std.out.printf("FAIL: ref onward\n"); return 1 }
+
+    // Returning a reference where the function declares the
+    // struct returns the referent's value - a copy.
+    var d = ident(&c)
+    if (d.x != 10 || d.y != 101) { std.out.printf("FAIL: return deref\n"); return 1 }
+    d.x = 1
+    if (c.x != 10) { std.out.printf("FAIL: return copy\n"); return 1 }
+
+    // A struct field is a referent; chains run through refs.
+    struct Bag bag2
+    bag2.v = struct Vec3{1, 1, 1}
+    int rr3 = draw_line(&bag2.v, &bag2.v)
+    if (bag2.v.x != 10 || rr3 != 10) { std.out.printf("FAIL: field referent\n"); return 1 }
+
+    // Methods and universal methods through a reference.
+    var e = struct Vec3{1, 2, 3}
+    int rt = touch(&e)
+    if (rt != 9 || e.x != 2) { std.out.printf("FAIL: ref methods %d %d\n", rt, e.x); return 1 }
+
+    // A method on a struct literal.
+    int ls = struct Vec3{1, 1, 1}.sum()
+    if (ls != 3) { std.out.printf("FAIL: literal method\n"); return 1 }
+
+    std.out.printf("PASS: 19-struct-refs\n")
+    return 0
+}

@@ -213,6 +213,10 @@ static const char* infer_assign_type(ASTNode* rhs) {
                     strchr(rhs->text, 'E')) ? "double" : "int";
         case AST_IDENTIFIER:
             return get_local_variable_type(rhs->text);
+        case AST_AGGREGATE_INIT:
+            // A typed struct literal (COIL-136).
+            if (strncmp(rhs->text, "struct ", 7) == 0) return rhs->text;
+            return NULL;
         case AST_MEMBER_ACCESS: {
             static char ibuf[160];
             return expr_come_type(rhs, ibuf, sizeof(ibuf));
@@ -257,6 +261,12 @@ static void emit_inferred_decl(FILE* f, const char* type, const char* name, ASTN
     } else if (strcmp(type, "bool") == 0 || strcmp(type, "int") == 0 ||
                strcmp(type, "double") == 0 || strcmp(type, "float") == 0 ||
                strcmp(type, "long") == 0) {
+        fprintf(f, "%s %s = ", type, name);
+        generate_expression(f, rhs);
+        fprintf(f, ";\n");
+    } else if (strncmp(type, "struct ", 7) == 0) {
+        // A struct value (COIL-136): the initializer emits
+        // as a compound literal or an aggregate.
         fprintf(f, "%s %s = ", type, name);
         generate_expression(f, rhs);
         fprintf(f, ";\n");
@@ -586,6 +596,28 @@ static void collect_structs(ASTNode* ast) {
     }
 }
 
+// ---- COIL-136: struct references ----
+// A reference type is spelled &(struct Name): a non-owning
+// pointer to a struct value, declared on parameters and local
+// variables only. &x takes a reference at a call site; member
+// access uses . through values and references alike.
+static int is_ref_type(const char* t) {
+    if (!t) return 0;
+    size_t l = strlen(t);
+    return l >= 4 && strncmp(t, "&(", 2) == 0 && t[l - 1] == ')';
+}
+static void ref_inner_type(const char* t, char* out, size_t n) {
+    if (!is_ref_type(t)) { snprintf(out, n, "%s", t ? t : ""); return; }
+    snprintf(out, n, "%.*s", (int)strlen(t) - 3, t + 2);
+}
+// The type a value question should see: a reference answers
+// as the struct it refers to.
+static const char* deref_ref_type(const char* t, char* buf, size_t n) {
+    if (!t) return NULL;
+    if (is_ref_type(t)) { ref_inner_type(t, buf, n); return buf; }
+    return t;
+}
+
 static int struct_field_count(const char* name) {
     for (int i = 0; i < g_struct_count; i++) {
         if (strcmp(g_struct_names[i], name) == 0) return g_struct_fields[i];
@@ -597,7 +629,9 @@ static int struct_field_count(const char* name) {
 // else NULL.
 static const char* struct_receiver_name(ASTNode* receiver) {
     if (!receiver || receiver->type != AST_IDENTIFIER) return NULL;
-    const char* rt = get_local_variable_type(receiver->text);
+    char rbuf[300];
+    const char* rt = deref_ref_type(get_local_variable_type(receiver->text),
+                                    rbuf, sizeof(rbuf));
     if (rt && strncmp(rt, "struct ", 7) == 0 && struct_field_count(rt + 7) >= 0 &&
         rt[7] != 0) {
         for (int i = 0; i < g_struct_count; i++) {
@@ -835,6 +869,14 @@ static int split_types(const char* s, char parts[][160], int max_parts) {
 
 // Map a Come type text to its C declarator type.
 static void come_type_to_c(const char* t, char* out, size_t n) {
+    if (is_ref_type(t)) {
+        // &(struct Vec3) -> struct Vec3* (COIL-136)
+        char inner[256], ic[256];
+        ref_inner_type(t, inner, sizeof(inner));
+        come_type_to_c(inner, ic, sizeof(ic));
+        snprintf(out, n, "%s*", ic);
+        return;
+    }
     size_t len = strlen(t);
     if (len >= 2 && strcmp(t + len - 2, "[]") == 0) {
         char raw[128];
@@ -931,16 +973,31 @@ static void emit_fn_param(FILE* f, const char* fn_text, const char* name) {
     }
     fprintf(f, ")");
 }
+// The '(' opening a fn: signature's parameter list. The list
+// is the LAST balanced group in the signature: a tuple return
+// type and reference parameters (&(struct T), COIL-136) put
+// parentheses of their own earlier in the text.
+static const char* sig_params_open(const char* csig) {
+    if (!csig || strncmp(csig, "fn:", 3) != 0) return NULL;
+    size_t len = strlen(csig);
+    if (len == 0 || csig[len - 1] != ')') return NULL;
+    int depth = 0;
+    for (long i = (long)len - 1; i >= 3; i--) {
+        if (csig[i] == ')') depth++;
+        else if (csig[i] == '(' && --depth == 0) return csig + i;
+    }
+    return NULL;
+}
+
 // The declared parameter types of a same-module callee, split
 // from its fn: signature. Returns the count (0 when unknown).
 static int call_param_types(ASTNode* call, char parts[][160], int max_parts) {
     const char* csig = find_module_fn_sig(call->text);
-    if (!csig) return 0;
-    const char* lp = strchr(csig, '(');
-    const char* rp = strrchr(csig, ')');
-    if (!lp || !rp) return 0;
+    const char* q = csig ? sig_params_open(csig) : NULL;
+    if (!q) return 0;
+    const char* rp = csig + strlen(csig) - 1;
     char inner[512];
-    snprintf(inner, sizeof(inner), "%.*s", (int)(rp - lp - 1), lp + 1);
+    snprintf(inner, sizeof(inner), "%.*s", (int)(rp - q - 1), q + 1);
     if (!inner[0]) return 0;
     return split_types(inner, parts, max_parts);
 }
@@ -1465,6 +1522,8 @@ static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
         e->children[0]->type == AST_IDENTIFIER) {
         const char* ot = get_local_variable_type(e->children[0]->text);
         if (ot) {
+            char ib[300];
+            ot = deref_ref_type(ot, ib, sizeof(ib));
             if (strncmp(ot, "struct ", 7) == 0) ot += 7;
             const char* ft = struct_field_type(ot, e->text);
             if (ft) return ft;
@@ -1476,7 +1535,7 @@ static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
         nm = nm ? nm + 1 : e->text;
         const char* sig = find_module_fn_sig(nm);
         if (sig && strncmp(sig, "fn:", 3) == 0) {
-            const char* lp = strchr(sig, '(');
+            const char* lp = sig_params_open(sig);
             if (lp && lp > sig + 3) {
                 size_t rl = (size_t)(lp - (sig + 3));
                 if (rl >= n) rl = n - 1;
@@ -1486,6 +1545,11 @@ static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
             }
         }
         return NULL;
+    }
+    if (e->type == AST_AGGREGATE_INIT && strncmp(e->text, "struct ", 7) == 0) {
+        // A typed struct literal (COIL-136).
+        snprintf(buf, n, "%s", e->text);
+        return buf;
     }
     if (e->type == AST_METHOD_CALL && e->child_count >= 1) {
         const char* m = e->text;
@@ -1573,6 +1637,63 @@ static void emit_expr_as(FILE* f, ASTNode* e, const char* ct) {
     generate_expression(f, e);
 }
 
+// 1 when the expression is reference-typed (COIL-136).
+static int expr_is_ref(ASTNode* e) {
+    char buf[300];
+    return is_ref_type(expr_come_type(e, buf, sizeof(buf)));
+}
+
+// Emit one call argument against its parameter's Come type
+// (COIL-136). A reference parameter takes &lvalue (a struct
+// variable, field, or element) or a reference variable of the
+// same type, passed through as-is. A value parameter rejects
+// a stray '&'. With no reference involved this is exactly the
+// plain emission.
+static void emit_ref_or_value_arg(FILE* f, ASTNode* arg, const char* ptype,
+                                  const char* fname) {
+    if (is_ref_type(ptype)) {
+        char inner[256];
+        ref_inner_type(ptype, inner, sizeof(inner));
+        if (arg->type == AST_UNARY_OP && strcmp(arg->text, "&") == 0) {
+            ASTNode* operand = arg->children[0];
+            char ob[300];
+            const char* ot = expr_come_type(operand, ob, sizeof(ob));
+            if (is_ref_type(ot)) {
+                codegen_error("the argument is already a reference: pass it to '%s' without '&'", fname);
+                generate_expression(f, operand);
+                return;
+            }
+            int lv = operand->type == AST_IDENTIFIER ||
+                     operand->type == AST_MEMBER_ACCESS ||
+                     operand->type == AST_ARRAY_ACCESS;
+            if (!lv) {
+                codegen_error("cannot take a reference to a temporary: '&' needs a variable, field, or element of type %s", inner);
+            } else if (ot && strcmp(ot, inner) != 0) {
+                codegen_error("reference type mismatch: the parameter is %s but the argument is %s", ptype, ot);
+            }
+            fprintf(f, "&(");
+            generate_expression(f, operand);
+            fprintf(f, ")");
+            return;
+        }
+        char ab[300];
+        const char* at = expr_come_type(arg, ab, sizeof(ab));
+        if (is_ref_type(at) && strcmp(at, ptype) == 0) {
+            generate_expression(f, arg);
+            return;
+        }
+        codegen_error("a reference parameter (%s) needs a reference: pass &variable, or a %s variable", ptype, ptype);
+        generate_expression(f, arg);
+        return;
+    }
+    if (arg->type == AST_UNARY_OP && strcmp(arg->text, "&") == 0) {
+        codegen_error("this parameter of '%s' is not a reference: remove the '&'", fname);
+        generate_expression(f, arg->children[0]);
+        return;
+    }
+    generate_expression(f, arg);
+}
+
 static void generate_expression(FILE* f, ASTNode* node) {
     if (!node) {
         fprintf(f, "/* AST ERROR: NULL NODE */ 0");
@@ -1623,6 +1744,30 @@ static void generate_expression(FILE* f, ASTNode* node) {
         }
         else fprintf(f, "%s", node->text);
     } else if (node->type == AST_UNARY_OP) {
+        if (strcmp(node->text, "&") == 0) {
+            // Taking an address (COIL-136): at a typed call
+            // site this builds a struct reference (checked by
+            // emit_ref_or_value_arg); elsewhere it is the
+            // C-interop form the std surface already uses
+            // (scanf's &v out-parameters). Two shapes are
+            // errors in every position: a reference to a
+            // temporary, and '&' of something that already
+            // is a reference.
+            ASTNode* operand = node->children[0];
+            char ob[300];
+            const char* ot = expr_come_type(operand, ob, sizeof(ob));
+            if (is_ref_type(ot)) {
+                codegen_error("the operand is already a reference: use it directly, without '&'");
+            } else if (operand->type != AST_IDENTIFIER &&
+                       operand->type != AST_MEMBER_ACCESS &&
+                       operand->type != AST_ARRAY_ACCESS) {
+                codegen_error("cannot take a reference to a temporary: '&' needs a variable, field, or element");
+            }
+            fprintf(f, "&(");
+            generate_expression(f, operand);
+            fprintf(f, ")");
+            return;
+        }
         fprintf(f, "(%s", node->text);
         generate_expression(f, node->children[0]);
         fprintf(f, ")");
@@ -1709,6 +1854,31 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 return;
             }
         }
+        if (node->children[0]->type == AST_IDENTIFIER &&
+            strcmp(node->text, "=") == 0) {
+            const char* lt = get_local_variable_type(node->children[0]->text);
+            if (is_ref_type(lt)) {
+                ASTNode* rhs = node->children[1];
+                char rb[300];
+                const char* rt2 = expr_come_type(rhs, rb, sizeof(rb));
+                if (rhs->type == AST_UNARY_OP && strcmp(rhs->text, "&") == 0) {
+                    // Rebind: the guarded '&' emission applies.
+                    generate_expression(f, node->children[0]);
+                    fprintf(f, " = ");
+                    generate_expression(f, rhs);
+                    return;
+                }
+                if (!is_ref_type(rt2)) {
+                    // Assign through: the referent takes the value.
+                    fprintf(f, "(*");
+                    generate_expression(f, node->children[0]);
+                    fprintf(f, ") = ");
+                    generate_expression(f, rhs);
+                    return;
+                }
+                // reference = reference: a plain rebind, below.
+            }
+        }
         generate_expression(f, node->children[0]);
         fprintf(f, " %s ", node->text);
         generate_expression(f, node->children[1]);
@@ -1735,15 +1905,12 @@ static void generate_expression(FILE* f, ASTNode* node) {
         fprintf(f, "(");
         generate_expression(f, node->children[0]);
         
-        int is_ptr = is_pointer_expression(node->children[0]);
-        // Debug print to stderr (will show in compiler output)
-        if (node->children[0]->type == AST_IDENTIFIER && strcmp(node->children[0]->text, "p1") == 0) {
-             fprintf(f, ").%s", node->text);
-        } else if (is_ptr) {
-             fprintf(stderr, "DEBUG: Member access on pointer: '%s'\n", node->children[0]->text);
-             fprintf(f, ")->%s", node->text);
+        int is_ptr = is_pointer_expression(node->children[0]) ||
+                     expr_is_ref(node->children[0]);
+        if (is_ptr) {
+            fprintf(f, ")->%s", node->text);
         } else {
-             fprintf(f, ").%s", node->text);
+            fprintf(f, ").%s", node->text);
         }
     } else if (node->type == AST_METHOD_CALL) {
         char* method = node->text;
@@ -2617,15 +2784,47 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  }
              }
              // User defined struct method?
+             // A method call on a struct literal (COIL-136):
+             // materialize the value, then call with its
+             // address as self - the same shape as a variable
+             // receiver.
+             if (receiver->type == AST_AGGREGATE_INIT &&
+                 strncmp(receiver->text, "struct ", 7) == 0) {
+                 const char* sname = receiver->text + 7;
+                 if (strcmp(method, "length") == 0) {
+                     fprintf(f, "%d", struct_field_count(sname));
+                     return;
+                 }
+                 if (strcmp(method, "bytesize") == 0) {
+                     fprintf(f, "((int)sizeof(struct %s))", sname);
+                     return;
+                 }
+                 if (strcmp(method, "type") == 0) {
+                     fprintf(f, "come_string_new(COME_CTX, \"struct\")");
+                     return;
+                 }
+                 fprintf(f, "({ %s _t = ", receiver->text);
+                 generate_expression(f, receiver);
+                 fprintf(f, "; come_%s__%s__%s(&_t", current_module, sname, method);
+                 for (int i = 1; i < node->child_count; i++) {
+                     fprintf(f, ", ");
+                     generate_expression(f, node->children[i]);
+                 }
+                 fprintf(f, "); })");
+                 return;
+             }
+
              // Try to resolve receiver variable type
              char struct_name[64] = "";
              if (receiver->type == AST_IDENTIFIER) {
                  const char* type = get_local_variable_type(receiver->text);
                  if (type) {
-                     if (strncmp(type, "struct ", 7) == 0) {
-                         strcpy(struct_name, type + 7);
+                     char ub2[300];
+                     const char* ut = deref_ref_type(type, ub2, sizeof(ub2));
+                     if (strncmp(ut, "struct ", 7) == 0) {
+                         strcpy(struct_name, ut + 7);
                      } else {
-                         strcpy(struct_name, type);
+                         strcpy(struct_name, ut);
                      }
                  }
              }
@@ -2642,7 +2841,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  // Our tracker should distinguish?
                  // For now assume stack structs need &.
                  const char* full_type = get_local_variable_type(receiver->text);
-                 if (strstr(full_type, "*") == NULL) {
+                 if (strstr(full_type, "*") == NULL && !is_ref_type(full_type)) {
                      fprintf(f, "&");
                  }
                  generate_expression(f, receiver);
@@ -2905,6 +3104,8 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 if (i < cnp && strcmp(cparts[i], "string") == 0 &&
                     node->children[i]->type == AST_STRING_LITERAL)
                     emit_string_expr(f, node->children[i]);
+                else if (i < cnp)
+                    emit_ref_or_value_arg(f, node->children[i], cparts[i], node->text);
                 else
                     generate_expression(f, node->children[i]);
             }
@@ -2912,6 +3113,23 @@ static void generate_expression(FILE* f, ASTNode* node) {
         fprintf(f, ")");
     } else if (node->type == AST_AGGREGATE_INIT) {
         // { val, val } or { .field = val, ... }
+        if (strncmp(node->text, "struct ", 7) == 0) {
+            // Typed struct literal (COIL-136): a C compound
+            // literal. A nested bare { } would be a buffer
+            // field initialized inline, which a raw C
+            // initializer cannot build - reject it.
+            for (int ci = 0; ci < node->child_count; ci++) {
+                ASTNode* ch2 = node->children[ci];
+                ASTNode* val = (ch2->type == AST_ASSIGN && ch2->child_count >= 2)
+                                   ? ch2->children[1] : ch2;
+                if (val->type == AST_AGGREGATE_INIT &&
+                    strncmp(val->text, "struct ", 7) != 0) {
+                    codegen_error("a buffer field in a struct literal needs a variable: build the buffer first, then use it in the literal");
+                    break;
+                }
+            }
+            fprintf(f, "(%s)", node->text);
+        }
         fprintf(f, "{ ");
         if (node->child_count == 0) {
             fprintf(f, "0");
@@ -3261,6 +3479,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     fprintf(f, "come_string_list_t %s", arg->text);
                 } else if (strcmp(type->text, "link") == 0) {
                    fprintf(f, "come_link_t* %s", arg->text);
+                } else if (is_ref_type(type->text)) {
+                   // &(struct Vec3) p -> struct Vec3* p (COIL-136)
+                   char ct[300];
+                   come_type_to_c(type->text, ct, sizeof(ct));
+                   fprintf(f, "%s %s", ct, arg->text);
                 } else {
                    fprintf(f, "%s %s", type->text, arg->text);
                 }
@@ -3339,6 +3562,25 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         if (strcmp(type_node->text, "var") == 0 && init_expr) {
             const char* inferred = infer_assign_type(init_expr);
             if (inferred) update_local_variable_type(node->text, inferred);
+        }
+
+        if (is_ref_type(type_node->text)) {
+            // A reference variable (COIL-136): a C pointer,
+            // always initialized from &value or from another
+            // reference variable.
+            emit_indent(f, indent);
+            char ct[300];
+            come_type_to_c(type_node->text, ct, sizeof(ct));
+            fprintf(f, "%s %s = ", ct, node->text);
+            if (!init_expr || (init_expr->type == AST_NUMBER &&
+                               strcmp(init_expr->text, "0") == 0)) {
+                codegen_error("a reference variable must be initialized: %s %s = &value", type_node->text, node->text);
+                fprintf(f, "NULL");
+            } else {
+                emit_ref_or_value_arg(f, init_expr, type_node->text, node->text);
+            }
+            fprintf(f, ";\n");
+            break;
         }
 
         if (init_expr && init_expr->type == AST_IDENTIFIER && type_is_array(type_node->text)) {
@@ -3857,7 +4099,21 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     // Same materialization as call arguments: a
                     // string function must return a come_string_t,
                     // not a raw literal (COIL-133).
-                    if (strcmp(current_function_return_type, "string") == 0 &&
+                    char rb2[300];
+                    const char* rtx = expr_come_type(node->children[0], rb2, sizeof(rb2));
+                    if (is_ref_type(rtx)) {
+                        // Returning a reference where the
+                        // function declares the struct returns
+                        // the referent's value (COIL-136).
+                        char inner2[256];
+                        ref_inner_type(rtx, inner2, sizeof(inner2));
+                        if (strcmp(current_function_return_type, inner2) != 0) {
+                            codegen_error("cannot return a reference here: the function returns %s - return the struct value instead", current_function_return_type);
+                        }
+                        fprintf(f, "*(");
+                        generate_expression(f, node->children[0]);
+                        fprintf(f, ")");
+                    } else if (strcmp(current_function_return_type, "string") == 0 &&
                         node->children[0]->type == AST_STRING_LITERAL)
                         emit_string_expr(f, node->children[0]);
                     else
@@ -4013,6 +4269,35 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             }
             emit_indent(f, indent);
             check_assign_store(node); // COIL-107
+            // Assignment to a reference variable (COIL-136):
+            // a struct value assigns through to the referent;
+            // &value or another reference rebinds.
+            if (strcmp(node->text, "=") == 0 && node->child_count >= 2 &&
+                node->children[0]->type == AST_IDENTIFIER) {
+                const char* lt = get_local_variable_type(node->children[0]->text);
+                if (is_ref_type(lt)) {
+                    ASTNode* rhs = node->children[1];
+                    if (rhs->type == AST_UNARY_OP && strcmp(rhs->text, "&") == 0) {
+                        generate_expression(f, node->children[0]);
+                        fprintf(f, " = ");
+                        generate_expression(f, rhs);
+                        fprintf(f, ";\n");
+                        break;
+                    }
+                    char rb[300];
+                    const char* rt2 = expr_come_type(rhs, rb, sizeof(rb));
+                    if (!is_ref_type(rt2)) {
+                        fprintf(f, "(*");
+                        generate_expression(f, node->children[0]);
+                        fprintf(f, ") = ");
+                        generate_expression(f, rhs);
+                        fprintf(f, ";\n");
+                        break;
+                    }
+                    // reference = reference: falls through to
+                    // the plain assignment below (a rebind).
+                }
+            }
             // Typed map index write: m[key] = value (COIL-102)
             int map_write = 0;
             if (strcmp(node->text, "=") == 0 && node->children[0]->type == AST_ARRAY_ACCESS) {
@@ -4864,6 +5149,12 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                        } else {
                             if (strcmp(type->text, "string")==0) fprintf(f, "come_string_t");
                             else if (strcmp(type->text, "link")==0) fprintf(f, "come_link_t*");
+                            else if (is_ref_type(type->text)) {
+                                // &(struct Vec3) -> struct Vec3* (COIL-136)
+                                char ct[300];
+                                come_type_to_c(type->text, ct, sizeof(ct));
+                                fprintf(f, "%s", ct);
+                            }
                             else fprintf(f, "%s", type->text);
                        }
                   } else {

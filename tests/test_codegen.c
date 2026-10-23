@@ -140,6 +140,63 @@ int main() {
     }
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-102 typed-map test passed!\033[0m\n");
 
+    // COIL-136: struct references. A reference parameter is a
+    // C pointer in the definition, the call site emits &(a),
+    // and member access through the reference emits ->. A
+    // missing '&' at a reference parameter and a stray '&' at
+    // a value parameter are generation failures.
+    {
+        const char* ref_src =
+            "module main\nimport std\n\n"
+            "struct Vec3 {\n    int x\n    int y\n    int z\n}\n\n"
+            "int draw_line(&(struct Vec3) p1, &(struct Vec3) p2) {\n"
+            "    p1.x = 10\n    return p2.x\n}\n\n"
+            "int main() {\n"
+            "    var a = struct Vec3{1, 2, 3}\n"
+            "    return draw_line(&a, &a)\n}\n";
+        if (!gen_ok("build/tests/coil136_ref.co", ref_src)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-136: reference program must generate\033[0m\n");
+            return 1;
+        }
+        FILE* rf = fopen("build/tests/coil136_ref.co.c", "r");
+        if (!rf) { printf("Codegen test setup failed (no coil136 output)\n"); return 1; }
+        static char rbuf[65536];
+        size_t rn = fread(rbuf, 1, sizeof(rbuf) - 1, rf);
+        rbuf[rn] = 0;
+        fclose(rf);
+        remove("build/tests/coil136_ref.co");
+        if (!strstr(rbuf, "struct Vec3* p1") || !strstr(rbuf, "&(a)") ||
+            !strstr(rbuf, "(p1)->x")) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-136: reference emission missing (pointer param, &(a) call, -> access)\033[0m\n");
+            return 1;
+        }
+        const char* missing_src =
+            "module main\nimport std\n\n"
+            "struct Vec3 {\n    int x\n    int y\n    int z\n}\n\n"
+            "int draw_line(&(struct Vec3) p1) {\n    return p1.x\n}\n\n"
+            "int main() {\n"
+            "    var a = struct Vec3{1, 2, 3}\n"
+            "    return draw_line(a)\n}\n";
+        if (!gen_fail("build/tests/coil136_missing.co", missing_src)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-136: missing '&' must fail\033[0m\n");
+            return 1;
+        }
+        remove("build/tests/coil136_missing.co");
+        const char* stray_src =
+            "module main\nimport std\n\n"
+            "struct Vec3 {\n    int x\n    int y\n    int z\n}\n\n"
+            "int by_val(struct Vec3 v) {\n    return v.x\n}\n\n"
+            "int main() {\n"
+            "    var a = struct Vec3{1, 2, 3}\n"
+            "    return by_val(&a)\n}\n";
+        if (!gen_fail("build/tests/coil136_stray.co", stray_src)) {
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-136: stray '&' must fail\033[0m\n");
+            return 1;
+        }
+        remove("build/tests/coil136_stray.co");
+    }
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-136 struct-reference test passed!\033[0m\n");
+
     // COIL-103: the method table and ERR-on-missing must reach the
     // runtime helpers in the generated C.
     const char* p103 = "build/tests/coil103_methods.co";

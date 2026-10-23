@@ -16,6 +16,7 @@ static int pos;
 // must fail the build - like the removed [...] literal (COIL-100) -
 // increment this counter.
 static int g_parse_errors = 0;
+static int g_in_struct_fields = 0; // COIL-136: reject reference fields
 
 // Alias Storage
 typedef struct {
@@ -220,6 +221,47 @@ static ASTNode* parse_block();
 static ASTNode* parse_statement();
 static ASTNode* parse_expression();
 static ASTNode* parse_var_decl();
+
+// Parse the body of a "{ ... }" literal after the opening brace
+// has been consumed: positional values, .field = value pairs,
+// or key: value pairs (COIL-102). The node's text is the
+// caller's tag: "MAP" for a bare literal, "struct Name" for a
+// typed struct literal (COIL-136).
+static ASTNode* parse_brace_aggregate(const char* tag) {
+    ASTNode* node = ast_new(AST_AGGREGATE_INIT);
+    strcpy(node->text, tag);
+    while (current()->type != TOKEN_RBRACE && current()->type != TOKEN_EOF) {
+         if (match(TOKEN_DOT)) {
+             if (current()->type == TOKEN_IDENTIFIER) {
+                 ASTNode* desig = ast_new(AST_IDENTIFIER);
+                 snprintf(desig->text, sizeof(desig->text), ".%.*s", 126, current()->text);
+                 advance();
+                 if (match(TOKEN_ASSIGN)) {
+                     ASTNode* value = parse_expression();
+                     ASTNode* pair = ast_new(AST_ASSIGN);
+                     pair->children[pair->child_count++] = desig;
+                     pair->children[pair->child_count++] = value;
+                     node->children[node->child_count++] = pair;
+                 }
+             }
+         } else {
+             ASTNode* first = parse_expression();
+             if (match(TOKEN_COLON)) {
+                 // Map literal entry: key: value (COIL-102)
+                 ASTNode* pair = ast_new(AST_MAP_PAIR);
+                 pair->children[pair->child_count++] = first;
+                 pair->children[pair->child_count++] = parse_expression();
+                 node->children[node->child_count++] = pair;
+             } else {
+                 node->children[node->child_count++] = first;
+             }
+         }
+         if (!match(TOKEN_COMMA)) break;
+    }
+    expect(TOKEN_RBRACE);
+    return node;
+}
+
 static ASTNode* parse_primary() {
     ASTNode* node = NULL;
     Token* t = current();
@@ -258,7 +300,18 @@ static ASTNode* parse_primary() {
     }
 
     // 1. Parse Atom
-    if (t->type == TOKEN_IDENTIFIER) {
+    // Typed struct literal (COIL-136): struct Name { ... } is a
+    // value, e.g. var a = struct Vec3{1, 2, 3}.
+    if (t->type == TOKEN_STRUCT && pos + 2 < tokens.count &&
+        tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER &&
+        tokens.tokens[pos + 2].type == TOKEN_LBRACE) {
+        char stag[300];
+        snprintf(stag, sizeof(stag), "struct %s", tokens.tokens[pos + 1].text);
+        advance(); // struct
+        advance(); // Name
+        advance(); // {
+        node = parse_brace_aggregate(stag);
+    } else if (t->type == TOKEN_IDENTIFIER) {
          // Check alias substitution
          ASTNode* alias_node = find_alias(t->text);
          if (alias_node) {
@@ -306,37 +359,7 @@ static ASTNode* parse_primary() {
         strcpy(node->text, "ARRAY");
     } else if (match(TOKEN_LBRACE)) {
         // Map/Struct initializer: { k: v, ... } or { .field = val, ... }
-        node = ast_new(AST_AGGREGATE_INIT);
-        strcpy(node->text, "MAP");
-        while (current()->type != TOKEN_RBRACE && current()->type != TOKEN_EOF) {
-             if (match(TOKEN_DOT)) {
-                 if (current()->type == TOKEN_IDENTIFIER) {
-                     ASTNode* desig = ast_new(AST_IDENTIFIER);
-                     snprintf(desig->text, sizeof(desig->text), ".%.*s", 126, current()->text);
-                     advance(); 
-                     if (match(TOKEN_ASSIGN)) {
-                         ASTNode* value = parse_expression();
-                         ASTNode* pair = ast_new(AST_ASSIGN);
-                         pair->children[pair->child_count++] = desig;
-                         pair->children[pair->child_count++] = value;
-                         node->children[node->child_count++] = pair;
-                     }
-                 }
-             } else {
-                 ASTNode* first = parse_expression();
-                 if (match(TOKEN_COLON)) {
-                     // Map literal entry: key: value (COIL-102)
-                     ASTNode* pair = ast_new(AST_MAP_PAIR);
-                     pair->children[pair->child_count++] = first;
-                     pair->children[pair->child_count++] = parse_expression();
-                     node->children[node->child_count++] = pair;
-                 } else {
-                     node->children[node->child_count++] = first;
-                 }
-             }
-             if (!match(TOKEN_COMMA)) break;
-        }
-        expect(TOKEN_RBRACE);
+        node = parse_brace_aggregate("MAP");
     } else if (match(TOKEN_LPAREN)) {
         if (is_type_token(current()->type)) {
              // Cast: (int) expr
@@ -556,6 +579,16 @@ static ASTNode* parse_expression_prec(int min_prec) {
         int prec = get_precedence(t->type);
         if (prec == 0 || prec < min_prec) break;
         
+        // A reference declaration begins a new statement
+        // (COIL-136): a line starting with &(struct Name) is
+        // never the bitwise-and continuation of the previous
+        // line's expression.
+        if (t->type == TOKEN_AND && pos >= 1 &&
+            t->line > tokens.tokens[pos - 1].line &&
+            pos + 2 < tokens.count &&
+            tokens.tokens[pos + 1].type == TOKEN_LPAREN &&
+            tokens.tokens[pos + 2].type == TOKEN_STRUCT) break;
+        
         if (t->type == TOKEN_QUESTION) {
             // Ternary: a ? b : c
             advance(); // consume ?
@@ -622,8 +655,31 @@ static void parse_map_braces_text(char* out, size_t out_size) {
 static ASTNode* parse_var_decl() {
     Token* t = current();
     char type_name[256];
-    strcpy(type_name, t->text);
-    advance();
+    int is_ref_decl = 0;
+    if (t->type == TOKEN_AND) {
+        // Reference variable (COIL-136): &(struct Name) var = &value.
+        // Non-owning; must be initialized (checked in codegen).
+        if (g_in_struct_fields) {
+            printf("Error: a struct field cannot be a reference - references are parameters and local variables only (line %d)\n", t->line);
+            g_parse_errors++;
+        }
+        advance(); // &
+        if (!expect(TOKEN_LPAREN)) return NULL;
+        if (current()->type != TOKEN_STRUCT || pos + 1 >= tokens.count ||
+            tokens.tokens[pos + 1].type != TOKEN_IDENTIFIER) {
+            printf("Error: '&(' must wrap a struct type: &(struct Name) (line %d)\n", t->line);
+            g_parse_errors++;
+            return NULL;
+        }
+        advance(); // struct
+        snprintf(type_name, sizeof(type_name), "&(struct %s)", current()->text);
+        advance(); // Name
+        if (!expect(TOKEN_RPAREN)) return NULL;
+        is_ref_decl = 1;
+    } else {
+        strcpy(type_name, t->text);
+        advance();
+    }
     
     // Special handling for struct/union: "struct Type varname" or "union Type varname"
     if ((strcmp(type_name, "struct") == 0 || strcmp(type_name, "union") == 0) && current()->type == TOKEN_IDENTIFIER) {
@@ -638,9 +694,9 @@ static ASTNode* parse_var_decl() {
         parse_map_braces_text(type_name, sizeof(type_name));
     }
     
-    // Check for array type: int[] x
-    int type_arr_size = peek_array_size();
-    while (match(TOKEN_LBRACKET)) {
+    // Check for array type: int[] x (never for a reference)
+    int type_arr_size = is_ref_decl ? 0 : peek_array_size();
+    while (!is_ref_decl && match(TOKEN_LBRACKET)) {
          while(current()->type != TOKEN_RBRACKET && current()->type != TOKEN_EOF) advance();
          expect(TOKEN_RBRACKET);
          strcat(type_name, "[]");
@@ -1054,7 +1110,9 @@ static ASTNode* parse_struct_statement() {
             
             while (current()->type != TOKEN_RBRACE && current()->type != TOKEN_EOF) {
                  int start_pos = pos;
+                 g_in_struct_fields = 1;
                  ASTNode* field = parse_statement();
+                 g_in_struct_fields = 0;
                  if (field) node->children[node->child_count++] = field;
                  
                  if (pos == start_pos) {
@@ -1176,6 +1234,14 @@ static ASTNode* parse_statement() {
         tokens.tokens[pos+1].type == TOKEN_IDENTIFIER &&
         tokens.tokens[pos+2].type == TOKEN_LBRACE) {
           return parse_struct_statement();
+    }
+
+    if (t->type == TOKEN_AND && pos + 2 < tokens.count &&
+        tokens.tokens[pos + 1].type == TOKEN_LPAREN &&
+        tokens.tokens[pos + 2].type == TOKEN_STRUCT) {
+        // Reference variable declaration (COIL-136).
+        ASTNode* decl = parse_var_decl();
+        if (decl) return decl;
     }
 
     if (is_type_token(t->type)) {
@@ -1565,7 +1631,9 @@ static void parse_union(ASTNode* program) {
         expect(TOKEN_LBRACE);
         while(current()->type!=TOKEN_RBRACE && current()->type!=TOKEN_EOF) {
              int start_pos = pos;
+             g_in_struct_fields = 1;
              ASTNode* field = parse_statement(); // Reusing var parsing
+             g_in_struct_fields = 0;
              if (field) node->children[node->child_count++] = field;
 
              if (pos == start_pos) {
@@ -1630,7 +1698,9 @@ static void parse_struct(ASTNode* program) {
                         }
                      }
                  } else {
+                     g_in_struct_fields = 1;
                      ASTNode* field = parse_statement();
+                     g_in_struct_fields = 0;
                      if (field) node->children[node->child_count++] = field;
                  }
 
@@ -1875,6 +1945,18 @@ static void parse_coroutine_decl(ASTNode* program) {
         if (current()->type == TOKEN_COMMA) { advance(); continue; }
         if (current()->type == TOKEN_CONST) advance();
 
+        if (current()->type == TOKEN_AND && pos + 1 < tokens.count &&
+            tokens.tokens[pos + 1].type == TOKEN_LPAREN) {
+            // COIL-136: a reference would dangle across yields.
+            printf("Error: a coroutine cannot take a reference parameter - pass the struct by value, or send it through a link (line %d)\n", current()->line);
+            g_parse_errors++;
+            advance(); // &
+            advance(); // (
+            while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) advance();
+            if (current()->type == TOKEN_RPAREN) advance();
+            if (current()->type == TOKEN_IDENTIFIER) advance(); // the name
+            continue;
+        }
         char arg_type[256];
         if (current()->type == TOKEN_STRUCT) {
             advance();
@@ -1936,6 +2018,20 @@ static void parse_top_level_decl(ASTNode* program) {
     char type_name[256] = {0};
     int is_method = 0;
     int implicit_type = 0;
+
+    // A reference type at top level would be a return type or a
+    // global variable: neither exists (COIL-136) - references
+    // are parameters and local variables only.
+    if (t->type == TOKEN_AND && pos + 1 < tokens.count &&
+        tokens.tokens[pos + 1].type == TOKEN_LPAREN) {
+        printf("Error: a reference type &(struct Name) is only allowed for a function parameter or a local variable - a function cannot return a reference, and a global cannot be one (line %d)\n", t->line);
+        g_parse_errors++;
+        advance(); // &
+        advance(); // (
+        while (current()->type != TOKEN_RPAREN && current()->type != TOKEN_EOF) advance();
+        if (current()->type == TOKEN_RPAREN) advance();
+        return;
+    }
 
     // Variable or Function declaration
     // Check if it starts with a type OR is an implicit function definition (e.g. main() or myfunc())
@@ -2097,7 +2193,26 @@ static void parse_top_level_decl(ASTNode* program) {
                       if (current()->type == TOKEN_CONST) advance(); // skip const in args for now
                       
                       char arg_type[256];
-                      if (current()->type == TOKEN_STRUCT) {
+                      int is_ref_param = 0;
+                      if (current()->type == TOKEN_AND && pos + 1 < tokens.count &&
+                          tokens.tokens[pos + 1].type == TOKEN_LPAREN) {
+                          // Reference parameter (COIL-136):
+                          // &(struct Name) p - non-owning.
+                          advance(); // &
+                          advance(); // (
+                          if (current()->type == TOKEN_STRUCT && pos + 1 < tokens.count &&
+                              tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER) {
+                              advance(); // struct
+                              snprintf(arg_type, sizeof(arg_type), "&(struct %s)", current()->text);
+                              advance(); // Name
+                              is_ref_param = 1;
+                          } else {
+                              printf("Error: '&(' must wrap a struct type: &(struct Name) (line %d)\n", current()->line);
+                              g_parse_errors++;
+                              strcpy(arg_type, "int");
+                          }
+                          if (!expect(TOKEN_RPAREN)) break;
+                      } else if (current()->type == TOKEN_STRUCT) {
                           advance();
                           sprintf(arg_type, "struct %s", current()->text);
                           advance();
@@ -2106,14 +2221,14 @@ static void parse_top_level_decl(ASTNode* program) {
                           advance();
                       }
                       // brackets?
-                      int psize1 = peek_array_size();
-                      if (match(TOKEN_LBRACKET)) {
+                      int psize1 = is_ref_param ? 0 : peek_array_size();
+                      if (!is_ref_param && match(TOKEN_LBRACKET)) {
                           while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();
                           expect(TOKEN_RBRACKET);
                           strcat(arg_type, "[]");
                       }
                       // map{K, V} parameter type (COIL-102)
-                      if (strcmp(arg_type, "map") == 0 && current()->type == TOKEN_LBRACE) {
+                      if (!is_ref_param && strcmp(arg_type, "map") == 0 && current()->type == TOKEN_LBRACE) {
                           parse_map_braces_text(arg_type, sizeof(arg_type));
                       }
                       

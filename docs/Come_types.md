@@ -37,7 +37,8 @@ Their memory lifetime is managed by **explicit ownership**: every buffer has an 
 | Type | Declaration Syntax | Initialization Syntax | Description |
 |------|--------------------|-----------------------|-------------|
 | `string` | `string name;` | `string name = "John"` | Immutable, UTF-8 encoded sequence of characters. Character-first: `s[i]` is a `wchar`, `.length()` counts characters, `.bytesize()` counts bytes. |
-| `struct` / `union` | `Point p;` | `struct Point p = { .x = 5, .y = 10 }` | Custom aggregated data structure. Default layout is C-compatible; `packed struct` / `align(n) struct` adjust it. |
+| `struct` / `union` | `Point p;` | `struct Point p = { .x = 5, .y = 10 }` | Custom aggregated data structure. Default layout is C-compatible; `packed struct` / `align(n) struct` adjust it. A struct is a value: assignment and pass-by-value copy the fields (buffer fields copy their headers, sharing data). A typed literal `struct Point{5, 10}` is a value in any expression position. |
+| reference `&(struct T)` | `&(struct Vec3) r = &a` | `draw_line(&a, &a)` | A non-owning reference to a struct, declared on parameters and local variables; `&x` takes one at the call site, `.` accesses members through it. It does not own or extend the referent's lifetime. References to other types, reference fields, and reference returns do not exist (spec 6.2). |
 | `array` | `int arr[10];` (fixed)<br>`int dyn[];` (dynamic) | `int numbers[] = {1, 2, 3}` | Fixed-size arrays are fixed; dynamic arrays grow/shrink via `resize(n)` only. Indexing is zero-based and bounds-checked. |
 | `map` | `map{string, int} m;` | `map{string, int} m = {"a": 1, "b": 2}` | Unordered key-value collection. V1 key types: integer types, `bool`, `wchar`, `string` (hashed by contents), enums. |
 | `module` | *N/A* | *N/A* | The top-level execution scope and lifetime container. |

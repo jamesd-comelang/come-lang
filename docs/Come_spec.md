@@ -391,6 +391,58 @@ byte TCP_ADDR.nport() {
 }
 ```
 
+A struct literal is a value in any expression position, with the
+fields filled positionally or by name:
+
+```come
+var a = struct Point{5, 10}
+var b = struct Point{ .x = 5, .y = 10 }
+```
+
+**Value semantics.** A struct is a value: assignment and
+pass-by-value copy the fields. After `var b = a`, writing
+`b.x` never changes `a.x`. A buffer field (an array, string, or
+map field) is the exception that proves the rule: the copy
+copies the field's buffer header, not its contents (see 7.2),
+so element writes through either copy are shared, while a
+resize of one copy's field leaves the other copy's field as it
+was.
+
+**References.** When a function must mutate a caller's struct,
+the reference is explicit at both ends:
+
+```come
+int draw_line(&(struct Vec3) p1, &(struct Vec3) p2) {
+    p1.x = 10
+    return p2.x
+}
+
+var a = struct Vec3{1, 2, 3}
+draw_line(&a, &a)
+```
+
+- `&(struct Vec3)` declares a non-owning reference, as a
+  function parameter or as a local variable
+  (`&(struct Vec3) r = &a`). `&x` takes a reference at the call
+  site; `x` must be a variable, a field, or an element - never
+  a temporary. Passing a reference variable onward needs no
+  second `&`.
+- Member access is `.` through values and references alike;
+  there is no `->` operator.
+- A reference does not transfer ownership and does not extend
+  the referent's lifetime. The programmer must avoid dangling
+  references; the compiler does not track them.
+- Assigning a struct value to a reference variable assigns
+  through to the referent; assigning `&x` or another reference
+  rebinds it. Returning a reference from a function whose
+  return type is the struct returns the referent's value.
+- Misuse is a compile error that names the fix: a missing `&`
+  at a reference parameter, a stray `&` at a value parameter,
+  or a reference to the wrong struct type.
+- Scope: references are to structs only. There are no
+  reference fields, no reference return types, and coroutines
+  do not take reference parameters.
+
 ## 6.3 Unions
 
 Overlapping storage, C-compatible layout (size and alignment are those of
