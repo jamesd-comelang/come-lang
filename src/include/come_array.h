@@ -94,6 +94,12 @@ void come_byte_array_sort(come_byte_array_t* a, int (*cmp)(int8_t, int8_t));
 int* come_oob_slot_int(void);
 uint8_t* come_oob_slot_byte(void);
 void* come_oob_slot_bytes(void);
+// Site-carrying variants (COIL-139): the macro below passes
+// __FILE__/__LINE__/__func__ from the generated code, whose
+// #line map makes them the user's .co file, line and function.
+int* come_oob_slot_int_at(const char *file, int line, const char *func);
+uint8_t* come_oob_slot_byte_at(const char *file, int line, const char *func);
+void* come_oob_slot_bytes_at(const char *file, int line, const char *func);
 
 // Bounds-checked element access on a header VALUE. In-bounds this is
 // the plain data[] access, as an lvalue, so arr[i] = v keeps
@@ -101,7 +107,7 @@ void* come_oob_slot_bytes(void);
 // - do not use side-effecting expressions as an index.
 #define COME_ARR_GET_T(h, idx, T) \
     (*((uint32_t)(idx) < (h).count ? ((T*)(h).data) + (idx) \
-                                  : (T*)come_oob_slot_bytes()))
+                                  : (T*)come_oob_slot_bytes_at(__FILE__, __LINE__, __func__)))
 
 // Count of a header value (for codegen paths that need a plain C
 // read of the length of any buffer kind).

@@ -275,6 +275,16 @@ ERR.fatal("cannot continue")           // print and halt, always
   `ERR.set()` true while an error is pending, `ERR.clear()`
   resets. Success does **not** clear ERR — check immediately
   after the operation you care about.
+- Every error is also recorded with its source location.
+  `ERR.where()` returns `"<file>:<line>"` (your call line
+  for library failures). `ERR.depth()` counts the recorded
+  errors since the last clear; `ERR.no(i)` / `ERR.str(i)` /
+  `ERR.where(i)` read entry `i` — 0 (the default) is the
+  root cause, later errors append. An out-of-range `i`
+  returns 0 or `""` and records a new error. Records are
+  per coroutine: one coroutine's errors are invisible in
+  another. `ERR.fatal(msg)` prints the message and the
+  recorded root location.
 
 ## Memory and ownership
 

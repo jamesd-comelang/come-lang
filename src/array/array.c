@@ -5,30 +5,35 @@
 #include "come_array.h"
 #include "come_string.h"
 #include "mem/talloc.h"
+#include "come_err.h"
 
 // Out-of-bounds scratch slots (COIL-106). Every call zeroes the slot
 // and records the error, so an OOB read sees the zero value and an
 // OOB write is discarded (the next call wipes it).
-int* come_oob_slot_int(void) {
+int* come_oob_slot_int_at(const char *file, int line, const char *func) {
     static int slot;
     slot = 0;
-    come_ERR_set(ERANGE, "array index out of bounds");
+    come_err_record_at(ERANGE, "array index out of bounds", file, line, func);
     return &slot;
 }
 
-uint8_t* come_oob_slot_byte(void) {
+uint8_t* come_oob_slot_byte_at(const char *file, int line, const char *func) {
     static uint8_t slot;
     slot = 0;
-    come_ERR_set(ERANGE, "array index out of bounds");
+    come_err_record_at(ERANGE, "array index out of bounds", file, line, func);
     return &slot;
 }
 
-void* come_oob_slot_bytes(void) {
+void* come_oob_slot_bytes_at(const char *file, int line, const char *func) {
     static uint8_t slot[4096];
     memset(slot, 0, sizeof(slot));
-    come_ERR_set(ERANGE, "array index out of bounds");
+    come_err_record_at(ERANGE, "array index out of bounds", file, line, func);
     return slot;
 }
+
+int* come_oob_slot_int(void) { return come_oob_slot_int_at("", 0, ""); }
+uint8_t* come_oob_slot_byte(void) { return come_oob_slot_byte_at("", 0, ""); }
+void* come_oob_slot_bytes(void) { return come_oob_slot_bytes_at("", 0, ""); }
 
 /* ---- Uniform header operations (COIL-135) -----------------------
  * Every buffer kind shares the header layout {data, count, cap,

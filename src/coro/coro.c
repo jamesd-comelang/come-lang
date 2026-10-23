@@ -13,6 +13,8 @@
 // freed when it ends (spec 9.3).
 
 #include "come_coro.h"
+#include "come_err.h"
+#include <errno.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +43,9 @@ struct come_coro {
     int home_slot; // module slot the argument block lives in
     // This coroutine's context for each registered module slot.
     TALLOC_CTX* own[COME_CORO_MAX_CTX];
+    // This coroutine's ERR record (COIL-139): errors set in
+    // one coroutine are never visible in another.
+    ComeErrRecord err;
 };
 
 static come_coro_t g_coros[COME_CORO_MAX];
@@ -70,6 +75,11 @@ void come_coro_init(void) {
     g_coro_count = 1;
     g_current = 0;
     g_coros[0].state = CS_RUNNING;
+    // Main's ERR record so far (errors set before the first
+    // spawn) moves into slot 0, and slot 0 becomes active.
+    g_coros[0].err = *come_err_active();
+    g_coros[0].err.saved_errno = errno;
+    come_err_activate(&g_coros[0].err);
 }
 
 // Install coroutine `id`'s contexts into the registered slots.
@@ -123,6 +133,7 @@ static void switch_to(int next) {
     g_coros[next].state = CS_RUNNING;
     g_current = next;
     install_ctxs(next);
+    come_err_activate(&g_coros[next].err);
     swapcontext(&g_coros[prev].uc, &g_coros[next].uc);
     // The previous coroutine resumes here when it is switched
     // back in; reap anything that finished meanwhile.

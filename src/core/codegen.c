@@ -100,6 +100,8 @@ static int g_gen_line_map = 1;
 
 // Track current function return type for correct return statement generation
 static char current_function_return_type[128] = "";
+static char current_function_name[128] = "";
+static int g_in_fn_body = 0;   // arming ERR source sites (COIL-139)
 static char current_module[256] = "main"; // Default to main if unspecified
 static char* current_imports[256];
 static int current_import_count = 0;
@@ -115,6 +117,30 @@ static void emit_line_directive(FILE* f, ASTNode* node) {
         fprintf(f, "\n#line %d \"%s\"\n", node->source_line, source_filename);
         last_emitted_line = node->source_line;
     }
+}
+
+// COIL-139: ERR source-site emission. Generated code arms a
+// pending location before each statement inside a function
+// body; the runtime records it with the next error set.
+static void fprint_escaped_cstr(FILE* f, const char* str) {
+    if (!str) return;
+    for (const char* p = str; *p; p++) {
+        if (*p == '"' || *p == '\\') fputc('\\', f);
+        fputc(*p, f);
+    }
+}
+
+static void emit_err_arm(FILE* f, ASTNode* node, int indent) {
+    emit_indent(f, indent);
+    fprintf(f, "come_err_arm(\"%s\", \"%s\", \"", current_module, current_function_name);
+    fprint_escaped_cstr(f, source_filename);
+    fprintf(f, "\", %d);\n", node->source_line);
+}
+
+static void emit_err_site_args(FILE* f, ASTNode* node) {
+    fprintf(f, ", \"%s\", \"%s\", \"", current_module, current_function_name);
+    fprint_escaped_cstr(f, source_filename);
+    fprintf(f, "\", %d", node->source_line);
 }
 
 #include "utils.h"
@@ -1820,7 +1846,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
             }
             if (!et[0]) {
                 codegen_error("cannot index here: the element type is not known - index a named array variable");
-                fprintf(f, "(*(int*)come_oob_slot_bytes())");
+                fprintf(f, "(*(int*)come_oob_slot_bytes_at(\"");
+                fprint_escaped_cstr(f, source_filename);
+                fprintf(f, "\", %d, \"come_%s__%s\"))", node->source_line, current_module, current_function_name);
             } else {
                 fprintf(f, "COME_ARR_GET_T(");
                 generate_expression(f, node->children[0]);
@@ -1943,10 +1971,33 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  fprintf(f, "(come_ERR_no() != 0)");
                  return;
             }
+            // COIL-139: indexed accessors and depth. The
+            // index argument is optional (default 0, the
+            // root cause); the call site rides along so an
+            // out-of-range read can record its own error.
+            if (strcmp(receiver->text, "ERR")==0 &&
+                (strcmp(method, "no")==0 || strcmp(method, "str")==0 ||
+                 strcmp(method, "where")==0)) {
+                 if (node->child_count > 2) {
+                     codegen_error("ERR.%s takes at most one argument, the chain index (spec 12)", method);
+                     return;
+                 }
+                 fprintf(f, "come_ERR_%s_at(", method);
+                 if (node->child_count > 1) generate_expression(f, node->children[1]);
+                 else fprintf(f, "0");
+                 emit_err_site_args(f, node);
+                 fprintf(f, ")");
+                 return;
+            }
+            if (strcmp(receiver->text, "ERR")==0 && strcmp(method, "depth")==0) {
+                 fprintf(f, "come_ERR_depth()");
+                 return;
+            }
             if (strcmp(receiver->text, "ERR")==0 && strcmp(method, "fatal")==0) {
-                 fprintf(f, "come_ERR_fatal(");
+                 fprintf(f, "come_ERR_fatal_at(");
                  if (node->child_count > 1) emit_string_expr(f, node->children[1]);
                  else fprintf(f, "NULL");
+                 emit_err_site_args(f, node);
                  fprintf(f, ")");
                  return;
             }
@@ -2226,7 +2277,8 @@ static void generate_expression(FILE* f, ASTNode* node) {
                                strcmp(name, "trim") == 0 || strcmp(name, "ltrim") == 0 || 
                                strcmp(name, "rtrim") == 0 || strcmp(name, "substr") == 0 || 
                                strcmp(name, "join") == 0 || strcmp(name, "new") == 0 || 
-                               strcmp(name, "str") == 0 || strcmp(name, "gets") == 0) {
+                               strcmp(name, "str") == 0 || strcmp(name, "gets") == 0 ||
+                               strcmp(name, "where") == 0) {
                                is_str = 1;
                            }
                      } else if (arg->type == AST_ARRAY_ACCESS) {
@@ -2676,7 +2728,8 @@ static void generate_expression(FILE* f, ASTNode* node) {
                         strcmp(mn, "trim") == 0 || strcmp(mn, "ltrim") == 0 ||
                         strcmp(mn, "rtrim") == 0 || strcmp(mn, "substr") == 0 ||
                         strcmp(mn, "join") == 0 || strcmp(mn, "gets") == 0 ||
-                        strcmp(mn, "fname") == 0 || strcmp(mn, "str") == 0) {
+                        strcmp(mn, "fname") == 0 || strcmp(mn, "str") == 0 ||
+                        strcmp(mn, "where") == 0) {
                         plain_string = 1;
                     }
                 }
@@ -3339,7 +3392,15 @@ static void generate_program(FILE* f, ASTNode* node) {
 
 static void generate_node(FILE* f, ASTNode* node, int indent) {
     if (!node) return;
-    
+
+    // COIL-139: arm the ERR pending location with this
+    // statement's source site (function bodies only).
+    if (g_in_fn_body && node->source_line > 0 &&
+        node->type != AST_BLOCK && node->type != AST_FUNCTION &&
+        node->type != AST_CASE && node->type != AST_DEFAULT &&
+        node->type != AST_FALLTHROUGH)
+        emit_err_arm(f, node, indent);
+
     switch (node->type) {
         case AST_PROGRAM:
             generate_program(f, node);
@@ -3375,6 +3436,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         ASTNode* ret_type = node->children[0];
         int body_idx = node->child_count - 1;
 
+        strncpy(current_function_name, node->text, sizeof(current_function_name) - 1);
+        current_function_name[sizeof(current_function_name) - 1] = '\0';
         g_cur_tuple = NULL;
         if (ret_type->text[0] == '(') {
             // Tuple return (spec 8.2): the C function returns
@@ -3505,7 +3568,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, " {\n");
 
             
+            int prev_in_fn = g_in_fn_body;
+            g_in_fn_body = 1;
             generate_block_children(f, body, indent + 4);
+            g_in_fn_body = prev_in_fn;
             if (is_main) {
                 emit_indent(f, indent + 4);
                 fprintf(f, "return 0;\n");
@@ -3836,7 +3902,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     if (strcmp(m, "upper")==0 || strcmp(m, "lower")==0 || strcmp(m, "repeat")==0 || 
                         strcmp(m, "replace")==0 || strcmp(m, "trim")==0 || strcmp(m, "ltrim")==0 || 
                         strcmp(m, "rtrim")==0 || strcmp(m, "join")==0 || strcmp(m, "substr")==0 || 
-                        strcmp(m, "regex_replace")==0 || strcmp(m, "str")==0) {
+                        strcmp(m, "regex_replace")==0 || strcmp(m, "str")==0 || strcmp(m, "where")==0) {
                          fprintf(f, "(");
                          generate_expression(f, arg);
                          fprintf(f, ")->data");
@@ -4744,6 +4810,12 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "extern come_string_t come_ERR_str(void);\n");
         fprintf(f, "extern void come_ERR_clear(void);\n");
         fprintf(f, "extern void come_ERR_fatal(come_string_t msg);\n");
+        fprintf(f, "extern void come_err_arm(const char*, const char*, const char*, int);\n");
+        fprintf(f, "extern int come_ERR_no_at(int, const char*, const char*, const char*, int);\n");
+        fprintf(f, "extern come_string_t come_ERR_str_at(int, const char*, const char*, const char*, int);\n");
+        fprintf(f, "extern come_string_t come_ERR_where_at(int, const char*, const char*, const char*, int);\n");
+        fprintf(f, "extern int come_ERR_depth(void);\n");
+        fprintf(f, "extern void come_ERR_fatal_at(come_string_t, const char*, const char*, const char*, int);\n");
         // We need the type for ERR object too
         fprintf(f, "typedef struct come_std__ERR_t come_std__ERR_t;\n");
         fprintf(f, "extern come_std__ERR_t come_std__ERR;\n");

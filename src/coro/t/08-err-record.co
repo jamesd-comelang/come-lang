@@ -1,0 +1,39 @@
+module main
+import std
+
+// COIL-139: ERR records are per coroutine. An error set in
+// a coroutine is visible there and nowhere else; main's
+// record is untouched by it, and vice versa.
+
+coroutine worker(link out) {
+    map{string, int} m = {"a": 1}
+    int ghost = m["ghost"]
+    out.write(sprintf("worker depth=%d", ERR.depth()))
+}
+
+coroutine clean(link out) {
+    out.write(sprintf("clean depth=%d", ERR.depth()))
+}
+
+int main() {
+    ERR.clear()
+    (l1, r1) = colink()
+    spawn worker(l1)
+    string report = r1.read()
+    if (report.cmp("worker depth=1") != 0) { std.out.printf("FAIL: worker must see its own error, got '%s'\n", report); return 1 }
+    if (ERR.depth() != 0) { std.out.printf("FAIL: main must not see the worker's error\n"); return 1 }
+    if (ERR.set()) { std.out.printf("FAIL: main's ERR must stay clear\n"); return 1 }
+
+    // Main errs; a fresh coroutine still starts clean.
+    int a[] = {1}
+    int x = a[9]
+    if (ERR.depth() != 1) { std.out.printf("FAIL: main depth 1 after its own error\n"); return 1 }
+    (l2, r2) = colink()
+    spawn clean(l2)
+    string report2 = r2.read()
+    if (report2.cmp("clean depth=0") != 0) { std.out.printf("FAIL: a new coroutine must start clean, got '%s'\n", report2); return 1 }
+    if (ERR.depth() != 1) { std.out.printf("FAIL: main's record must be undisturbed\n"); return 1 }
+
+    std.out.printf("PASS: 08-err-record\n")
+    return 0
+}

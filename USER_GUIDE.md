@@ -482,7 +482,27 @@ int main() {
 - `ERR.clear()` — reset it yourself once you have handled an
   error and want a clean slate for the next check.
 - `ERR.fatal(msg)` — when continuing makes no sense. It
-  halts the program in every build, debug or release.
+  halts the program in every build, debug or release, and
+  its report names where the recorded error started.
+
+**Every error is recorded with its location.** `ERR.where()`
+returns `"<file>:<line>"` — the place the error was set, or
+your call line for a library failure — so a log line can
+point at the exact statement:
+
+```come
+if (ERR.set()) {
+    std.out.printf("failed at %s: %s\n", ERR.where(), ERR.str())
+}
+```
+
+Errors form a short chain: if several happen before you
+check, `ERR.depth()` counts them, and `ERR.no(1)`,
+`ERR.str(1)`, `ERR.where(1)` read the later ones — index 0
+(the default) is always the first, the root cause. Reading
+past the end of the chain returns 0 or `""` and records a
+new error of its own. Each coroutine keeps its own record,
+so one coroutine's failure never shows up in another's.
 
 ## 11. Memory and ownership, in practice
 

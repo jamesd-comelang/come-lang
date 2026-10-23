@@ -881,6 +881,39 @@ if (ERR.set()) {
 - `ERR.str()` — human-readable message for the current code.
 - `ERR.set()` — true when an error is recorded (`ERR.no() != 0`).
 
+**The error record (COIL-139).** Every error the runtime sets is
+also recorded, with the source location where it was set —
+module, function, file, and line — in a fixed-size chain (16
+entries, no heap). The accessors take an optional index:
+
+- `ERR.no(i)`, `ERR.str(i)`, `ERR.where(i)` — entry *i* of the
+  chain. No argument means index 0: the **root cause**, the
+  first error since the last `ERR.clear()`. Later errors
+  append; the root does not move. When the chain is full, a
+  new error replaces the last entry, so the root and the
+  newest failure both survive.
+- `ERR.where()` returns `"<file>:<line>"` of the entry's set
+  site (for a call into the runtime or the standard library,
+  the caller's line in user code), or `""` when no location
+  was recorded.
+- `ERR.depth()` — the number of recorded entries: 0 with no
+  error, 1 with one.
+- An out-of-range index (`i < 0` or `i >= ERR.depth()`)
+  returns the zero value (0 or `""`) **and records a new
+  error** (ERANGE, "error index out of range", located at
+  the access). Reading index 0 on an empty record is the
+  legacy read of the live `errno` and records nothing.
+- `ERR.clear()` resets the record (and `errno`) to empty.
+- The record is **per coroutine**: errors set in one
+  coroutine are not visible in another; a new coroutine
+  starts with an empty record. A successful operation still
+  does not clear a recorded error — check promptly, or
+  `ERR.clear()` after handling.
+
+`ERR.str(i)` for an entry with no specific message falls back
+to the system text for its code; a returned string is a fresh
+value owned by the caller (two reads never alias).
+
 Guidance: `ERR` is for **expected failures** the program should handle
 (missing file, refused connection). Check it; do not ignore it.
 
@@ -891,7 +924,10 @@ ERR.fatal("index out of range in module table")
 ```
 
 - `ERR.fatal(msg)` halts the program immediately, in every build —
-  it is never compiled out.
+  it is never compiled out. Its report prints the message and
+  the location: the recorded root cause when there is one
+  (`Fatal error: <msg> (<module>.<function> at <file>:<line>)`),
+  otherwise the fatal call site itself.
 - Rule of thumb: if it can happen in production, handle it with `ERR`;
   `fatal` is only for the truly unrecoverable. (There is no C-style
   `assert`: it is too easy to misuse for things that do happen.)

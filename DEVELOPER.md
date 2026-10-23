@@ -294,9 +294,14 @@ section numbers below refer to `docs/Come_spec.md`.
   map key is the zero value with `ENOENT`; an out-of-range
   read is 0 with `ERANGE`; reading a drained, closed link is
   an empty buffer with `EPIPE`-family semantics on write.
-- Current limits (see §8): `ERR` is thread-global, and
-  coroutines multiplex one thread, so `ERR` is not
-  per-coroutine yet; a successful operation does not clear a
+- Since COIL-139 every error is also recorded — code,
+  message, and the source location where it was set — in a
+  fixed per-coroutine chain: `ERR.no(i)` / `ERR.str(i)` /
+  `ERR.where(i)` read entry *i* (default 0, the root
+  cause), `ERR.depth()` counts entries, an out-of-range
+  index returns the zero value and records a new error,
+  and `ERR.fatal` prints the message with the root
+  location. A successful operation still does not clear a
   previously set error.
 
 ### Concurrency (§9)
@@ -770,8 +775,8 @@ The canonical list is the **COIL-137 findings list**
 - **Typed maps** support only `map{string, int}` and
   `map{string, string}` (spec §6.6 promises more key
   types; buffer values are impossible in any map).
-- **`ERR` is not per-coroutine** and **never clears on
-  success**; **use-after-move** (using a buffer after
+- **`ERR` never clears on success** (records are
+  per-coroutine since COIL-139); **use-after-move** (using a buffer after
   `link.write`/`spawn` took it) is not caught by the
   compiler; a plain alias can dangle if its owner dies
   first (no lifetime analysis).

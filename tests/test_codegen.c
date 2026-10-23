@@ -602,7 +602,7 @@ int main() {
         printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-105: ERR.set() predicate missing in generated C\033[0m\n");
         return 1;
     }
-    if (!strstr(buf5, "come_ERR_fatal(come_string_new(")) {
+    if (!strstr(buf5, "come_ERR_fatal_at(come_string_new(")) {
         printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-105: ERR.fatal call missing in generated C\033[0m\n");
         return 1;
     }

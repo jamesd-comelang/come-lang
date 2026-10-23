@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <errno.h>
+#include "come_err.h"
 #include <ctype.h>
 #include <unistd.h>
 #include <wchar.h>
@@ -148,7 +149,7 @@ bool come_std__FILE__open(come_std__FILE_t* self, come_string_t path, come_strin
         self->fp = NULL;
     }
     FILE* f = fopen(come_string_to_cstr(path), come_string_to_cstr(mode));
-    if (!f) return false;   // errno from fopen: readable via ERR
+    if (!f) { come_ERR_set(errno, NULL); return false; }
     self->fp = f;
     self->fd = fileno(f);
     self->fname = come_string_new(NULL, come_string_to_cstr(path));
@@ -168,7 +169,7 @@ void come_std__FILE__close(come_std__FILE_t* self) {
 bool come_std__FILE__fdopen(come_std__FILE_t* self, int fd, come_string_t mode) {
     if (!self || fd < 0) return false;
     FILE* f = fdopen(fd, come_string_to_cstr(mode));
-    if (!f) return false;
+    if (!f) { come_ERR_set(errno, NULL); return false; }
     self->fp = f;
     self->fd = fd;
     self->fname = come_string_new(NULL, "");
@@ -184,6 +185,7 @@ bool come_std__FILE__reopen(come_std__FILE_t* self, come_string_t path, come_str
         f = fopen(come_string_to_cstr(path), come_string_to_cstr(mode));
     }
     if (!f) {
+        come_ERR_set(errno, NULL);
         self->fp = NULL;
         self->fd = -1;
         return false;
@@ -536,7 +538,9 @@ void come_std__qsort(come_byte_array_t a, int (*cmp)(int8_t, int8_t)) {
 
 // ERR_t methods - following the name mangling convention: come_std__ERR_t__method
 int come_std__ERR_t__no(come_std__ERR_t* self) {
-    // Set ERR.no to errno and return it
+    // Legacy object accessor: the live code. The chain
+    // accessors (come_ERR_no_at, COIL-139) carry the
+    // recorded root-cause semantics for ERR.no() in code.
     if (!self) self = &come_std__ERR;
     self->no = errno;
     return self->no;
@@ -576,7 +580,7 @@ void come_std__ERR_t__clear(come_std__ERR_t* self) {
 
     self->no = 0;
     errno = 0;
-    come_ERR_clear_custom();
+    come_err_reset();
     self->str.count = 0;
     if (self->str.data) self->str.data[0] = '\0';
 }
@@ -594,9 +598,55 @@ void come_ERR_clear() {
     come_std__ERR_t__clear(&come_std__ERR);
 }
 
+// Indexed ERR accessors (COIL-139, spec 12). The site
+// arguments locate a possible out-of-range entry.
+int come_ERR_no_at(int i, const char *mod, const char *fn, const char *file, int line) {
+    return come_err_code_at(i, mod, fn, file, line);
+}
+
+
+// The string accessors return freshly allocated strings in
+// the caller's context: two reads must not alias one static
+// buffer, or the first result changes when the second is
+// read (the record's whole point is comparing entries).
+come_string_t come_ERR_str_at(int i, const char *mod, const char *fn, const char *file, int line) {
+    const char *m = come_err_msg_at(i, mod, fn, file, line);
+    return come_string_new(NULL, m ? m : "");
+}
+
+come_string_t come_ERR_where_at(int i, const char *mod, const char *fn, const char *file, int line) {
+    char tmp[320];
+    const char *w = come_err_where_at(i, tmp, sizeof(tmp), mod, fn, file, line);
+    return come_string_new(NULL, w ? w : "");
+}
+
+int come_ERR_depth(void) {
+    return come_err_depth();
+}
+
 // ERR.fatal(msg): halt the program immediately, in every build.
-// A plain runtime call - there is no build mode that removes it.
-void come_ERR_fatal(come_string_t msg) {
-    fprintf(stderr, "Fatal error: %s\n", msg.data ? msg.data : "unknown error");
+// A plain runtime call - there is no build mode that removes
+// it. The report names the message and the location: the
+// recorded root cause when there is one, else the fatal
+// call site itself.
+void come_ERR_fatal_at(come_string_t msg, const char *mod, const char *fn, const char *file, int line) {
+    char loc[512];
+    const char *where = "";
+    if (come_err_depth() > 0) {
+        where = come_err_describe_at(0, loc, sizeof(loc));
+    } else if (file && *file) {
+        if (mod && *mod) snprintf(loc, sizeof(loc), "%s.%s at %s:%d", mod, fn, file, line);
+        else snprintf(loc, sizeof(loc), "%s:%d", file, line);
+        where = loc;
+    }
+    if (where && *where) {
+        fprintf(stderr, "Fatal error: %s (%s)\n", msg.data ? msg.data : "unknown error", where);
+    } else {
+        fprintf(stderr, "Fatal error: %s\n", msg.data ? msg.data : "unknown error");
+    }
     exit(1);
+}
+
+void come_ERR_fatal(come_string_t msg) {
+    come_ERR_fatal_at(msg, "", "", "", 0);
 }

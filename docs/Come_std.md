@@ -151,10 +151,23 @@ Use global `ERR` object for system errors (replaces `errno`/`strerror`).
 
 | Method | Description |
 |------------------|-------------|
-| `int ERR.no()` | Get last error code. |
-| `string ERR.str()` | Get error string. |
+| `int ERR.no()` / `int ERR.no(int i)` | Error code of chain entry `i` (default 0, the root cause). |
+| `string ERR.str()` / `string ERR.str(int i)` | Message of chain entry `i`. |
+| `string ERR.where()` / `string ERR.where(int i)` | `"<file>:<line>"` where entry `i` was set; `""` when no location was recorded. |
+| `int ERR.depth()` | Number of recorded entries (0 = no error). |
 | `bool ERR.set()` | True when an error is recorded (`ERR.no() != 0`). |
-| `void ERR.fatal(string msg)` | Halt the program immediately, in every build. For states the program cannot continue from — never compiled out. |
+| `void ERR.clear()` | Reset the record and the code to empty. |
+| `void ERR.fatal(string msg)` | Halt the program immediately, in every build, printing the message and the recorded root location (or the fatal call site). For states the program cannot continue from — never compiled out. |
+
+Every error the runtime sets is recorded with its code,
+message, and source location (module, function, file, line)
+in a fixed chain of 16 entries — index 0 is the root cause
+and does not move as later errors append; when the chain is
+full a new error replaces the last entry. An out-of-range
+index returns 0 or `""` and records a new error (ERANGE)
+located at the access; index 0 on an empty record reads the
+live code and records nothing. The record is per coroutine.
+Full rules: spec §12.
 
 Example (replaces `perror`):
 
@@ -269,10 +282,20 @@ The `ERR` object provides access to system error codes and messages, replacing C
 
 | Method | Description |
 |---|---|
-| `ERR.no()` | Returns the last system error code (int). 0 means no error. |
-| `ERR.str()` | Returns the error message string for the current error code. |
+| `ERR.no()` / `ERR.no(i)` | Error code of chain entry `i` (default 0 = the root cause). With no recorded error, the live system code. |
+| `ERR.str()` / `ERR.str(i)` | Message of chain entry `i`: the runtime's specific message when it set one, else the system text for the code. Never empty for a recorded or current code. |
+| `ERR.where()` / `ERR.where(i)` | `"<file>:<line>"` where entry `i` was set (the caller's line for runtime/library failures); `""` when no location was recorded or the record is empty. |
+| `ERR.depth()` | Number of recorded entries since the last `ERR.clear()`: 0 with no error, 1 with one; the chain holds at most 16 (a new error then replaces the last entry). |
 | `ERR.set()` | Returns true when an error is recorded (`ERR.no() != 0`). |
-| `ERR.fatal(string msg)` | Halts the program immediately, in every build. For states the program cannot continue from — never compiled out. |
+| `ERR.clear()` | Resets the record, the code, and the specific message. |
+| `ERR.fatal(string msg)` | Halts the program immediately, in every build, printing the message and the location (the recorded root cause, else the fatal call site). For states the program cannot continue from — never compiled out. |
+
+Index order: 0 is the first error recorded (the root
+cause); higher indices are later errors in set order. An
+out-of-range index (`i < 0` or `i >= ERR.depth()`) returns
+0 or `""` and records a new ERANGE error located at the
+access. The record is per coroutine: one coroutine's
+errors are never visible in another.
 
 Example:
 

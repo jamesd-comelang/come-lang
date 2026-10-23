@@ -1,0 +1,31 @@
+module main
+import std
+
+// COIL-139: a failed file open is recorded with the USER's
+// call site: ERR.where() names this file and the line of
+// the open call (spec 12).
+
+int main() {
+    FILE f
+    ERR.clear()
+    if (ERR.depth() != 0) { std.out.printf("FAIL: depth 0 after clear\n"); return 1 }
+    bool ok = f.open("/nonexistent-dir-xyz/nope.txt", "r")
+    if (ok) { std.out.printf("FAIL: open must fail\n"); return 1 }
+    if (ERR.depth() != 1) { std.out.printf("FAIL: depth 1 after a failed open, got %d\n", ERR.depth()); return 1 }
+    if (ERR.no() == 0) { std.out.printf("FAIL: open must record its code\n"); return 1 }
+    string w = ERR.where()
+    if (w.find("04-err-record.co:") < 0) { std.out.printf("FAIL: where must name this file, got '%s'\n", w); return 1 }
+
+    // A second failed open, on a different line, appends
+    // with its own location.
+    FILE g
+    bool ok2 = g.open("/nonexistent-dir-xyz/other.txt", "r")
+    if (ok2) { std.out.printf("FAIL: second open must fail\n"); return 1 }
+    if (ERR.depth() != 2) { std.out.printf("FAIL: depth 2 after two opens\n"); return 1 }
+    string w2 = ERR.where(1)
+    if (w2.find("04-err-record.co:") < 0) { std.out.printf("FAIL: where(1) must name this file, got '%s'\n", w2); return 1 }
+    if (w2.cmp(w) == 0) { std.out.printf("FAIL: the two opens are on different lines\n"); return 1 }
+
+    std.out.printf("PASS: 04-err-record\n")
+    return 0
+}

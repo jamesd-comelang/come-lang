@@ -1,0 +1,52 @@
+module core_test
+import std
+
+// COIL-139: the ERR record. Errors are recorded with their
+// code, message, and source location; ERR.no/str/where take
+// an optional chain index (default 0, the root cause), and
+// ERR.depth() counts the entries since the last clear.
+
+int main() {
+    ERR.clear()
+    if (ERR.depth() != 0) { std.out.printf("FAIL: depth must be 0 after clear\n"); return 1 }
+    if (ERR.where().length() != 0) { std.out.printf("FAIL: where must be empty with no error\n"); return 1 }
+
+    // Root cause: a missing map key.
+    map{string, int} m = {"a": 1}
+    int ghost = m["ghost"]
+    if (ERR.depth() != 1) { std.out.printf("FAIL: depth 1 after one error, got %d\n", ERR.depth()); return 1 }
+    if (ERR.no() != ERR.no(0)) { std.out.printf("FAIL: no() must default to index 0\n"); return 1 }
+    if (ERR.str().cmp("map key not found") != 0) { std.out.printf("FAIL: root message, got '%s'\n", ERR.str()); return 1 }
+    string w0 = ERR.where()
+    if (w0.find("27-err-record.co:") < 0) { std.out.printf("FAIL: where must name this file, got '%s'\n", w0); return 1 }
+
+    // A second error appends; the root does not move, and
+    // its location is its own line.
+    int a[] = {1, 2, 3}
+    int x = a[10]
+    if (ERR.depth() != 2) { std.out.printf("FAIL: depth 2 after two errors\n"); return 1 }
+    if (ERR.no(1) == ERR.no(0)) { std.out.printf("FAIL: second entry needs its own code\n"); return 1 }
+    if (ERR.str(1).cmp("array index out of bounds") != 0) { std.out.printf("FAIL: second message, got '%s'\n", ERR.str(1)); return 1 }
+    string w1 = ERR.where(1)
+    if (w1.find("27-err-record.co:") < 0) { std.out.printf("FAIL: where(1) must name this file, got '%s'\n", w1); return 1 }
+    if (w1.cmp(w0) == 0) { std.out.printf("FAIL: two errors on different lines must locate differently\n"); return 1 }
+    if (ERR.where().cmp(w0) != 0) { std.out.printf("FAIL: root location must not move\n"); return 1 }
+
+    // Out-of-range index: zero values, and a NEW error is
+    // recorded (the chain grows), located at this access.
+    int bad = ERR.no(9)
+    if (bad != 0) { std.out.printf("FAIL: no(9) must return 0\n"); return 1 }
+    if (ERR.depth() != 3) { std.out.printf("FAIL: OOR read must append, depth %d\n", ERR.depth()); return 1 }
+    string s9 = ERR.str(9)
+    if (s9.length() != 0) { std.out.printf("FAIL: str(9) must return empty\n"); return 1 }
+    if (ERR.depth() != 4) { std.out.printf("FAIL: second OOR read must append too\n"); return 1 }
+    string wlast = ERR.where(3)
+    if (wlast.find("27-err-record.co:") < 0) { std.out.printf("FAIL: OOR entry must be located at the access, got '%s'\n", wlast); return 1 }
+    if (ERR.no() == 0) { std.out.printf("FAIL: root must survive OOR reads\n"); return 1 }
+
+    ERR.clear()
+    if (ERR.depth() != 0 || ERR.set()) { std.out.printf("FAIL: clear must reset the record\n"); return 1 }
+
+    std.out.printf("PASS: 27-err-record\n")
+    return 0
+}
