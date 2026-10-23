@@ -1,0 +1,58 @@
+module core_test
+import std
+
+// COIL-137 coverage: array edges - out-of-range reads yield
+// 0 with ERR set (negative, at-length, after shrink), OOB
+// writes are discarded, resize(0) then append, fixed arrays
+// are zero-filled and bounds-checked, literal elements are
+// expressions, slice returns a fresh array, append growth
+// integrity over 1000 elements (spec 6.4, 7.3).
+
+int main() {
+    int fails = 0
+    int a[]
+    a.resize(4)
+    a[0] = 10
+    a[1] = 11
+    a[2] = 12
+    a[3] = 13
+    if (a[-1] != 0) { std.out.printf("FAIL neg idx val\n"); fails = fails + 1 }
+    if (!ERR.set()) { std.out.printf("FAIL neg idx ERR\n"); fails = fails + 1 }
+    if (a[4] != 0) { std.out.printf("FAIL len idx val\n"); fails = fails + 1 }
+    a[-1] = 5
+    if (a[-1] != 0 || a[0] != 10) { std.out.printf("FAIL oob write discard\n"); fails = fails + 1 }
+    if (!ERR.set()) { std.out.printf("FAIL len idx ERR\n"); fails = fails + 1 }
+
+    a.resize(2)
+    if (a[3] != 0) { std.out.printf("FAIL shrink stale\n"); fails = fails + 1 }
+    if (!ERR.set()) { std.out.printf("FAIL shrink ERR\n"); fails = fails + 1 }
+    a.resize(0)
+    if (a.length() != 0) { std.out.printf("FAIL resize0 len\n"); fails = fails + 1 }
+    a.append(7)
+    if (a.length() != 1 || a[0] != 7) { std.out.printf("FAIL append after 0\n"); fails = fails + 1 }
+
+    int f[3]
+    if (f[0] != 0 || f[2] != 0) { std.out.printf("FAIL fixed zero\n"); fails = fails + 1 }
+    f[1] = 5
+    if (f[3] != 0) { std.out.printf("FAIL fixed oob\n"); fails = fails + 1 }
+    if (!ERR.set()) { std.out.printf("FAIL fixed oob ERR\n"); fails = fails + 1 }
+
+    int lit[] = {1 + 1, 2 * 3, 10 - 4}
+    if (lit[0] != 2 || lit[1] != 6 || lit[2] != 6) { std.out.printf("FAIL lit exprs\n"); fails = fails + 1 }
+
+    int src[] = {1, 2, 3, 4}
+    var sl = src.slice(1, 3)
+    if (sl.length() != 2 || sl[0] != 2 || sl[1] != 3) { std.out.printf("FAIL slice vals\n"); fails = fails + 1 }
+    src[1] = 99
+    if (sl[0] != 2) { std.out.printf("FAIL slice fresh %d\n", sl[0]); fails = fails + 1 }
+
+    int big[]
+    int i = 0
+    while (i < 1000) { big.append(i); i = i + 1 }
+    int sum = 0
+    i = 0
+    while (i < 1000) { sum = sum + big[i]; i = i + 1 }
+    if (sum != 499500) { std.out.printf("FAIL append sum %d\n", sum); fails = fails + 1 }
+    if (fails == 0) { std.out.printf("PASS: 22-edge-arrays\n") }
+    return fails
+}

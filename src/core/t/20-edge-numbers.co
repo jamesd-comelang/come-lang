@@ -1,0 +1,41 @@
+module core_test
+import std
+
+// COIL-137 coverage: numeric edges - division and modulo
+// truncate toward zero for negatives, float-to-int casts
+// truncate, int is 64-bit in variables, byte is signed,
+// shifts on wide values, NaN never equals itself, wchar
+// arithmetic (spec 6.1, 6.8, 14).
+
+int main() {
+    int fails = 0
+    if (-7 / 2 != -3) { std.out.printf("FAIL neg div\n"); fails = fails + 1 }
+    if (-7 % 2 != -1) { std.out.printf("FAIL neg mod\n"); fails = fails + 1 }
+    if (7 / -2 != -3) { std.out.printf("FAIL neg div2\n"); fails = fails + 1 }
+    if (int(3.99) != 3) { std.out.printf("FAIL f2i\n"); fails = fails + 1 }
+    if (int(-3.99) != -3) { std.out.printf("FAIL f2i neg\n"); fails = fails + 1 }
+    if (int(2.5) != 2) { std.out.printf("FAIL f2i half\n"); fails = fails + 1 }
+    var big = 3000000000
+    var big2 = big + 1000000000
+    if (big2 != 4000000000) { std.out.printf("FAIL wide int %ld\n", big2); fails = fails + 1 }
+    byte b = byte(200)
+    if (int(b) != -56) { std.out.printf("FAIL byte signed %d\n", int(b)); fails = fails + 1 }
+    byte c = 127
+    if (int(c) != 127) { std.out.printf("FAIL byte 127\n"); fails = fails + 1 }
+    long one = 1
+    if ((one << 40) != 1099511627776) { std.out.printf("FAIL shift wide\n"); fails = fails + 1 }
+    if ((256 >> 4) != 16) { std.out.printf("FAIL shift r\n"); fails = fails + 1 }
+    if ((5 << 0) != 5) { std.out.printf("FAIL shift 0\n"); fails = fails + 1 }
+    double nan = 0.0 / 0.0
+    if (nan == nan) { std.out.printf("FAIL nan eq\n"); fails = fails + 1 }
+    if (!(nan != nan)) { std.out.printf("FAIL nan ne\n"); fails = fails + 1 }
+    double inf = 1.0 / 0.0
+    if (!(inf > 1000000000.0)) { std.out.printf("FAIL inf\n"); fails = fails + 1 }
+    wchar w = 'A'
+    if (int(w) != 65) { std.out.printf("FAIL wchar\n"); fails = fails + 1 }
+    if (int(w + 1) != 66) { std.out.printf("FAIL wchar arith\n"); fails = fails + 1 }
+    bool t = (1 < 2)
+    if (!t) { std.out.printf("FAIL bool\n"); fails = fails + 1 }
+    if (fails == 0) { std.out.printf("PASS: 20-edge-numbers\n") }
+    return fails
+}

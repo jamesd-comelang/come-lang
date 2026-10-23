@@ -121,6 +121,7 @@ and at the call site.
 | Story | Title | Spec | Size | Depends | Acceptance | Done |
 |-------|-------|------|------|---------|------------|------|
 | COIL-136 | Structs are values, references are explicit: &(struct T) parameters and &x call sites | §6.2, §7 | L | v1.0.0 | Struct assignment and by-value parameters copy the fields (buffer fields copy their headers, sharing data); `&(struct T)` declares a non-owning reference parameter or variable, `&x` takes a reference at the call site, `.` accesses members through values and references alike; missing or stray `&` is a compile error naming the fix; references to non-struct types, reference fields, and reference returns are rejected; C and .co tests pin value copies, buffer-handle sharing, mutation through references, and &a/&a aliasing; spec and Come_types.md revised | ☑ |
+| COIL-137 | Edge-case conformance sweep: the language's edges pinned by tests, its failures written down | Seven new .co test files (20-edge-numbers through 26-edge-dup) pin verified behavior across numbers, strings, arrays, maps, structs/unions, control flow, and dup depths; every failure, crash, and spec gap found while probing is recorded in the findings list (workspace/your_files/come-edge-case-findings.md, 29 items) instead of being pinned as behavior | ☑ |
 
 ## Post-v1 backlog (explicitly deferred by the spec)
 

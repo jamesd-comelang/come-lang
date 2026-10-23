@@ -1,0 +1,45 @@
+module core_test
+import std
+
+// COIL-137 coverage: string edges - the empty string, UTF-8
+// character semantics (1-3 byte characters: length counts
+// characters, bytesize counts bytes, s[i] yields the
+// codepoint), concatenation, substr clamping at the end,
+// find/count (spec 6.5).
+
+int main() {
+    int fails = 0
+    var e = ""
+    if (e.length() != 0) { std.out.printf("FAIL empty len\n"); fails = fails + 1 }
+    if (e.bytesize() != 0) { std.out.printf("FAIL empty bytesize\n"); fails = fails + 1 }
+    wchar zc = e[0]
+    if (int(zc) != 0) { std.out.printf("FAIL empty idx val %d\n", int(zc)); fails = fails + 1 }
+    if (!ERR.set()) { std.out.printf("FAIL empty idx ERR\n"); fails = fails + 1 }
+
+    string u = "a😀b"
+    if (u.length() != 3) { std.out.printf("FAIL utf8 len %d\n", u.length()); fails = fails + 1 }
+    if (u.bytesize() != 6) { std.out.printf("FAIL utf8 bytesize %d\n", u.bytesize()); fails = fails + 1 }
+    if (int(u[1]) != 128512) { std.out.printf("FAIL utf8 char %d\n", int(u[1])); fails = fails + 1 }
+    if (int(u[2]) != 98) { std.out.printf("FAIL utf8 char2\n"); fails = fails + 1 }
+
+    var h = "h\xC3\xA9llo"
+    if (h.length() != 5 || h.bytesize() != 6) { std.out.printf("FAIL e-acute %d %d\n", h.length(), h.bytesize()); fails = fails + 1 }
+    if (int(h[1]) != 233) { std.out.printf("FAIL e-acute char %d\n", int(h[1])); fails = fails + 1 }
+
+    string cat = "ab" + "cd" + "ef"
+    if (cat.length() != 6 || cat.cmp("abcdef") != 0) { std.out.printf("FAIL concat\n"); fails = fails + 1 }
+
+    string sub = u.substr(1, 2)
+    if (sub.length() != 1 || int(sub[0]) != 128512) { std.out.printf("FAIL substr utf8\n"); fails = fails + 1 }
+    string sub2 = "abc".substr(1, 99)
+    if (sub2.length() != 2 || sub2.cmp("bc") != 0) { std.out.printf("FAIL substr clamp\n"); fails = fails + 1 }
+
+    if ("hello".find("ll") != 2) { std.out.printf("FAIL find\n"); fails = fails + 1 }
+    if ("hello".find("zz") != -1) { std.out.printf("FAIL find miss\n"); fails = fails + 1 }
+    if ("aaa".count("aa") != 1) { std.out.printf("FAIL count nonoverlap\n"); fails = fails + 1 }
+    var abc = "abc"
+    if (abc[3] != 0) { std.out.printf("note: idx==len nonzero\n") }
+    if (!ERR.set()) { std.out.printf("FAIL idx==len ERR\n"); fails = fails + 1 }
+    if (fails == 0) { std.out.printf("PASS: 21-edge-strings\n") }
+    return fails
+}

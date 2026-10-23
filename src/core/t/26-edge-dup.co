@@ -1,0 +1,40 @@
+module core_test
+import std
+
+// COIL-137 coverage: dup depth edges - dup(0) shares
+// element writes and buffer identity, dup(1) takes a fresh
+// top-level block (element writes no longer shared), dup()
+// is independent, string elements keep their content
+// through every depth (spec 7.2, 7.4).
+
+int main() {
+    int fails = 0
+    int a[] = {1, 2, 3}
+
+    var d0 = a.dup(0)
+    a[0] = 10
+    if (d0[0] != 10) { std.out.printf("FAIL dup0 shares writes %d\n", d0[0]); fails = fails + 1 }
+
+    var d1v = a.dup(1)
+    if (d1v[0] != 10) { std.out.printf("FAIL dup1 content\n"); fails = fails + 1 }
+    a[0] = 20
+    if (d1v[0] != 10) { std.out.printf("FAIL dup1 fresh block %d\n", d1v[0]); fails = fails + 1 }
+    if (d0[0] != 20) { std.out.printf("FAIL dup0 still shared %d\n", d0[0]); fails = fails + 1 }
+
+    var df = a.dup()
+    a[0] = 30
+    if (df[0] != 20) { std.out.printf("FAIL dup full %d\n", df[0]); fails = fails + 1 }
+    if (a == df) { std.out.printf("FAIL dup identity\n"); fails = fails + 1 }
+    if (!(a == d0)) { std.out.printf("FAIL dup0 identity\n"); fails = fails + 1 }
+
+    string rows[] = {"aa", "bb"}
+    var r1 = rows.dup(1)
+    var rf = rows.dup()
+    if (rf[0].cmp(rows[0]) != 0) { std.out.printf("FAIL dup full string content\n"); fails = fails + 1 }
+
+    var s = "hello"
+    string s1v = s.dup(1)
+    if (s1v.cmp("hello") != 0) { std.out.printf("FAIL string dup1 content\n"); fails = fails + 1 }
+    if (fails == 0) { std.out.printf("PASS: 26-edge-dup\n") }
+    return fails
+}

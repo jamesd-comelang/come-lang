@@ -1,0 +1,42 @@
+module core_test
+import std
+
+// COIL-137 coverage: map edges - a missing key yields the
+// zero value with ERR set (a stable code across misses),
+// overwriting a key does not grow the map, 1000 distinct
+// string keys through rehashes, dup() independence
+// (spec 6.6).
+
+int main() {
+    int fails = 0
+    map{string, int} m
+    int miss = m["ghost"]
+    if (miss != 0) { std.out.printf("FAIL miss val\n"); fails = fails + 1 }
+    if (!ERR.set()) { std.out.printf("FAIL miss ERR\n"); fails = fails + 1 }
+    int e1 = ERR.no()
+    int miss2 = m["other"]
+    if (ERR.no() != e1) { std.out.printf("FAIL miss ERR stable\n"); fails = fails + 1 }
+
+    m["k"] = 1
+    m["k"] = 2
+    if (m.length() != 1 || m["k"] != 2) { std.out.printf("FAIL overwrite\n"); fails = fails + 1 }
+
+    map{string, int} big
+    int i = 0
+    while (i < 1000) {
+        string k = sprintf("k%d", i)
+        big[k] = i * 2
+        i = i + 1
+    }
+    string k999 = sprintf("k%d", 999)
+    string k500 = sprintf("k%d", 500)
+    if (big.length() != 1000 || big[k999] != 1998 || big[k500] != 1000) { std.out.printf("FAIL big map %d %d\n", big.length(), big[k999]); fails = fails + 1 }
+
+    map{string, int} orig
+    orig["x"] = 1
+    var cp = orig.dup()
+    cp["y"] = 2
+    if (orig.length() != 1 || cp.length() != 2) { std.out.printf("FAIL map dup\n"); fails = fails + 1 }
+    if (fails == 0) { std.out.printf("PASS: 23-edge-maps\n") }
+    return fails
+}

@@ -1,0 +1,115 @@
+module core_test
+import std
+
+// COIL-137 coverage: control-flow edges - && and ||
+// short-circuit (the right side is not evaluated), switch
+// does not fall through without the fallthrough keyword,
+// break/continue bind to the innermost loop, recursion and
+// mutual recursion, chained ternaries, block scoping
+// (spec 10, 11).
+
+int calls
+
+int inc() {
+    calls = calls + 1
+    return 1
+}
+
+int fib(int n) {
+    if (n < 2) { return n }
+    return fib(n - 1) + fib(n - 2)
+}
+
+bool is_odd(int n)
+
+bool is_even(int n) {
+    if (n == 0) { return true }
+    return is_odd(n - 1)
+}
+
+bool is_odd(int n) {
+    if (n == 0) { return false }
+    return is_even(n - 1)
+}
+
+int classify(int v) {
+    int r = 0
+    switch (v) {
+        case 1:
+            r = 10
+        case 2:
+            r = 20
+        default:
+            r = 30
+    }
+    return r
+}
+
+int classify_ft(int v) {
+    int r = 0
+    switch (v) {
+        case 1:
+            r = 10
+            fallthrough
+        case 2:
+            r = r + 20
+        default:
+            r = r + 1
+    }
+    return r
+}
+
+int main() {
+    int fails = 0
+    calls = 0
+    bool x = false && (inc() == 1)
+    if (calls != 0) { std.out.printf("FAIL shortcircuit and\n"); fails = fails + 1 }
+    bool y = true || (inc() == 1)
+    if (calls != 0) { std.out.printf("FAIL shortcircuit or\n"); fails = fails + 1 }
+    bool z = true && (inc() == 1)
+    if (calls != 1 || !z) { std.out.printf("FAIL shortcircuit eval\n"); fails = fails + 1 }
+
+    if (classify(1) != 10) { std.out.printf("FAIL switch nofall %d\n", classify(1)); fails = fails + 1 }
+    if (classify(2) != 20) { std.out.printf("FAIL switch case2\n"); fails = fails + 1 }
+    if (classify(9) != 30) { std.out.printf("FAIL switch default\n"); fails = fails + 1 }
+    if (classify_ft(1) != 30) { std.out.printf("FAIL fallthrough %d\n", classify_ft(1)); fails = fails + 1 }
+
+    int outer = 0
+    int inner_sum = 0
+    int i = 0
+    while (i < 3) {
+        int j = 0
+        while (true) {
+            j = j + 1
+            if (j == 2) { continue }
+            if (j > 3) { break }
+            inner_sum = inner_sum + 1
+        }
+        outer = outer + 1
+        i = i + 1
+    }
+    if (outer != 3 || inner_sum != 6) { std.out.printf("FAIL nested loops %d %d\n", outer, inner_sum); fails = fails + 1 }
+
+    if (fib(15) != 610) { std.out.printf("FAIL fib\n"); fails = fails + 1 }
+    if (!is_even(10) || is_even(7)) { std.out.printf("FAIL mutual\n"); fails = fails + 1 }
+
+    int t = (1 > 2) ? 10 : (3 > 2) ? 20 : 30
+    if (t != 20) { std.out.printf("FAIL ternary chain\n"); fails = fails + 1 }
+
+    int acc = 0
+    for (int k = 0; k < 4; k++) { acc = acc + (10 - 3 * k) }
+    if (acc != 22) { std.out.printf("FAIL for neg step %d\n", acc); fails = fails + 1 }
+
+    int shadow = 1
+    {
+        int shadow2 = 2
+        shadow = shadow2
+    }
+    if (shadow != 2) { std.out.printf("FAIL block scope\n"); fails = fails + 1 }
+
+    int zero_runs = 0
+    while (false) { zero_runs = zero_runs + 1 }
+    if (zero_runs != 0) { std.out.printf("FAIL while false\n"); fails = fails + 1 }
+    if (fails == 0) { std.out.printf("PASS: 25-edge-flow\n") }
+    return fails
+}

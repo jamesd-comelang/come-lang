@@ -1,0 +1,79 @@
+module core_test
+import std
+
+// COIL-137 coverage: struct edges - nested struct fields
+// copy by value with the struct, a declared-but-uninitialized
+// struct is all zero values (buffer fields empty and
+// usable), methods run on copies without touching the
+// original, pass-and-return by value, union member punning
+// (spec 6.2, 6.3).
+
+struct Inner {
+    int v
+}
+
+struct Outer {
+    struct Inner in
+    int tag
+}
+
+struct V {
+    int x
+    int y
+}
+
+union U {
+    int i
+    float f
+}
+
+struct Rec {
+    int id
+    string name
+    int vals[]
+}
+
+int V.bump() {
+    self.x = self.x + 1
+    return self.x
+}
+
+struct V moved(struct V v, int dx) {
+    v.x = v.x + dx
+    return v
+}
+
+int main() {
+    int fails = 0
+    struct Outer o
+    o.in.v = 5
+    o.tag = 1
+    var o2 = o
+    o2.in.v = 9
+    o2.tag = 2
+    if (o.in.v != 5 || o.tag != 1) { std.out.printf("FAIL nested copy\n"); fails = fails + 1 }
+    if (o2.in.v != 9) { std.out.printf("FAIL nested copy2\n"); fails = fails + 1 }
+
+    struct Rec r
+    if (r.id != 0 || r.name.length() != 0 || r.vals.length() != 0) { std.out.printf("FAIL zero struct\n"); fails = fails + 1 }
+    r.vals.resize(2)
+    r.vals[0] = 3
+    if (r.vals[0] != 3) { std.out.printf("FAIL zero struct buf\n"); fails = fails + 1 }
+
+    var a = struct V{1, 2}
+    var b = a
+    int nb = b.bump()
+    if (nb != 2 || a.x != 1 || b.x != 2) { std.out.printf("FAIL method on copy\n"); fails = fails + 1 }
+
+    var c = struct V{10, 20}
+    var d = moved(c, 5)
+    if (c.x != 10 || d.x != 15) { std.out.printf("FAIL fn value roundtrip\n"); fails = fails + 1 }
+    union U u
+    u.i = 1065353216
+    if (u.f != 1.0) { std.out.printf("FAIL union pun\n"); fails = fails + 1 }
+    u.f = 2.5
+    if (u.i != 1075838976) { std.out.printf("FAIL union pun2 %d\n", u.i); fails = fails + 1 }
+
+    if (fails == 0) { std.out.printf("PASS: 24-edge-structs\n") }
+    return fails
+}
