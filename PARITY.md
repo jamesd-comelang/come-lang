@@ -11,10 +11,9 @@ merged, or reverted independently later. Branch:
 ## Steps (in order)
 
 - Step 1: guard-dominated bounds-check elimination
-  (design below; implementation next).
-- Step 2: generalization -- loop guards and range
-  analysis (counted loops, induction, bulk-check
-  plus raw inner loop as the loop case).
+  (DONE, see below).
+- Step 2: loop guards -- while positive-form and
+  counted for (DONE, see below).
 - Step 3: runtime intrinsics for hot ops (length,
   small compares, byte reads as inline code) and
   whole-program TU if intrinsics alone fall short.
@@ -58,6 +57,56 @@ inlined at default flags) plus the guard's
 what step 3 (intrinsics) targets; step 1 still pays
 where checks dominate (and it removes a check per
 byte that no longer needs proving).
+
+## Step 2 DONE (2026-10-24): loop guards (while positive-form, counted for)
+
+Loop bodies now thread proofs like blocks: a shared
+per-statement helper (`generate_guarded_stmt`: emit,
+then void on assign/call, add on early-exit guard)
+is used by block children AND by while/for/do-while
+body children. Loop bodies start with a CLEARED proof
+set (save/clear before, restore after), so pre-loop
+proofs cannot leak into a body that runs many times.
+While with a positive-form condition (`0 <= i &&
+i < len`, either order) and counted for (`int i =
+<nonneg>` init, `i < len` cond, `i++` update) prove
+their pair at the top of every iteration (the body
+sees it; after the loop it does not persist, since
+the loop may exit with i >= len). Do-while bodies
+start cleared with no proof (the cond runs after the
+body, so it cannot guard the first iteration).
+FIXED HERE (errata on step 1): step 1 shipped a leak
+-- loop bodies bypassed `generate_block_children`,
+so a pre-loop guard's proof leaked into loop bodies
+(a `while (true)` body could go raw from a stale
+proof). Tag parity-step1 has this leak; step 2 closes
+it. The parser rejects assignment in for init/update
+positions, so the matcher only handles VAR_DECL init
+and POST_INC update (assign branches removed as dead
+code). A while cond of `i < len` alone is refused
+(it does not prove i >= 0); a for with a negative
+init or a decrement is refused. Test:
+`tests/bounds_loop_project/` + `tests/run_bounds_loop_test.sh`
+(3 positives, 5 controls incl. the pre-leak pin and
+a for_neg pin whose b[-1] is checked, so ASan would
+fail the run if it were wrongly raw). Suites green
+from clean (Come exit 0, "all green"; co_SQLite 7/7).
+Bench (checksums identical): ~0.65 s, essentially
+unchanged from step 1's ~0.66 s -- the tokenizer's
+hot path is tk_byte calls, not loop-guarded direct
+accesses, so loop guards do not move it either.
+FOUND DURING STEP 2 (pre-existing, not a step-2
+bug, filed as finding 38): Come's `i < length()`
+compiles to a C unsigned comparison (`length()`
+returns uint32_t), so a negative `i` makes the cond
+false when Come semantics say it is true. The
+for_neg control therefore cannot assert its runtime
+sum (its loop never runs); its function is kept
+uncalled in the fixtures and pinned checked by
+generated C only. The fix needs a design (casting
+lengths to int at comparisons, or an explicit idx
+>= 0 check in the macro if count ever becomes
+signed) and is not folded into step 2.
 
 ## Step 1 design (superseded by the DONE section above; kept for the soundness record)
 
@@ -125,10 +174,13 @@ per byte; report it, do not assume it).
 
 ## Remaining (in order)
 
-- Step 1 implementation (narrow slice above).
-- Step 2: loop guards and range analysis.
 - Step 3: runtime intrinsics, whole-program TU if
   needed.
 - Step 4: Design 1+2 remainder, then Design 5
   frame tiers.
 - HELD: explicit unchecked region (needs his call).
+- Future (not in the current step list): general
+  interval analysis -- arbitrary index arithmetic,
+  nested-loop fixpoints, i >= 0 induction for
+  while conds of `i < len` alone. Step 2 covers
+  loop guards only, not this.

@@ -1,0 +1,65 @@
+module main
+import std
+
+int sum_cond_only(byte[] b) {
+    int s = 0
+    int i = 0
+    while (i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int sum_pre_leak(byte[] b) {
+    int s = 0
+    int i = 0
+    if (i < 0 || i >= b.length()) { return 0 }
+    while (i < 3) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int sum_for_dec(byte[] b) {
+    int s = 0
+    for (int i = 4; i >= 0; i--) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+// Kept uncalled (see main.co's comment): pinned
+// checked by the ctl generated-C pin below, but its
+// runtime is not asserted (finding 38).
+int sum_for_neg(byte[] b) {
+    int s = 0
+    for (int i = -1; i < b.length(); i++) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+int sum_body_modify(byte[] b) {
+    int s = 0
+    int i = 0
+    while (0 <= i && i < b.length()) {
+        i = i + 1
+        if (i < b.length()) {
+            s = s + int(b[i])
+        }
+    }
+    return s
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    if (sum_cond_only(b) == 532 && sum_pre_leak(b) == 313 && sum_for_dec(b) == 532 && sum_body_modify(b) == 428) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

@@ -1,0 +1,39 @@
+module main
+import std
+
+int sum_while_pos(byte[] b) {
+    int s = 0
+    int i = 0
+    while (0 <= i && i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int sum_for(byte[] b) {
+    int s = 0
+    for (int i = 0; i < b.length(); i++) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+int sum_for_nonzero(byte[] b) {
+    int s = 0
+    for (int i = 2; i < b.length(); i++) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    if (sum_while_pos(b) == 532 && sum_for(b) == 532 && sum_for_nonzero(b) == 327) {
+        std.out.printf("ok pos\n")
+    } else {
+        std.out.printf("FAIL pos\n")
+    }
+    return 0
+}

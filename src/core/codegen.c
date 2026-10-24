@@ -3141,6 +3141,72 @@ static int bound_subtree_has_assign_or_call(ASTNode* node) {
         if (bound_subtree_has_assign_or_call(node->children[i])) return 1;
     return 0;
 }
+// Is node a decimal integer literal with value >= 0?
+// (Only plain digits count: hex or suffixed literals
+// are refused, conservatively.)
+static int bound_nonneg_number(ASTNode* node, long* val_out) {
+    if (!node || node->type != AST_NUMBER) return 0;
+    const char* s = node->text;
+    if (!*s) return 0;
+    for (const char* p = s; *p; p++)
+        if (*p < '0' || *p > '9') return 0;
+    long v = 0;
+    for (const char* p = s; *p; p++) {
+        v = v * 10 + (*p - '0');
+        if (v > 1000000000L) return 0;
+    }
+    if (val_out) *val_out = v;
+    return 1;
+}
+// Counted-for pattern: init `int i = <nonneg>`
+// (VAR_DECL int; the parser rejects assignment in
+// init position), cond `i < len` (either order),
+// update `i++` (the parser rejects assignment in
+// update position too; `i--` is refused because it
+// can make i negative). If all match with the same
+// index, fill buf/idx and return 1.
+static int bound_for_counted(ASTNode* init, ASTNode* cond, ASTNode* update, char* buf_out, char* idx_out) {
+    if (!init || !cond || !update) return 0;
+    char idx[128] = "";
+    if (init->type == AST_VAR_DECL) {
+        if (init->child_count < 2 || !init->children[1] ||
+            strcmp(init->children[1]->text, "int") != 0) return 0;
+        if (!init->children[0] || !bound_nonneg_number(init->children[0], NULL)) return 0;
+        snprintf(idx, 128, "%.127s", init->text);
+    } else {
+        return 0;
+    }
+    char cidx[128] = "", cbuf[128] = "";
+    if (bound_cmp_kind(cond, cidx, cbuf) != BOUND_LT_LEN) return 0;
+    if (strcmp(cidx, idx) != 0) return 0;
+    if (update->type == AST_POST_INC) {
+        if (update->child_count < 1 || !update->children[0] ||
+            update->children[0]->type != AST_IDENTIFIER ||
+            strcmp(update->children[0]->text, idx) != 0) return 0;
+    } else {
+        return 0;
+    }
+    snprintf(idx_out, 128, "%s", idx);
+    snprintf(buf_out, 128, "%s", cbuf);
+    return 1;
+}
+// Parity step 1+2: emit one statement, then update
+// the proof set (void on assign/call, add on
+// early-exit guard). Shared by block children and
+// loop-body children so both thread proofs the
+// same way (loop bodies used to bypass block
+// children entirely, letting pre-loop proofs leak
+// into loop bodies -- fixed in step 2).
+static void generate_guarded_stmt(FILE* f, ASTNode* ch, int indent) {
+    generate_node(f, ch, indent);
+    if (bound_subtree_has_assign_or_call(ch)) bound_proof_clear();
+    if (ch && ch->type == AST_IF && ch->child_count == 2) {
+        char buf[128], idx[128];
+        if (bound_early_exit_guard(ch->children[0], buf, idx) &&
+            bound_body_exits(ch->children[1]))
+            bound_proof_add(buf, idx);
+    }
+}
 static void generate_block_children(FILE* f, ASTNode* block, int indent) {
     // Parity step 1: proofs are scoped to this block.
     BoundProof saved[64];
@@ -3148,19 +3214,7 @@ static void generate_block_children(FILE* f, ASTNode* block, int indent) {
     for (int i = 0; i < block->child_count; i++) {
         ASTNode* ch = block->children[i];
         if (ch && ch->type == AST_RETURN) emit_file_closes_for(f, block, i, indent);
-        generate_node(f, ch, indent);
-        // Void on any assignment or call in the statement
-        // (conservative), then re-add if this statement is
-        // an early-exit guard with no else: its own
-        // length() call voids first, so the add must come
-        // after the void for the guard's proof to survive.
-        if (bound_subtree_has_assign_or_call(ch)) bound_proof_clear();
-        if (ch && ch->type == AST_IF && ch->child_count == 2) {
-            char buf[128], idx[128];
-            if (bound_early_exit_guard(ch->children[0], buf, idx) &&
-                bound_body_exits(ch->children[1]))
-                bound_proof_add(buf, idx);
-        }
+        generate_guarded_stmt(f, ch, indent);
     }
     bound_proof_restore(saved, saved_count);
     // At the block's end (unless the last statement is a return:
@@ -7974,6 +8028,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
             // Body is a block usually?
             ASTNode* body = node->children[1];
+            // Parity step 2: loop bodies start with a cleared
+            // proof set (pre-loop proofs must not leak into
+            // a body that runs many times); a positive loop
+            // condition proves its pair at the top of every
+            // iteration, so it is added for the body only.
+            char wbuf[128], widx[128];
+            int wproof = bound_positive_guard(node->children[0], wbuf, widx);
+            BoundProof saved_loop[64];
+            int saved_loop_count = bound_proof_save(saved_loop);
+            bound_proof_clear();
+            if (wproof) bound_proof_add(wbuf, widx);
             if (body->type == AST_BLOCK) {
                  // Clean blocks (redesign): a frame that
                  // would be empty is skipped; lexical
@@ -7982,7 +8047,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                  emit_indent(f, indent+4);
                  if (!clean) fprintf(f, "come_scope_push();\n");
                  scope_depth_push();
-                 for(int i=0; i<body->child_count; i++) generate_node(f, body->children[i], indent+4);
+                 for(int i=0; i<body->child_count; i++) generate_guarded_stmt(f, body->children[i], indent+4);
                  scope_depth_pop();
                  // A body ending in a return never reaches
                  // its pop: the return already popped to
@@ -7995,6 +8060,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             } else {
                  generate_node(f, body, indent+4);
             }
+            bound_proof_restore(saved_loop, saved_loop_count);
             g_loop_depth_count--;
             g_break_depth--;
             g_continue_depth--;
@@ -8011,6 +8077,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             g_continue_depth++;
             if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
              ASTNode* body = node->children[0];
+            // Parity step 2: do-while bodies start cleared
+            // (the cond runs after the body, so it cannot
+            // guard the first iteration); no loop-cond proof.
+            BoundProof saved_do[64];
+            int saved_do_count = bound_proof_save(saved_do);
+            bound_proof_clear();
             if (body->type == AST_BLOCK) {
                  // Clean blocks (redesign): a frame that
                  // would be empty is skipped; lexical
@@ -8019,7 +8091,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                  emit_indent(f, indent+4);
                  if (!clean) fprintf(f, "come_scope_push();\n");
                  scope_depth_push();
-                 for(int i=0; i<body->child_count; i++) generate_node(f, body->children[i], indent+4);
+                 for(int i=0; i<body->child_count; i++) generate_guarded_stmt(f, body->children[i], indent+4);
                  scope_depth_pop();
                  // A body ending in a return never reaches
                  // its pop: the return already popped to
@@ -8032,6 +8104,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             } else {
                  generate_node(f, body, indent+4);
             }
+            bound_proof_restore(saved_do, saved_do_count);
             g_loop_depth_count--;
             g_break_depth--;
             g_continue_depth--;
@@ -8096,6 +8169,18 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             g_continue_depth++;
             if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
             ASTNode* body = node->children[3];
+            // Parity step 2: a counted for proves its pair
+            // at the top of every iteration (init nonneg +
+            // cond i < len + nonneg update); other fors
+            // start cleared like while bodies.
+            char fbuf[128], fidx[128];
+            int fproof = 0;
+            if (node->child_count > 2 && node->children[0] && node->children[1] && node->children[2])
+                fproof = bound_for_counted(node->children[0], node->children[1], node->children[2], fbuf, fidx);
+            BoundProof saved_for[64];
+            int saved_for_count = bound_proof_save(saved_for);
+            bound_proof_clear();
+            if (fproof) bound_proof_add(fbuf, fidx);
             if (body->type == AST_BLOCK) {
                 fprintf(f, "{\n");
                 // Clean blocks (redesign): a frame that
@@ -8106,7 +8191,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 if (!clean) fprintf(f, "come_scope_push();\n");
                 scope_depth_push();
                 for (int i = 0; i < body->child_count; i++) {
-                    generate_node(f, body->children[i], indent + 4);
+                    generate_guarded_stmt(f, body->children[i], indent + 4);
                 }
                 scope_depth_pop();
                 // A body ending in a return never reaches
@@ -8133,6 +8218,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 emit_indent(f, indent);
                 fprintf(f, "}\n");
             }
+            bound_proof_restore(saved_for, saved_for_count);
             g_loop_depth_count--;
             g_break_depth--;
             g_continue_depth--;

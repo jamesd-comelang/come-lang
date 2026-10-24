@@ -1,0 +1,123 @@
+module main
+import std
+
+int sum_while_pos(byte[] b) {
+    int s = 0
+    int i = 0
+    while (0 <= i && i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int sum_for(byte[] b) {
+    int s = 0
+    for (int i = 0; i < b.length(); i++) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+int sum_for_nonzero(byte[] b) {
+    int s = 0
+    for (int i = 2; i < b.length(); i++) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+int sum_cond_only(byte[] b) {
+    int s = 0
+    int i = 0
+    while (i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int sum_pre_leak(byte[] b) {
+    int s = 0
+    int i = 0
+    if (i < 0 || i >= b.length()) { return 0 }
+    while (i < 3) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int sum_for_dec(byte[] b) {
+    int s = 0
+    for (int i = 4; i >= 0; i--) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+// Kept uncalled: its access is pinned checked by the
+// ctl generated-C pin, but its runtime cannot be
+// asserted -- a negative for-init never runs its body
+// because Come's `i < length()` compiles to a C
+// unsigned comparison (finding 38, pre-existing).
+int sum_for_neg(byte[] b) {
+    int s = 0
+    for (int i = -1; i < b.length(); i++) {
+        s = s + int(b[i])
+    }
+    return s
+}
+
+int sum_body_modify(byte[] b) {
+    int s = 0
+    int i = 0
+    while (0 <= i && i < b.length()) {
+        i = i + 1
+        if (i < b.length()) {
+            s = s + int(b[i])
+        }
+    }
+    return s
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    if (sum_while_pos(b) == 532) {
+        std.out.printf("ok while_pos\n")
+    } else {
+        std.out.printf("FAIL while_pos\n")
+    }
+    if (sum_for(b) == 532) {
+        std.out.printf("ok for\n")
+    } else {
+        std.out.printf("FAIL for\n")
+    }
+    if (sum_for_nonzero(b) == 327) {
+        std.out.printf("ok for_nonzero\n")
+    } else {
+        std.out.printf("FAIL for_nonzero\n")
+    }
+    if (sum_cond_only(b) == 532) {
+        std.out.printf("ok cond_only\n")
+    } else {
+        std.out.printf("FAIL cond_only\n")
+    }
+    if (sum_pre_leak(b) == 313) {
+        std.out.printf("ok pre_leak\n")
+    } else {
+        std.out.printf("FAIL pre_leak\n")
+    }
+    if (sum_for_dec(b) == 532) {
+        std.out.printf("ok for_dec\n")
+    } else {
+        std.out.printf("FAIL for_dec\n")
+    }
+    if (sum_body_modify(b) == 428) {
+        std.out.printf("ok body_modify\n")
+    } else {
+        std.out.printf("FAIL body_modify\n")
+    }
+    return 0
+}
