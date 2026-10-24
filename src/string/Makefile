@@ -1,6 +1,6 @@
 TOP_DIR=../../
 CC=gcc
-CFLAGS=-Wall -g -O2 -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/
+CFLAGS=-Wall -g -O2 -flto -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/
 BUILD_DIR=$(TOP_DIR)/build
 COME=$(BUILD_DIR)/come
 
