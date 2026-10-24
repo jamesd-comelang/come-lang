@@ -97,6 +97,56 @@ Readings:
   subsumed by the compiler-side fixes. The fast scanner stays
   on the co_SQLite branch as the trial record only.
 
+## A5 real implementation (come-lang branch `perf-experiments`, commit cffcc67)
+
+The leaf trial is now a compiler feature, on the branch.
+The driver computes each module's frameless set as a
+fixpoint over the call graph in `analyze_module` (before
+any file is generated) and registers the names; emission
+skips the marker push at entry and the pop-to-marker on
+every exit path for those functions. Qualification is
+conservative: no buffer-typed locals, no string or
+aggregate literals, no calls except to other frameless
+functions of the same module (plus `.length()` /
+`.bytesize()` / `.owner()`), no break/continue (they pop
+to a marker-relative depth), and string `+` only on
+provably scalar operands. Main, coroutines,
+instance-form functions, and create/destroy never
+qualify. Loop and block frames inside a frameless
+function are still emitted; only the marker is skipped.
+
+| Trial | Time | vs base |
+|---|---|---|
+| A5 real, faithful scanner | 2.68–2.79 s | ~28% |
+| A5 real + no-arm + full LTO | 1.39–1.41 s | ~63% |
+
+Readings:
+
+- Real A5 matches the leaf trial (2.73 s) and the fast
+  scanner (2.76 s): all three remove the same dominant
+  cost, the leaves' per-call frames. Marker-only removal
+  captures nearly the whole leaf win because the leaves'
+  block frames fire only on the taken branch.
+- Tokenizer leaves that went frameless: tk_byte, tk_class,
+  is_space/digit/xdigit/idchar, tk_char_index, tk_utf8_len,
+  tk_cp, tk_id_len. tk_scan stays framed via tk_keyword_in
+  (`.lower()` + ERR); the number scanners stay framed via
+  `break`. `next()` stays framed (instance-form).
+- A5 + no-arm + LTO (1.40 s) lands just above the
+  hand-stripped ceiling (1.29 s); the 0.11 s gap is the
+  leaves' remaining block frames, the v2 item.
+- The frameless e2e (`tests/run_frameless_test.sh`:
+  output + generated-C marker checks + ASan run) passes;
+  full suite green from clean, 0 warnings.
+- Side finding, pre-existing, NOT caused by this change:
+  passing a fresh string concatenation straight to
+  `printf` as an argument segfaults on the baseline
+  compiler too (assign-first works). The fixture avoids
+  that shape. It deserves its own investigation.
+- Branch-only: merging to main is a story decision (next
+  free number COIL-161). A4 (error-path-only stamping)
+  is still gated on the founder's call.
+
 ## What is still open
 
 - ~1.3 s remains after the combo (~39x from C). What is left:
