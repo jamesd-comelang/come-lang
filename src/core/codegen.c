@@ -2549,6 +2549,17 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 if (strncmp(rt, "instance:", 9) == 0) inst_mod = rt + 9;
                 else if (codegen_module_has_state(rt)) inst_mod = rt;
             }
+            if (!inst_mod && g_fn_instance_form) {
+                // A module variable of this module whose
+                // type is another stateful module is an
+                // instance held in this instance's state
+                // (COIL-154): calls on it are instance
+                // calls, with the field as the receiver.
+                const char* vt = NULL;
+                if (codegen_module_var_index(current_module, receiver->text, &vt) >= 0 &&
+                    vt && codegen_module_has_state(vt))
+                    inst_mod = vt;
+            }
             if (inst_mod) {
                 // Emitted in full here: the generic dispatch
                 // below would mistake the "instance:<mod>"
@@ -2561,13 +2572,20 @@ static void generate_expression(FILE* f, ASTNode* node) {
                     return;
                 }
                 if (strcmp(method, "destroy") == 0) {
-                    fprintf(f, "come_%s__destroy(%s)", inst_mod, receiver->text);
+                    fprintf(f, "come_%s__destroy(", inst_mod);
+                    generate_expression(f, receiver);
+                    fprintf(f, ")");
                     return;
                 }
+                // The receiver expression, not just its
+                // name: a local prints its name, a module
+                // variable held as state prints __inst->x
+                // (COIL-154).
                 if (codegen_fn_stateful(inst_mod, method, NULL))
-                    fprintf(f, "come_%s__%s(%s", inst_mod, method, receiver->text);
+                    fprintf(f, "come_%s__%s(", inst_mod, method);
                 else
-                    fprintf(f, "come_%s__%s__inst(%s", inst_mod, method, receiver->text);
+                    fprintf(f, "come_%s__%s__inst(", inst_mod, method);
+                generate_expression(f, receiver);
                 for (int i = 1; i < node->child_count; i++) {
                     fprintf(f, ", ");
                     if (node->children[i]->type == AST_STRING_LITERAL)
@@ -6123,6 +6141,22 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     // Macros for method dispatch
     fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);
 
+    // Forward declarations for imported stateful modules
+    // come before everything else (COIL-154): this
+    // module's own instance struct can hold another
+    // module's instance as a field, so the imported
+    // instance types must be named before it.
+    for (int i = 0; i < current_import_count; i++) {
+        if (codegen_module_has_state(current_imports[i])) {
+            fprintf(f, "typedef struct come_%s__instance_s come_%s__instance_t;\n",
+                    current_imports[i], current_imports[i]);
+            fprintf(f, "come_%s__instance_t* come_%s__create(void);\n",
+                    current_imports[i], current_imports[i]);
+            fprintf(f, "void come_%s__destroy(come_%s__instance_t*);\n",
+                    current_imports[i], current_imports[i]);
+        }
+    }
+
     // Module instances (COIL-140): a stateful module's
     // variables become the fields of its instance struct.
     // The struct is defined here, before every prototype;
@@ -6135,7 +6169,15 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "    int alive;\n");
         for (int i = 0; i < ms->var_count; i++) {
             char ct[300];
-            come_type_to_c(ms->var_types[i], ct, sizeof(ct));
+            // An instance-typed field (COIL-154): the
+            // variable's type names another stateful
+            // module, and the field holds that module's
+            // instance pointer - the same shape an
+            // instance parameter takes.
+            if (codegen_module_has_state(ms->var_types[i]))
+                snprintf(ct, sizeof(ct), "come_%s__instance_t*", ms->var_types[i]);
+            else
+                come_type_to_c(ms->var_types[i], ct, sizeof(ct));
             fprintf(f, "    %s %s;\n", ct, ms->var_names[i]);
         }
         fprintf(f, "} come_%s__instance_t;\n", current_module);
@@ -6143,19 +6185,14 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "void come_%s__destroy(come_%s__instance_t*);\n\n", current_module, current_module);
     }
     for (int i = 0; i < current_import_count; i++) {
-        if (codegen_module_has_state(current_imports[i])) {
-            fprintf(f, "typedef struct come_%s__instance_s come_%s__instance_t;\n",
-                    current_imports[i], current_imports[i]);
-            fprintf(f, "come_%s__instance_t* come_%s__create(void);\n",
-                    current_imports[i], current_imports[i]);
-            fprintf(f, "void come_%s__destroy(come_%s__instance_t*);\n",
-                    current_imports[i], current_imports[i]);
-        }
         // Every import's exported surface - struct
         // definitions, tuple typedefs, exact prototypes
         // (COIL-146). System modules are not in the
         // registry; their surface is the runtime headers
-        // and the hand-written prototypes above.
+        // and the hand-written prototypes above. (The
+        // instance forward declarations for stateful
+        // imports were emitted above, before this module's
+        // own instance struct - COIL-154.)
         emit_module_surface(f, current_imports[i], 0);
     }
     // The rest of this file's own module (COIL-146): a

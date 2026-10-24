@@ -21,7 +21,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 cp tests/instance_project/main.co tests/instance_project/counter.co \
-   tests/instance_project/plain.co "$WORK/"
+   tests/instance_project/plain.co tests/instance_project/libw.co "$WORK/"
 cp -r tests/instance_project/panel "$WORK/"
 if ! ( cd "$WORK" && "$COME" build main.co -o app > build.log 2>&1 ); then
     echo "FAIL: instance project did not build"

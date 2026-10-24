@@ -1,0 +1,31 @@
+module libw
+import counter
+
+export (get, get2, poke, base_val)
+
+// Instances held as module state (COIL-154). Their
+// create() calls run in __init_fields, at instance
+// creation - inside a function, as COIL-149's rule
+// requires - and calls on them dispatch as instance
+// calls on the field.
+var h = counter.create()
+var h2 = counter.create()
+var base = 100
+
+void poke() {
+    h.bump()
+    h2.bump()
+    h2.bump()
+}
+
+int get() {
+    return h.get()
+}
+
+int get2() {
+    return h2.get()
+}
+
+int base_val() {
+    return base
+}

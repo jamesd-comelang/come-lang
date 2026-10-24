@@ -618,6 +618,33 @@ static void analyze_module(const char *module_name, ASTNode **asts,
                     snprintf(v->type, sizeof(v->type), "%s", ch->children[1]->text);
                 else
                     snprintf(v->type, sizeof(v->type), "int");
+                // A `var` module variable registers its
+                // inferred type, never the literal text
+                // "var" (COIL-154): the instance-struct
+                // emitter prints the registered type, and
+                // "var" is not a C type. The inference
+                // mirrors the declaration-site rules - a
+                // create() call makes the variable an
+                // instance of that module (recorded under
+                // the module's name, like a typed instance
+                // declaration); literals give their plain
+                // types. Anything else stays "var" and the
+                // declaration site reports it.
+                if (strcmp(v->type, "var") == 0 && ch->child_count > 0 && ch->children[0]) {
+                    ASTNode *init = ch->children[0];
+                    if (init->type == AST_METHOD_CALL && strcmp(init->text, "create") == 0 &&
+                        init->child_count > 0 && init->children[0] &&
+                        init->children[0]->type == AST_IDENTIFIER)
+                        snprintf(v->type, sizeof(v->type), "%s", init->children[0]->text);
+                    else if (init->type == AST_STRING_LITERAL)
+                        snprintf(v->type, sizeof(v->type), "string");
+                    else if (init->type == AST_BOOL_LITERAL)
+                        snprintf(v->type, sizeof(v->type), "bool");
+                    else if (init->type == AST_NUMBER)
+                        snprintf(v->type, sizeof(v->type), "%s",
+                                 (strchr(init->text, '.') || strchr(init->text, 'e') ||
+                                  strchr(init->text, 'E')) ? "double" : "int");
+                }
                 snprintf(v->file, sizeof(v->file), "%s", files[a]);
             } else if (ch->type == AST_FUNCTION && ch->text[0] && fn_count < 192) {
                 AnaFn *fn = &fns[fn_count++];

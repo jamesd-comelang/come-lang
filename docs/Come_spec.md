@@ -335,6 +335,14 @@ module are stateful by definition). Then:
   ```text
   a module instance can only be created inside a function: 'g' is declared at module scope - declare it inside a function and pass it as a parameter where it is needed
   ```
+
+  Module state is the exception that proves the rule: a
+  stateful module's variable may hold another module's
+  instance (`var h = counter.create()`), because that
+  declaration is a field - its initializer runs inside
+  `create()` itself, which is a function. Each containing
+  instance gets a fresh sub-instance, and calls on the
+  field dispatch as instance calls on it (COIL-154).
 - A module that defines `main()` is a program, not a
   library: its state is the program's own, used exactly as
   before this section existed.

@@ -3,6 +3,7 @@ import std
 import counter
 import panel
 import plain
+import libw
 
 void use_it(panel p) {
     p.raise(5)
@@ -31,5 +32,11 @@ int main() {
     a.destroy()
     std.out.printf("double destroy ok\n")
     std.out.printf("ns stateless=%d plain=%d\n", counter.twice(10), plain.sq(9))
+    var w1 = libw.create()
+    var w2 = libw.create()
+    w1.poke()
+    std.out.printf("w1=%d %d w2=%d %d base=%d\n", w1.get(), w1.get2(), w2.get(), w2.get2(), w1.base_val())
+    w1.destroy()
+    w2.destroy()
     return 0
 }
