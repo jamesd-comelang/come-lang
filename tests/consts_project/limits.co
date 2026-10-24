@@ -1,0 +1,14 @@
+module limits
+
+export (MAXV, label)
+
+const MAXV = 99
+const SECRET = 13
+
+string label() {
+    return "cap"
+}
+
+int secret_val() {
+    return SECRET
+}

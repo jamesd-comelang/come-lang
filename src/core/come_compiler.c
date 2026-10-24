@@ -453,6 +453,55 @@ typedef struct { char name[128]; char type[160]; char file[PATH_MAX]; } AnaVar;
 // A struct definition for the COIL-146 registry: fields
 // serialized as "name\x1ftype" pairs joined by ';'.
 typedef struct { char name[128]; char def[2048]; int packed; int align; } AnaStruct;
+// A module-level value constant for the COIL-148 registry.
+typedef struct { char name[128]; char ctype[32]; char file[PATH_MAX]; } AnaConst;
+
+// The C type of a constant's initializer, mirroring
+// codegen's infer_const_type exactly - the registry type
+// must match the definition every file emits.
+static const char *ana_const_ctype(ASTNode *init) {
+    if (!init) return "int";
+    if (init->type == AST_STRING_LITERAL) return "char*";
+    if (init->type != AST_NUMBER) return "int";
+    char *text = init->text;
+    if (strchr(text, '.') || strstr(text, "f") || strstr(text, "F")) return "float";
+    int is_unsigned = (strstr(text, "u") != NULL || strstr(text, "U") != NULL);
+    int is_long = (strstr(text, "l") != NULL || strstr(text, "L") != NULL);
+    int is_long_long = (strstr(text, "LL") != NULL || strstr(text, "ll") != NULL);
+    if (is_unsigned) {
+        if (is_long_long) return "unsigned long long";
+        if (is_long) return "unsigned long";
+        return "unsigned int";
+    }
+    if (is_long_long) return "long long";
+    if (is_long) return "long";
+    return "int";
+}
+
+// Record one plain value constant (COIL-148): enum members
+// (a const decl wrapping an enum decl) are not value
+// constants and stay with the enum machinery. A second
+// constant with the same name anywhere in the module is a
+// hard error - one module, one definition.
+static void ana_add_const(AnaConst *consts, int *count, const char *module_name,
+                          ASTNode *decl, const char *file) {
+    if (!decl || decl->type != AST_CONST_DECL || !decl->text[0]) return;
+    if (decl->child_count > 0 && decl->children[0] &&
+        decl->children[0]->type == AST_ENUM_DECL) return;
+    for (int i = 0; i < *count; i++) {
+        if (strcmp(consts[i].name, decl->text) == 0)
+            die("module '%s': constant '%s' is declared twice (%s and %s) - "
+                "a constant has one definition in its module; remove one declaration",
+                module_name, decl->text, consts[i].file, file);
+    }
+    if (*count >= 256) return;
+    AnaConst *c = &consts[(*count)++];
+    memset(c, 0, sizeof(*c));
+    snprintf(c->name, sizeof(c->name), "%s", decl->text);
+    snprintf(c->ctype, sizeof(c->ctype), "%s",
+             ana_const_ctype(decl->child_count > 0 ? decl->children[0] : NULL));
+    snprintf(c->file, sizeof(c->file), "%s", file);
+}
 typedef struct {
     char name[128];
     char ret[64];
@@ -511,14 +560,27 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     static AnaVar vars[64];
     static AnaFn fns[192];
     static AnaStruct structs[64];
-    int var_count = 0, fn_count = 0, struct_count = 0;
+    static AnaConst consts[256];
+    int var_count = 0, fn_count = 0, struct_count = 0, const_count = 0;
     for (int a = 0; a < nast; a++) {
         ASTNode *ast = asts[a];
         if (!ast || ast->type != AST_PROGRAM) continue;
         for (int i = 0; i < ast->child_count; i++) {
             ASTNode *ch = ast->children[i];
             if (!ch) continue;
-            if (ch->type == AST_STRUCT_DECL && ch->text[0] && struct_count < 64) {
+            if (ch->type == AST_CONST_DECL) {
+                ana_add_const(consts, &const_count, module_name, ch, files[a]);
+            } else if (ch->type == AST_CONST_GROUP) {
+                // A group of value constants - unless it is
+                // an enum group (its members wrap enum
+                // declarations), which stays with the enums.
+                int is_enum_group = ch->child_count > 0 && ch->children[0] &&
+                    ch->children[0]->child_count > 0 && ch->children[0]->children[0] &&
+                    ch->children[0]->children[0]->type == AST_ENUM_DECL;
+                if (!is_enum_group)
+                    for (int j = 0; j < ch->child_count; j++)
+                        ana_add_const(consts, &const_count, module_name, ch->children[j], files[a]);
+            } else if (ch->type == AST_STRUCT_DECL && ch->text[0] && struct_count < 64) {
                 AnaStruct *st = &structs[struct_count];
                 memset(st, 0, sizeof(*st));
                 snprintf(st->name, sizeof(st->name), "%s", ch->text);
@@ -681,6 +743,9 @@ static void analyze_module(const char *module_name, ASTNode **asts,
         stpk[i] = structs[i].packed; stal[i] = structs[i].align;
     }
     codegen_register_module_structs(module_name, stn, std_, stpk, stal, struct_count);
+    const char *ctn[256], *ctt[256];
+    for (int i = 0; i < const_count; i++) { ctn[i] = consts[i].name; ctt[i] = consts[i].ctype; }
+    codegen_register_module_consts(module_name, ctn, ctt, const_count);
 }
 
 // Compile all files of a directory module as one module (COIL-108).

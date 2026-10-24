@@ -1,0 +1,14 @@
+module duo2
+
+export (get_big, LIMIT, GREETING)
+
+// One definition per module (COIL-148): f2.co uses LIMIT
+// and BIG without declaring them, and BIG's own
+// initializer reads LIMIT.
+const LIMIT = 7
+const BIG = LIMIT * 1000
+const GREETING = "hello"
+
+int get_big() {
+    return BIG
+}

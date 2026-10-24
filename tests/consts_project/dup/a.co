@@ -1,0 +1,9 @@
+module dup
+
+export (X, geta)
+
+const X = 1
+
+int geta() {
+    return X
+}

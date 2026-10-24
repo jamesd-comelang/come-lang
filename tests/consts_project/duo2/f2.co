@@ -1,0 +1,7 @@
+module duo2
+
+export (sum)
+
+int sum() {
+    return LIMIT + BIG
+}

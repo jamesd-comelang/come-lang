@@ -340,10 +340,12 @@ int answer() {          // plain functions are exported
   `import string` adds the string toolbox above.
 - Another module's exported structs and tuple returns are
   fully usable: return them, pass them, destructure them
-  (`(a, b) = mod.pair()`), read their fields. Current
-  limitation: another module's *constants* are not usable
-  cross-module yet - a constant works only in its declaring
-  file.
+  (`(a, b) = mod.pair()`), read their fields. Constants: a
+  module-level constant has one definition shared by all
+  its module's files; read another module's exported
+  constant qualified (`mod.NAME`) - unqualified names never
+  cross a module boundary, and declaring the same constant
+  twice in one module is an error.
 - **Module-level tables.** Any type may be declared at
   module level, including `map{string, int}`. Header-typed
   module variables (string, arrays, maps) start as live

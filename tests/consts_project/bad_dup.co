@@ -1,0 +1,8 @@
+module main
+import std
+import dup
+
+int main() {
+    std.out.printf("%d\n", dup.geta())
+    return 0
+}

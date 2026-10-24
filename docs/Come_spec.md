@@ -219,8 +219,13 @@ exported function's exact signature — including tuple return types
 definition, so values of those types cross the boundary by value:
 returned, passed, destructured, and field-accessed. The same holds
 between the files of one directory module, where no export list
-applies. (Constants are the remaining gap: a constant is currently
-usable only in its declaring file.)
+applies.
+
+A module-level constant is static to its module: it has one
+definition, shared by all the module's files (a second declaration
+of the same name anywhere in the module is an error), and other
+modules use an exported constant qualified — `limits.MAXV`. An
+unqualified name never crosses a module boundary.
 
 ## 3.5 Module lifecycle: `module_init()` and `module_exit()`
 

@@ -1,0 +1,7 @@
+module duo2
+
+export (try_set)
+
+void try_set() {
+    LIMIT = 9
+}

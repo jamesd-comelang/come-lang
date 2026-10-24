@@ -1,0 +1,8 @@
+module main
+import std
+import limits
+
+int main() {
+    std.out.printf("%d\n", MAXV)
+    return 0
+}

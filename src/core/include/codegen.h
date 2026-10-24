@@ -66,4 +66,17 @@ void codegen_register_module_structs(const char* module,
 int codegen_module_struct_count(const char* module);
 int codegen_module_struct_at(const char* module, int i, const char** name,
                              const char** def, int* packed, int* align);
+
+// Module const registry (COIL-148): each user module's
+// module-level value constants with their C types. A
+// constant is static to its module - one namespaced
+// definition, externs everywhere else in the module, and
+// qualified access (mod.NAME) for exporters.
+void codegen_register_module_consts(const char* module,
+                                    const char** names, const char** ctypes,
+                                    int count);
+const char* codegen_module_const_type(const char* module, const char* name);
+int codegen_module_const_count(const char* module);
+int codegen_module_const_at(const char* module, int i, const char** name,
+                            const char** ctype);
 #endif

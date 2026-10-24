@@ -669,9 +669,10 @@ Struct types exported from a module are fully usable through
 it: a function can return another module's struct by value,
 take one as a parameter, and you can read its fields and
 pass it back — and tuple returns destructure across modules
-too (`(a, b) = libx.pair()`). One current limitation remains:
-cross-module *constants* are not yet usable (see the spec's
-§3.4 note) — a constant works only in its declaring file.
+too (`(a, b) = libx.pair()`). Constants work the same way: a
+module-level constant has one definition shared by all the
+module's files, and an exported constant is read qualified
+from other modules — `limits.MAXV`.
 
 **Stateful modules: instances.** The modules above are
 *stateless* - pure functions you call through the namespace

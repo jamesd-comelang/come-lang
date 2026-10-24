@@ -949,6 +949,68 @@ int codegen_module_struct_count(const char* module) {
     return ms ? ms->count : 0;
 }
 
+// === Module const registry (COIL-148) ===
+#define MAX_MODULE_CONSTS 32
+typedef struct {
+    char module[64];
+    char names[256][128];
+    char ctypes[256][32];
+    int count;
+} ModuleConsts;
+static ModuleConsts g_module_consts[MAX_MODULE_CONSTS];
+static int g_module_const_modules = 0;
+
+void codegen_register_module_consts(const char* module,
+                                    const char** names, const char** ctypes,
+                                    int count) {
+    ModuleConsts* slot = NULL;
+    for (int i = 0; i < g_module_const_modules; i++)
+        if (strcmp(g_module_consts[i].module, module) == 0) slot = &g_module_consts[i];
+    if (!slot) {
+        if (g_module_const_modules >= MAX_MODULE_CONSTS) return;
+        slot = &g_module_consts[g_module_const_modules++];
+        memset(slot, 0, sizeof(*slot));
+        snprintf(slot->module, sizeof(slot->module), "%s", module);
+    }
+    slot->count = 0;
+    for (int i = 0; i < count && slot->count < 256; i++) {
+        snprintf(slot->names[slot->count], sizeof(slot->names[0]), "%s", names[i]);
+        snprintf(slot->ctypes[slot->count], sizeof(slot->ctypes[0]), "%s", ctypes[i]);
+        slot->count++;
+    }
+}
+
+int codegen_module_const_count(const char* module) {
+    for (int i = 0; i < g_module_const_modules; i++)
+        if (strcmp(g_module_consts[i].module, module) == 0) return g_module_consts[i].count;
+    return 0;
+}
+
+int codegen_module_const_at(const char* module, int i, const char** name,
+                            const char** ctype) {
+    for (int m = 0; m < g_module_const_modules; m++) {
+        if (strcmp(g_module_consts[m].module, module) != 0) continue;
+        if (i < 0 || i >= g_module_consts[m].count) return 0;
+        *name = g_module_consts[m].names[i];
+        *ctype = g_module_consts[m].ctypes[i];
+        return 1;
+    }
+    return 0;
+}
+
+// The C type of a module-level value constant, or NULL
+// when the module declares no constant with that name.
+const char* codegen_module_const_type(const char* module, const char* name) {
+    for (int i = 0; i < g_module_const_modules; i++) {
+        if (strcmp(g_module_consts[i].module, module) != 0) continue;
+        for (int j = 0; j < g_module_consts[i].count; j++)
+            if (strcmp(g_module_consts[i].names[j], name) == 0)
+                return g_module_consts[i].ctypes[j];
+        return NULL;
+    }
+    return NULL;
+}
+
 int codegen_module_struct_at(const char* module, int i, const char** name,
                              const char** def, int* packed, int* align) {
     ModuleStructs* ms = module_structs_of(module);
@@ -2213,10 +2275,20 @@ static void generate_expression(FILE* f, ASTNode* node) {
             !get_local_variable_type(node->text) &&
             !is_module_var(node->text) && !is_const_name(node->text) &&
             !is_fn_const_name(node->text) &&
+            !codegen_module_const_type(current_module, node->text) &&
             !is_group_symbol(node->text)) {
             codegen_error("'%s' is not defined: no variable, constant, or parameter has that name here - check the spelling, or declare it before use", node->text);
         }
         if (strcmp(node->text, "null") == 0) fprintf(f, "NULL");
+        else if (!get_local_variable_type(node->text) &&
+                 (g_module_level || !is_fn_const_name(node->text)) &&
+                 codegen_module_const_type(current_module, node->text)) {
+            // A module-level value constant of this module
+            // (COIL-148): the one namespaced definition,
+            // declared in this file or a sibling. Locals and
+            // function constants of the same name shadow it.
+            fprintf(f, "come_%s__const_%s", current_module, node->text);
+        }
         else if (expr_is_fn_value(node)) {
             // A named function used as a value: its code reference
             // (spec 8.3 - legal as a call argument; the store and
@@ -2377,6 +2449,22 @@ static void generate_expression(FILE* f, ASTNode* node) {
         fprintf(f, " %s ", node->text);
         generate_expression(f, node->children[1]);
     } else if (node->type == AST_MEMBER_ACCESS) {
+        // A qualified constant (COIL-148): mod.NAME names a
+        // module-level value constant of another module -
+        // visible only when exported (spec 3.4), and bound
+        // to the one namespaced definition.
+        if (node->children[0]->type == AST_IDENTIFIER &&
+            !get_local_variable_type(node->children[0]->text)) {
+            const char* mod = node->children[0]->text;
+            if (codegen_module_const_type(mod, node->text)) {
+                if (strcmp(mod, current_module) != 0 &&
+                    !module_symbol_visible(mod, node->text)) {
+                    codegen_error("'%s.%s' is not exported by module '%s' (spec 3.4: only exported symbols are visible outside their module)", mod, node->text, mod);
+                }
+                fprintf(f, "come_%s__const_%s", mod, node->text);
+                return;
+            }
+        }
         // Special case: "data" access on "scaled"/"dyn"/"buf" array access -> just the value.
         // This fixes the issue where parser/codegen erroneously treats int/byte array access as needing .data
         if (strcmp(node->text, "data") == 0 && node->children[0]->type == AST_ARRAY_ACCESS) {
@@ -5036,7 +5124,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 node->children[0]->type == AST_IDENTIFIER &&
                 !get_local_variable_type(node->children[0]->text) &&
                 (is_const_name(node->children[0]->text) ||
-                 is_fn_const_name(node->children[0]->text))) {
+                 is_fn_const_name(node->children[0]->text) ||
+                 codegen_module_const_type(current_module, node->children[0]->text))) {
                 codegen_error("cannot assign to '%s': it is a constant (spec 4) - declare a variable if the value must change", node->children[0]->text);
                 break;
             }
@@ -5265,8 +5354,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_CONST_DECL: {
             // Remember the name for this function: assigning
             // to a constant is an error wherever it was
-            // declared (COIL-129).
-            if (node->text[0] && !is_const_name(node->text) &&
+            // declared (COIL-129). Module-level constants
+            // are not function constants - the registry
+            // tracks them, and their names must not leak
+            // into a function's local-const set (COIL-148).
+            if (!g_module_level && node->text[0] && !is_const_name(node->text) &&
                 !is_fn_const_name(node->text) && g_fn_const_count < 128) {
                 snprintf(g_fn_const_names[g_fn_const_count++], 128, "%.*s", 127, node->text);
             }
@@ -5285,7 +5377,18 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 fprintf(f, "enum { %s = %d };\n", node->text, val);
             } else {
                 const char* type = infer_const_type(node->children[0]);
-                fprintf(f, "const %s %s = ", type, node->text);
+                // A module-level value constant is static
+                // to its module (COIL-148): one definition,
+                // under a namespaced name, in its declaring
+                // file; every other file of the module - and
+                // importers of an exported constant - sees
+                // the extern the surface pass emitted.
+                if (g_module_level &&
+                    codegen_module_const_type(current_module, node->text)) {
+                    fprintf(f, "const %s come_%s__const_%s = ", type, current_module, node->text);
+                } else {
+                    fprintf(f, "const %s %s = ", type, node->text);
+                }
                 generate_expression(f, node->children[0]);
                 fprintf(f, ";\n");
             }
@@ -5700,6 +5803,17 @@ static void emit_module_surface(FILE* f, const char* mod, int own) {
             if (local) continue;
         }
         emit_imported_struct(f, nm, def, pk, al);
+    }
+    // Constant externs (COIL-148): one namespaced
+    // definition lives in the declaring file; this unit
+    // declares it extern - sibling files unconditionally,
+    // importers for exported constants.
+    int nc = codegen_module_const_count(mod);
+    for (int i = 0; i < nc; i++) {
+        const char *nm, *ct;
+        if (!codegen_module_const_at(mod, i, &nm, &ct)) continue;
+        if (!own && !module_symbol_visible(mod, nm)) continue;
+        fprintf(f, "extern const %s come_%s__const_%s;\n", ct, mod, nm);
     }
     int nf = codegen_module_fn_count(mod);
     for (int i = 0; i < nf; i++) {

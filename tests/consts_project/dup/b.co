@@ -1,0 +1,7 @@
+module dup
+
+const X = 2
+
+int getb() {
+    return X
+}

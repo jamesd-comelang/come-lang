@@ -1,0 +1,11 @@
+module main
+import std
+import duo2
+import limits
+import grp
+
+int main() {
+    std.out.printf("%d %d %d %s %d\n", duo2.sum(), duo2.get_big(), duo2.LIMIT, duo2.GREETING, limits.MAXV)
+    std.out.printf("%d %d %d\n", grp.total(), grp.total2(), grp.A)
+    return 0
+}

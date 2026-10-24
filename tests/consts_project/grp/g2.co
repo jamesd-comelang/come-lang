@@ -1,0 +1,7 @@
+module grp
+
+export (total2)
+
+int total2() {
+    return A * 10 + B
+}
