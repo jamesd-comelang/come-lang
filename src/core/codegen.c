@@ -1301,6 +1301,31 @@ static const TupleFn* find_tuple_fn(const char* name) {
     return NULL;
 }
 
+// Is parameter `idx` (0-based) of module function
+// mod.fn declared as a string? Read from the registry the
+// driver built from the defining module (COIL-153) - the
+// fact a cross-module call site needs to materialize a
+// string literal argument for that parameter.
+static int registry_param_is_string(const char* mod, const char* fn, int idx) {
+    if (idx < 0) return 0;
+    int n = codegen_module_fn_count(mod);
+    for (int i = 0; i < n; i++) {
+        const char *nm, *ret, *params;
+        if (!codegen_module_fn_at(mod, i, &nm, &ret, &params)) continue;
+        if (strcmp(nm, fn) != 0) continue;
+        if (!params || !params[0]) return 0;
+        char parts[32][160];
+        int np = split_types(params, parts, 32);
+        if (idx >= np) return 0;
+        char* s = parts[idx];
+        while (*s == ' ') s++;
+        size_t l = strlen(s);
+        while (l > 0 && s[l - 1] == ' ') s[--l] = 0;
+        return strcmp(s, "string") == 0;
+    }
+    return 0;
+}
+
 // A tuple-returning function resolved through the module
 // registry (COIL-146): fills `out` from the registered
 // return type of `name` in `module`. The table above only
@@ -3629,6 +3654,17 @@ static void generate_expression(FILE* f, ASTNode* node) {
              if (skip_receiver && receiver->type == AST_IDENTIFIER &&
                  strcmp(receiver->text, "std") == 0 && strcmp(c_func, "printf") != 0 &&
                  arg->type == AST_STRING_LITERAL) {
+                    emit_string_expr(f, arg);
+             // A call into an imported module (COIL-153): a
+             // string literal argument materializes when the
+             // callee's declared parameter is a string - the
+             // conversion same-module and instance calls
+             // already get. Tuple destructuring of such a
+             // call rides on this too: its call is emitted
+             // through this same path.
+             } else if (skip_receiver && is_import && receiver->type == AST_IDENTIFIER &&
+                        arg->type == AST_STRING_LITERAL &&
+                        registry_param_is_string(receiver->text, method, i - 1)) {
                     emit_string_expr(f, arg);
              // Wrapper logic for string methods
              } else if ((strcmp(method, "cmp") == 0 || strcmp(method, "casecmp") == 0) && arg->type == AST_STRING_LITERAL) {

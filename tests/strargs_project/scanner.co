@@ -1,0 +1,19 @@
+module scanner
+
+export (get_token, greet, mix)
+
+// The filed shape (COME_GAPS #17): a tuple return whose
+// first parameter is a string.
+(int, int) get_token(string sql, int pos) {
+    return sql.length(), pos
+}
+
+string greet(string s) {
+    return s
+}
+
+// A string parameter in second position: the conversion
+// must land on the right argument.
+(int, string) mix(int n, string s) {
+    return n * 2, s
+}

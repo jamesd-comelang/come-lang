@@ -1,0 +1,15 @@
+module main
+import std
+import scanner
+
+int main() {
+    (t, n) = scanner.get_token("SELECT 1", 0)
+    std.out.printf("%d %d\n", t, n)
+    (m, s) = scanner.mix(21, "yo")
+    std.out.printf("%d %s\n", m, s)
+    std.out.printf("%s\n", scanner.greet("plain"))
+    string v = "var"
+    (a, b) = scanner.get_token(v, 3)
+    std.out.printf("%d %d\n", a, b)
+    return 0
+}
