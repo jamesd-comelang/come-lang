@@ -36,6 +36,7 @@ bash tests/run_module_project.sh
 bash tests/run_instance_test.sh
 bash tests/run_table_test.sh
 bash tests/run_types_test.sh
+bash tests/run_capacity_test.sh
 bash tests/run_extern_test.sh
 bash tests/run_proc_test.sh
 bash tests/run_coro_test.sh

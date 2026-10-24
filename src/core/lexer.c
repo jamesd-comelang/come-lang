@@ -34,6 +34,18 @@ static int read_source_line(FILE* f, char** buf, size_t* cap) {
     return got;
 }
 
+// Append to the token list, growing it (COIL-147).
+static void token_list_push(TokenList* out, Token tok) {
+    if (out->count >= out->cap) {
+        int ncap = out->cap ? out->cap * 2 : 1024;
+        Token* nt = realloc(out->tokens, (size_t)ncap * sizeof(Token));
+        if (!nt) { perror("out of memory"); exit(1); }
+        out->tokens = nt;
+        out->cap = ncap;
+    }
+    out->tokens[out->count++] = tok;
+}
+
 int lex_file(const char* filename, TokenList* out) {
     lex_errors = 0;
     FILE* f = fopen(filename, "r");
@@ -257,13 +269,13 @@ int lex_file(const char* filename, TokenList* out) {
 
             else if(isalpha(*p) || *p=='_'){ int i=0; while(isalnum(*p)||*p=='_'){ if(i < (int)sizeof(tok.text)-1) tok.text[i]=(char)*p; i++; p++; } if(i > (int)sizeof(tok.text)-1) i = (int)sizeof(tok.text)-1; tok.text[i]='\0'; tok.type=TOKEN_IDENTIFIER; }
             else { p++; continue; }
-            out->tokens[out->count++]=tok;
+            token_list_push(out, tok);
         }
         line_num++;  // Increment line number after processing each line
     }
     free(line);
     fclose(f);
     Token eof={TOKEN_EOF,"", line_num};
-    out->tokens[out->count++]=eof;
+    token_list_push(out, eof);
     return lex_errors > 0 ? 1 : 0;
 }

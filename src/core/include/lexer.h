@@ -29,6 +29,12 @@ typedef enum { TOKEN_EOF, TOKEN_IMPORT, TOKEN_MAIN, TOKEN_INT,
                TOKEN_UNKNOWN } TokenType;
 
 typedef struct { TokenType type; char text[4096]; int line; } Token;
-typedef struct { Token tokens[4096]; int count; } TokenList;
+// The token list grows as the file needs (COIL-147): the
+// fixed 4096-token array overflowed on real files - the
+// write past the end stomped the count field itself and
+// whatever followed it in memory, so past the ceiling a
+// file failed with wandering errors or, worse, compiled
+// with constructs silently dropped.
+typedef struct { Token* tokens; int count; int cap; } TokenList;
 int lex_file(const char* filename, TokenList* out);
 #endif
