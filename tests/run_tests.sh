@@ -40,6 +40,7 @@ bash tests/run_frameless_test.sh
 bash tests/run_cleanblock_test.sh
 bash tests/run_escapes_test.sh
 bash tests/run_view_test.sh
+bash tests/run_arena_test.sh
 bash tests/run_types_test.sh
 bash tests/run_capacity_test.sh
 bash tests/run_consts_test.sh

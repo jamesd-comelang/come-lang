@@ -31,6 +31,12 @@ typedef come_string_t string;
 come_string_t come_string_new(TALLOC_CTX* ctx, const char* str);
 come_string_t come_string_new_len(TALLOC_CTX* ctx, const char* str, size_t len);
 come_string_t come_string_concat(TALLOC_CTX* ctx, come_string_t a, come_string_t b);
+// Design 2 (redesign): concat into the bump arena (for
+// temporaries that die with their frame) and promotion of
+// an arena string to a talloc copy in dst (the safety net
+// when an arena value reaches an adoption site).
+come_string_t come_string_concat_arena(come_string_t a, come_string_t b);
+come_string_t come_string_promote(come_string_t h, TALLOC_CTX* dst);
 void come_string_free(come_string_t str);
 
 // Core reads

@@ -1,0 +1,12 @@
+ok temp eq
+ok temp len
+ok temp ne
+ok nested
+ok stored decl
+ok stored assign
+ok returned
+ok call arg
+ok map store
+ok array store
+ok big nested
+ok loop temps

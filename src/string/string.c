@@ -60,7 +60,43 @@ come_string_t come_string_concat(TALLOC_CTX* ctx, come_string_t a, come_string_t
     return s;
 }
 
+// Design 2 (redesign): concat into the bump arena. The
+// result is a temporary: it dies with its scope frame
+// (bulk-free at pop), so no talloc chunk or adoption
+// bookkeeping is needed. ctx is the current scope, as
+// for a talloc temporary, so .owner() reads the same;
+// the data itself is not a talloc chunk, so a scope pop
+// never frees it - the arena reset does.
+come_string_t come_string_concat_arena(come_string_t a, come_string_t b) {
+    size_t la = a.count;
+    size_t lb = b.count;
+    come_string_t s;
+    s.data = (char*)come_arena_alloc(la + lb + 1);
+    s.count = (uint32_t)(la + lb);
+    s.cap = (uint32_t)(la + lb + 1);
+    s.ctx = come_scope_current();
+    if (!s.data) { s.count = 0; s.cap = 0; return s; }
+    if (la) memcpy(s.data, sdata(a), la);
+    if (lb) memcpy(s.data + la, sdata(b), lb);
+    s.data[la + lb] = '\0';
+    return s;
+}
+
+// Design 2 (redesign): promote an arena string to a
+// talloc copy owned by dst. The safety net when an
+// arena value reaches an adoption site (a storing
+// position the promotion flag missed): copying is
+// always safe, where re-parenting an arena pointer
+// would corrupt the talloc tree.
+come_string_t come_string_promote(come_string_t h, TALLOC_CTX* dst) {
+    return come_string_new_len(dst, sdata(h), h.count);
+}
+
 void come_string_free(come_string_t str) {
+    // Design 2 (redesign): an arena string is freed by
+    // its frame's arena reset, not here; freeing an
+    // arena pointer as a talloc chunk would corrupt.
+    if (come_arena_contains(str.data)) return;
     mem_talloc_free(str.data);
 }
 

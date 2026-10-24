@@ -348,7 +348,16 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         t_exe = get_mtime(self_path);
     }
 
-    int need_transpile = (t_src > t_c) || (t_exe > t_c);
+    // Design 2 (redesign): >=, not >, on both comparisons.
+    // mtimes have 1-second granularity, so two different files
+    // sharing a .ccache basename (every e2e fixture is main.co)
+    // built in the same second would otherwise collide: the
+    // second build would reuse the first's generated C.
+    // An unchanged source is always strictly older than the
+    // cache generated from it, so >= only retranspiles when
+    // the source or compiler is same-or-newer - possibly
+    // changed, or ambiguous - which is always safe.
+    int need_transpile = (t_src >= t_c) || (t_exe >= t_c);
     int need_compile = (need_transpile || t_c > t_o || t_src > t_o);
     
     if (get_mtime(o_file) == 0) need_compile = 1;

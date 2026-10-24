@@ -113,7 +113,13 @@ static int g_cur_fn_frameless = 0; // A5: body being generated needs no marker f
 // copy (substr / byte_range) instead. A view that
 // survives to codegen is therefore a temporary
 // consumed within its statement, where its parent is
-// in scope and alive. Reset at every statement
+// in scope and therefore alive.
+// Design 2 (redesign): the same flag gates arena
+// concats - a string `+` in a temporary position
+// (flag clear) goes to the bump arena, while one in
+// a storing position (flag set) keeps the talloc
+// concat. It is, in effect, the "storing position"
+// flag for both features. Reset at every statement
 // boundary (generate_node entry), so a set flag can
 // never leak into an unrelated statement.
 static int g_view_promote = 0;
@@ -3388,7 +3394,11 @@ static void emit_adopt_value(FILE* f, int indent, const char* lv,
     if (strcmp(type, "link") == 0) return;
     if (strcmp(type, "string") == 0) {
         emit_indent(f, indent);
-        fprintf(f, "if (come_scope_adopt(%s, (%s).data)) (%s).ctx = %s;\n", dst, lv, lv, dst);
+        // Design 2 (redesign): an arena string reaching
+        // adoption is promoted to a talloc copy instead
+        // of re-parented (an arena pointer is not a
+        // talloc chunk, so adopting it would corrupt).
+        fprintf(f, "if (come_arena_contains((%s).data)) (%s) = come_string_promote((%s), %s); else if (come_scope_adopt(%s, (%s).data)) (%s).ctx = %s;\n", lv, lv, lv, dst, dst, lv, lv, dst);
         return;
     }
     if (type_is_array(type)) {
@@ -3648,7 +3658,11 @@ static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char
         generate_expression(f, val_expr);
         fprintf(f, "); { come_string_t _ck = ");
         emit_string_expr(f, key_expr);
-        fprintf(f, "; if (come_scope_adopt(");
+        // Design 2 (redesign): promote an arena key
+        // instead of adopting it (see emit_adopt_value).
+        fprintf(f, "; if (come_arena_contains(_ck.data)) _ck = come_string_promote(_ck, ");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, "); else if (come_scope_adopt(");
         emit_map_ctx(f, base, map_var);
         fprintf(f, ", _ck.data)) _ck.ctx = ");
         emit_map_ctx(f, base, map_var);
@@ -3660,7 +3674,11 @@ static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char
         // stored value is a header value, not a pointer.
         fprintf(f, "{ come_string_t _cv = ");
         emit_string_expr(f, val_expr);
-        fprintf(f, "; if (come_scope_adopt(");
+        // Design 2 (redesign): promote an arena value
+        // instead of adopting it (see emit_adopt_value).
+        fprintf(f, "; if (come_arena_contains(_cv.data)) _cv = come_string_promote(_cv, ");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, "); else if (come_scope_adopt(");
         emit_map_ctx(f, base, map_var);
         fprintf(f, ", _cv.data)) _cv.ctx = ");
         emit_map_ctx(f, base, map_var);
@@ -3724,6 +3742,17 @@ static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
     if (e->type == AST_AGGREGATE_INIT && strncmp(e->text, "struct ", 7) == 0) {
         // A typed struct literal (COIL-136).
         snprintf(buf, n, "%s", e->text);
+        return buf;
+    }
+    if (e->type == AST_BINARY_OP && e->child_count >= 2 &&
+        strcmp(e->text, "+") == 0 &&
+        (expr_is_stringish(e->children[0]) ||
+         expr_is_stringish(e->children[1]))) {
+        // Design 2 (redesign): a string concat expression
+        // has type string, so .length() and friends on a
+        // concat temporary resolve to the string forms
+        // instead of the list forms.
+        snprintf(buf, n, "string");
         return buf;
     }
     if (e->type == AST_METHOD_CALL && e->child_count >= 1) {
@@ -5849,7 +5878,15 @@ static void generate_expression(FILE* f, ASTNode* node) {
             (expr_is_stringish(left) || expr_is_stringish(right))) {
             // String concatenation (spec 6.5): `+` on strings
             // produces a new string; C's + cannot do this.
-            fprintf(f, "come_string_concat(COME_CTX, ");
+            // Design 2 (redesign): a concat in a temporary
+            // position (flag clear) goes to the bump arena
+            // - it dies with its frame, so no talloc chunk
+            // or adoption bookkeeping is needed. In a
+            // storing position (flag set) it keeps the
+            // talloc concat, so the value can outlive
+            // its scope.
+            if (g_view_promote) fprintf(f, "come_string_concat(COME_CTX, ");
+            else fprintf(f, "come_string_concat_arena(");
             emit_string_expr(f, left);
             fprintf(f, ", ");
             emit_string_expr(f, right);

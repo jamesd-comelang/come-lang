@@ -418,19 +418,119 @@ void *mem_talloc_new_ctx(void *parent) {
  * Frames are plain malloc memory, never talloc children: the stack
  * itself must survive the scopes it tracks. The active stack is
  * per coroutine; the scheduler swaps it on a switch (coro.c). */
+/* ---- bump arenas (Design 2, redesign) ----------------------- */
+/* A chunked bump allocator for temporary values. Allocations
+   bump a pointer within the current block; blocks are never
+   moved (a realloc would stale pointers held by earlier
+   temporaries in the same statement), so a new block is
+   linked when the current one fills. Each scope frame records
+   the (block, offset) it started in; popping the frame frees
+   every block allocated after that point and rewinds the
+   checkpoint block - bulk free for all temporaries in the
+   frame, with no per-value bookkeeping. The arena lives in
+   the scope stack, so each coroutine has its own, and it
+   swaps with the stack. */
+#define CO_ARENA_BLOCK_SIZE 4096
+typedef struct co_arena_block {
+    struct co_arena_block *next;
+    size_t used;
+    size_t cap; /* bytes of data[] */
+    char data[];
+} co_arena_block;
+
 typedef struct {
     void *ctx;
     int is_marker;
+    /* Arena checkpoint at push: the block live then (NULL
+       if the arena was empty) and its used offset. */
+    co_arena_block *arena_block;
+    size_t arena_off;
 } co_scope_frame;
 
 typedef struct {
     co_scope_frame *frames;
     int top; /* number of frames on the stack */
     int cap;
+    co_arena_block *arena_head; /* first block, in order */
+    co_arena_block *arena_cur;  /* block being bumped */
 } co_scope_stack;
 
-static co_scope_stack co_scope_main = { NULL, 0, 0 };
+static co_scope_stack co_scope_main = { NULL, 0, 0, NULL, NULL };
 static co_scope_stack *co_scope_active = &co_scope_main;
+
+static void co_arena_free_blocks(co_arena_block *head) {
+    while (head) {
+        co_arena_block *nx = head->next;
+        free(head);
+        head = nx;
+    }
+}
+
+/* Rewind the arena to a frame's checkpoint: free every block
+   allocated after the checkpoint block, rewind the checkpoint
+   block itself. A NULL checkpoint means the arena was empty
+   at push, so free everything. */
+static void co_arena_reset_to(co_scope_stack *s,
+                              co_arena_block *blk, size_t off) {
+    if (!blk) {
+        /* Arena was empty at the checkpoint: rewind to
+           empty but keep the first standard block for
+           reuse. A loop whose iterations each start
+           from an empty arena would otherwise malloc
+           and free a block per iteration - slower than
+           the talloc small-block cache it replaces.
+           Free any further blocks (overflow/oversize,
+           rare) and an oversize first block (don't pin
+           a huge one). The stack-empty pop below frees
+           the kept block at the end. */
+        if (s->arena_head && s->arena_head->cap <= CO_ARENA_BLOCK_SIZE) {
+            co_arena_free_blocks(s->arena_head->next);
+            s->arena_head->next = NULL;
+            s->arena_head->used = 0;
+            s->arena_cur = s->arena_head;
+        } else {
+            co_arena_free_blocks(s->arena_head);
+            s->arena_head = s->arena_cur = NULL;
+        }
+        return;
+    }
+    co_arena_free_blocks(blk->next);
+    blk->next = NULL;
+    blk->used = off;
+    s->arena_cur = blk;
+}
+
+void *come_arena_alloc(size_t size) {
+    co_scope_stack *s = co_scope_active;
+    size = (size + 7) & ~(size_t)7; /* 8-byte align */
+    if (size == 0) size = 8;
+    co_arena_block *b = s->arena_cur;
+    if (!b || b->used + size > b->cap) {
+        size_t cap = size > CO_ARENA_BLOCK_SIZE ? size : CO_ARENA_BLOCK_SIZE;
+        co_arena_block *nb = malloc(sizeof(co_arena_block) + cap);
+        if (!nb) return NULL;
+        nb->next = NULL;
+        nb->used = 0;
+        nb->cap = cap;
+        if (!s->arena_head) s->arena_head = nb;
+        else s->arena_cur->next = nb;
+        s->arena_cur = nb;
+        b = nb;
+    }
+    void *p = b->data + b->used;
+    b->used += size;
+    return p;
+}
+
+int come_arena_contains(const void *ptr) {
+    co_scope_stack *s = co_scope_active;
+    for (co_arena_block *b = s->arena_head; b; b = b->next) {
+        if ((const char *)ptr >= b->data &&
+            (const char *)ptr < b->data + b->used)
+            return 1;
+    }
+    return 0;
+}
 
 static int co_scope_grow(co_scope_stack *s) {
     if (s->top < s->cap) return 1;
@@ -520,6 +620,9 @@ void come_scope_push(void) {
     if (!co_scope_grow(s)) { co_frame_free_ctx(ctx); return; }
     s->frames[s->top].ctx = ctx;
     s->frames[s->top].is_marker = 0;
+    /* Design 2 (redesign): arena checkpoint for this frame. */
+    s->frames[s->top].arena_block = s->arena_cur;
+    s->frames[s->top].arena_off = s->arena_cur ? s->arena_cur->used : 0;
     s->top++;
 }
 
@@ -531,6 +634,9 @@ void come_scope_push_marker(void) {
     if (!co_scope_grow(s)) { co_frame_free_ctx(ctx); return; }
     s->frames[s->top].ctx = ctx;
     s->frames[s->top].is_marker = 1;
+    /* Design 2 (redesign): arena checkpoint for this frame. */
+    s->frames[s->top].arena_block = s->arena_cur;
+    s->frames[s->top].arena_off = s->arena_cur ? s->arena_cur->used : 0;
     s->top++;
 }
 
@@ -538,6 +644,15 @@ void come_scope_pop(void) {
     co_scope_stack *s = co_scope_active;
     if (s->top <= 0) return;
     s->top--;
+    /* Design 2 (redesign): bulk-free this frame's arena
+       temporaries. If the stack is now empty, no arena
+       value can be live, so free the arena entirely. */
+    co_arena_reset_to(s, s->frames[s->top].arena_block,
+                      s->frames[s->top].arena_off);
+    if (s->top == 0) {
+        co_arena_free_blocks(s->arena_head);
+        s->arena_head = s->arena_cur = NULL;
+    }
     co_frame_free_ctx(s->frames[s->top].ctx);
 }
 

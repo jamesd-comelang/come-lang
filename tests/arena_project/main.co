@@ -1,0 +1,107 @@
+module main
+import std
+
+string ret_concat(string a, string b) {
+    return a + b
+}
+
+int check(string t) {
+    if (t == "hello world") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    string a = "hello"
+    string b = " world"
+    if (a + b == "hello world") {
+        std.out.printf("ok temp eq\n")
+    } else {
+        std.out.printf("FAIL temp eq\n")
+    }
+    if ((a + b).length() == 11) {
+        std.out.printf("ok temp len\n")
+    } else {
+        std.out.printf("FAIL temp len\n")
+    }
+    if (a + "!" != "hello") {
+        std.out.printf("ok temp ne\n")
+    } else {
+        std.out.printf("FAIL temp ne\n")
+    }
+    if ((a + b) + (a + b) == "hello worldhello world") {
+        std.out.printf("ok nested\n")
+    } else {
+        std.out.printf("FAIL nested\n")
+    }
+    string s = a + b
+    if (s == "hello world") {
+        std.out.printf("ok stored decl\n")
+    } else {
+        std.out.printf("FAIL stored decl\n")
+    }
+    s = a + "!"
+    if (s == "hello!") {
+        std.out.printf("ok stored assign\n")
+    } else {
+        std.out.printf("FAIL stored assign\n")
+    }
+    if (ret_concat(a, b) == "hello world") {
+        std.out.printf("ok returned\n")
+    } else {
+        std.out.printf("FAIL returned\n")
+    }
+    if (check(a + b) == 1) {
+        std.out.printf("ok call arg\n")
+    } else {
+        std.out.printf("FAIL call arg\n")
+    }
+    map{string, string} m
+    m["k"] = a + b
+    if (m["k"] == "hello world") {
+        std.out.printf("ok map store\n")
+    } else {
+        std.out.printf("FAIL map store\n")
+    }
+    string[] arr
+    arr.append(a + b)
+    if (arr[0] == "hello world") {
+        std.out.printf("ok array store\n")
+    } else {
+        std.out.printf("FAIL array store\n")
+    }
+    string big = ""
+    int j = 0
+    while (j < 500) {
+        big = big + "0123456789"
+        j = j + 1
+    }
+    // Content checks against literals (the content path
+    // for ==), not against another buffer (buffer-buffer
+    // == is identity in Come, so it would be false even
+    // for equal content).
+    if (((big + big) + (big + big)).length() == 20000 &&
+        ((big + big) + (big + big)).view(0, 10) == "0123456789" &&
+        ((big + big) + (big + big)).view(9990, 10000) == "0123456789" &&
+        ((big + big) + (big + big)).view(10000, 10010) == "0123456789" &&
+        ((big + big) + (big + big)).view(19990, 20000) == "0123456789") {
+        std.out.printf("ok big nested\n")
+    } else {
+        std.out.printf("FAIL big nested\n")
+    }
+    int i = 0
+    int ok_count = 0
+    while (i < 1000) {
+        if (a + b == "hello world") {
+            ok_count = ok_count + 1
+        }
+        i = i + 1
+    }
+    if (ok_count == 1000) {
+        std.out.printf("ok loop temps\n")
+    } else {
+        std.out.printf("FAIL loop temps\n")
+    }
+    return 0
+}

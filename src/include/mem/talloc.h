@@ -43,6 +43,12 @@ void* come_scope_ctx_for_depth(int lexical_depth);
 // Returns 1 when the block moved (the caller then updates
 // the header's ctx), 0 when nothing changed.
 int come_scope_adopt(void* dst, void* data);
+// Bump arenas (Design 2, redesign): temporary values that
+// die with their scope frame. Allocations never move, so a
+// pointer held by an earlier temporary in the same statement
+// stays valid across later allocations.
+void* come_arena_alloc(size_t size);
+int come_arena_contains(const void* ptr);
 // Opaque per-coroutine scope stacks, owned by the
 // coroutine runtime (coro.c): create, activate, and reap.
 void* come_scope_stack_new(void);

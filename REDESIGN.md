@@ -305,15 +305,115 @@ always promote, even transient ones (a per-arg
 escape-registry lookup would recover transient-arg
 views).
 
+## Design 2, phase 1 (DONE 2026-10-24)
+
+- Arena scopes for temporary string concats;
+  general transient-value arenas (below) still
+  pending.
+
+Chunked bump allocator in the runtime (memory.c):
+4 KB blocks, never realloc'd (a realloc would
+stale pointers held by earlier temporaries in the
+same statement), so a new block links when the
+current one fills; oversize requests get an
+exact-size block. The arena lives in the scope
+stack, so each coroutine has its own. Each frame
+records its (block, offset) at push; popping
+rewinds the checkpoint block and frees blocks
+after it - bulk free for the frame's temporaries,
+no per-value bookkeeping. The stack-empty pop
+frees the whole arena.
+
+Codegen (codegen.c): a string `+` in a temporary
+position (the storing-position flag clear) emits
+come_string_concat_arena; in a storing position
+(flag set) it keeps the talloc concat. The flag
+is the one from Design 3 views, now the general
+"storing position" flag for both features.
+expr_come_type gained a BINARY_OP "+" case
+(stringish operands -> "string"), so .length()
+and friends on a concat temporary resolve to the
+string forms - and so concat == variable now
+compiles at all (it follows the spec's hybrid
+==: buffer-buffer is identity, so it is false
+for two distinct blocks even with equal content;
+content comparison is the buffer-vs-literal path).
+
+Safety nets, so a missed flag degrades to a copy
+instead of corruption: adoption sites for strings
+(emit_adopt_value's string case, map-put keys and
+string values) check come_arena_contains first
+and promote to a talloc copy instead of
+re-parenting an arena pointer (which is not a
+talloc chunk). come_string_free on an arena
+string is a no-op (the arena reset frees it).
+
+Test: tests/run_arena_test.sh +
+tests/arena_project/ (12 checks: temporary
+concats, nested concats, stored/returned/call-arg
+/map/array concats, a >4 KB nested concat that
+forces new arena blocks within one statement
+(checked by content via views against literals,
+not by == against a buffer, which is identity),
+loop temporaries). Generated C is pinned to
+contain both concat forms plus the adoption net,
+and the run is ASan-clean.
+Suites green from clean, 0 warnings, twice in a
+row: Come 67 passed, 0 failed (plus the new
+arena e2e); co_SQLite 7 passed, 0 failed.
+Tokenizer bench unchanged (~0.66 s, checksums
+identical): the tokenizer does not concat.
+
+Micro-benchmarks (same program, new compiler vs
+the pre-arena af25c54 compiler): a 1M-iteration
+single-concat compare loop ties (0.08 s both -
+loop overhead dominates, and glibc's small-block
+cache is already fast); a 5-concat chain wins
+1.7x for the arena (0.13 s vs 0.22 s). The
+large-string case is unmeasured (the old
+compiler cannot compile .length() on a concat;
+the expr_come_type fix enables it going
+forward).
+
+Bug the benchmarking caught: an empty-checkpoint
+pop freed every block, so a loop whose iterations
+each start from an empty arena re-malloc'd a
+block per iteration - slower than talloc (0.12 s
+vs 0.08 s). Fixed by keeping the first standard
+block, rewound, for reuse (oversize first blocks
+and later blocks are still freed; the stack-empty
+pop frees the kept block at the end).
+
+Drive-by fix, exposed by this test's flakiness:
+the incremental .ccache check used strict > on
+1-second mtimes, so two different files sharing
+a basename (every e2e fixture is main.co) built
+in the same second collided - the second build
+reused the first's generated C. Changed to >=
+(safe: an unchanged source is always strictly
+older than the cache generated from it). This
+also fixes the known same-second staleness when
+the compiler itself is rebuilt.
+
+Known limits: arenas cover temporary concats
+only. Variables, arrays, maps, and general
+transient values still use talloc; those need
+value-level escape analysis plus dup(0) aliasing
+handling (below). Bare literals holding arena or
+view elements: the map-put net covers map puts;
+array-literal element adoption is untested.
+
 ## Remaining (in order)
 
-- Design 2: arena scopes (runtime change: bump
-  allocator, promotion on adopt, checkpoints).
-  The analysis it needs is done.
+- Design 2 (remainder): general transient-value
+  arenas (value-level escape analysis, dup(0)
+  aliasing, promotion for arrays/maps).
 - Design 3 follow-up: count-bounded audit of the
   remaining NUL-scanning string functions (find,
   split, chr, regex, numeric parse).
 - Design 5 (remainder): checkpoint / full-frame
-  tiers driven by escape analysis. Needs arenas.
+  tiers driven by escape analysis. Needs general
+  arenas (the frame-checkpoint mechanism now
+  exists, but the tiers need arena values to skip).
 - Design 6: cross-module inlining / single-TU codegen.
   LTO already covers most of this; lowest priority.
