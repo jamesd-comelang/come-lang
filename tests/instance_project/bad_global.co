@@ -1,0 +1,15 @@
+module main
+import std
+import counter
+
+// COIL-149 negative case: an instance is created inside a
+// function only. At module scope there is no moment to run
+// create(), so this declaration must fail with the fence
+// error - not later, in generated C.
+var g = counter.create()
+
+int main() {
+    g.bump()
+    std.out.printf("%d\n", g.val())
+    return 0
+}

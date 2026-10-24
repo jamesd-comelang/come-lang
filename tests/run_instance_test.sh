@@ -8,9 +8,11 @@
 # in one file and functions in another, destroyed-instance
 # calls returning zero values with ERR set, an idempotent
 # destroy, and the stateless namespace still working in a
-# stateful module. Then two negative projects: a namespace
+# stateful module. Then three negative projects: a namespace
 # call to a stateful function (the error names the witness
-# chain) and create() on a stateless module.
+# chain), create() on a stateless module, and create() at
+# module scope (COIL-149: an instance is created inside a
+# function only).
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd)
@@ -51,6 +53,17 @@ fi
 if ! grep -q "module 'plain' has no state to instantiate" "$WORK/bad_create.log"; then
     echo "FAIL: the create() error is unclear"
     cat "$WORK/bad_create.log"
+    exit 1
+fi
+
+cp tests/instance_project/bad_global.co "$WORK/"
+if ( cd "$WORK" && "$COME" build bad_global.co -o badapp3 > bad_global.log 2>&1 ); then
+    echo "FAIL: an instance created at module scope was accepted"
+    exit 1
+fi
+if ! grep -q "a module instance can only be created inside a function" "$WORK/bad_global.log"; then
+    echo "FAIL: the module-scope create() error is unclear"
+    cat "$WORK/bad_global.log"
     exit 1
 fi
 

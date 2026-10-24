@@ -4422,6 +4422,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                      init_expr->children[0]->type == AST_IDENTIFIER &&
                      codegen_module_has_state(init_expr->children[0]->text))
                 imod = init_expr->children[0]->text;
+            // COIL-141: an instance is created inside a
+            // function only. At module scope there is no
+            // moment to run create(): the declaration used
+            // to fall through and emit the call as a C
+            // file-scope initializer, which C rejects
+            // ("initializer element is not constant").
+            // Say so here, in Come's own words.
+            if (imod && g_module_level) {
+                codegen_error("a module instance can only be created inside a function: '%s' is declared at module scope - declare it inside a function and pass it as a parameter where it is needed", node->text);
+                break;
+            }
             if (imod && !g_module_level) {
                 static char ibuf[320];
                 snprintf(ibuf, sizeof(ibuf), "instance:%.80s", imod);

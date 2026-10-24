@@ -327,6 +327,14 @@ module are stateful by definition). Then:
 
 - A module with no module-level variables has no state to
   instantiate: `create()` on it is a compile error.
+- An instance is created inside a function only
+  (COIL-149). A module-level declaration cannot hold
+  one - there is no moment at module scope to run
+  `create()` - and the compiler rejects it there:
+
+  ```text
+  a module instance can only be created inside a function: 'g' is declared at module scope - declare it inside a function and pass it as a parameter where it is needed
+  ```
 - A module that defines `main()` is a program, not a
   library: its state is the program's own, used exactly as
   before this section existed.
