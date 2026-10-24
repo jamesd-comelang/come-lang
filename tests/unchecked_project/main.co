@@ -1,0 +1,37 @@
+module main
+import std
+
+int checked_sum(byte[] b) {
+    int s = 0
+    int i = 0
+    while (i < b.length()) {
+        s = s + int(b[i * 2 % b.length()])
+        i = i + 1
+    }
+    return s
+}
+
+int unchecked_sum(byte[] b) {
+    int s = 0
+    int i = 0
+    while (i < b.length()) {
+        unchecked {
+            s = s + int(b[i * 2 % b.length()])
+        }
+        i = i + 1
+    }
+    return s
+}
+
+int unchecked_name() {
+    int unchecked = 7
+    return unchecked + 1
+}
+
+int main() {
+    byte[] b = "hello".byte_array()
+    std.out.printf("checked: %d\n", checked_sum(b))
+    std.out.printf("unchecked: %d\n", unchecked_sum(b))
+    std.out.printf("name: %d\n", unchecked_name())
+    return 0
+}

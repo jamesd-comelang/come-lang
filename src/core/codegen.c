@@ -3182,6 +3182,16 @@ static int block_is_clean(ASTNode* block) {
 // the access keeps its check -- a missed proof can
 // only miss an optimization, never remove a
 // load-bearing check.
+// Unchecked region (parity exhaust): build-level
+// flag (from --unchecked, extern) plus the lexical
+// depth flag (set by unchecked blocks, restored
+// on exit; once set inside a region it stays set
+// for nested blocks). Array reads (and stores)
+// emit raw while either is set -- opt-in only,
+// never the default.
+int g_codegen_unchecked = 0;
+static int g_unchecked = 0;
+
 typedef struct { char buf[128]; char idx[128]; } BoundProof;
 static BoundProof g_bound_proofs[64];
 static int g_bound_proof_count = 0;
@@ -4133,6 +4143,26 @@ static void emit_lhs_rerooted(FILE* f, ASTNode* node, ASTNode* target, const cha
         return;
     }
     if (node->type == AST_ARRAY_ACCESS && node->child_count >= 2) {
+        // Unchecked store: raw lvalue (no bounds
+        // check), mirroring the unchecked read.
+        if (g_unchecked) {
+            char bb2[300];
+            const char* bt2 = resolve_lhs_type(node->children[0], bb2, sizeof(bb2));
+            char et2[96] = "int";
+            if (bt2) {
+                const char* lb2 = strchr(bt2, '[');
+                if (lb2 && (size_t)(lb2 - bt2) < 64) {
+                    char elem2[64];
+                    memcpy(elem2, bt2, (size_t)(lb2 - bt2));
+                    elem2[lb2 - bt2] = 0;
+                    elem_c_type(elem2, et2, sizeof(et2));
+                }
+            }
+            fprintf(f, "((%s*)(%s.data))[", et2, repl);
+            generate_expression(f, node->children[1]);
+            fprintf(f, "]");
+            return;
+        }
         // Array element access is COME_ARR_GET_T, not a
         // subscript of the header (COIL-135): the macro
         // reads the header's data, so it stays a valid
@@ -4708,9 +4738,10 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 fprintf(f, "(*(int*)come_oob_slot_bytes_at(\"");
                 fprint_escaped_cstr(f, source_filename);
                 fprintf(f, "\", %d, \"come_%s__%s\"))", node->source_line, current_module, current_function_name);
-            } else if (base->type == AST_IDENTIFIER &&
-                       node->children[1]->type == AST_IDENTIFIER &&
-                       bound_proof_has(base->text, node->children[1]->text)) {
+            } else if (g_unchecked ||
+                       (base->type == AST_IDENTIFIER &&
+                        node->children[1]->type == AST_IDENTIFIER &&
+                        bound_proof_has(base->text, node->children[1]->text))) {
                 // Parity step 1: guard-dominated access.
                 // The guard already proved 0 <= idx < count
                 // for these exact identifiers, unmodified
@@ -6709,6 +6740,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         current_function_name[sizeof(current_function_name) - 1] = '\0';
         // Parity step 1: no proof carries across functions.
         bound_proof_clear();
+        // Unchecked: lexical flag starts from the
+        // build flag per function (never leaks).
+        g_unchecked = g_codegen_unchecked;
         // Interval slice: no nonneg carries across
         // functions either (a leaked `i` would prove
         // a parameter index nonneg in the next fn).
@@ -7449,7 +7483,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             emit_indent(f, indent + 1);
             if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
             scope_depth_push();
+            int saved_unchecked = g_unchecked;
+            if (node->is_unchecked) g_unchecked = 1;
             generate_block_children(f, node, indent + 1);
+            g_unchecked = saved_unchecked;
             scope_depth_pop();
             // A block ending in a return never reaches its
             // pop: the return already popped to the marker.

@@ -66,6 +66,7 @@ typedef struct ASTNode {
     int layout_align;  // For struct decls: required alignment, 0 = default (COIL-104)
     int is_extern;     // For function decls: extern "C" (COIL-111)
     int is_coroutine;  // For function decls: coroutine (COIL-120)
+    int is_unchecked;  // For BLOCK nodes: unchecked { } region (parity exhaust)
 } ASTNode;
 ASTNode* ast_new(ASTNodeType type);
 void ast_free(ASTNode* node);

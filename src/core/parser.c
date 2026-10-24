@@ -218,6 +218,7 @@ ASTNode* ast_new(ASTNodeType type) {
     n->layout_align = 0;
     n->is_extern = 0;
     n->is_coroutine = 0;
+    n->is_unchecked = 0;
     return n;
 }
 
@@ -1206,6 +1207,21 @@ static ASTNode* parse_alias_statement() {
 
 static ASTNode* parse_statement() {
     Token* t = current();
+
+    // Unchecked region (parity exhaust, opt-in):
+    // `unchecked { ... }` parses the block and
+    // marks it, so codegen emits raw array reads
+    // inside (no bounds checks). An identifier
+    // named unchecked followed by anything else
+    // (a call, an assignment, a use) is untouched:
+    // only identifier + block-start takes this path.
+    if (t->type == TOKEN_IDENTIFIER && strcmp(t->text, "unchecked") == 0 &&
+        pos + 1 < tokens.count && tokens.tokens[pos + 1].type == TOKEN_LBRACE) {
+        advance();
+        ASTNode* block = parse_block();
+        if (block) block->is_unchecked = 1;
+        return block;
+    }
 
     // Channel creation (COIL-123, spec 9.2):
     //   (a, b) = colink()

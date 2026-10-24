@@ -537,6 +537,58 @@ checks (already zero in the hot path) -- which
 is why unchecked + port restructuring are the
 remaining levers, in that order.
 
+## Unchecked region DONE (2026-10-24, opt-in only, never default)
+
+Two forms, both explicitly flagged:
+- `come build --unchecked`: whole-program, every
+  user array read and store emits raw (no
+  COME_ARR_GET_T, no oob_slot fallback).
+- `unchecked { ... }` block in source: the
+  block's reads/stores are raw; the flag is
+  lexical (saved/restored per BLOCK, ORed with
+  any outer unchecked region and with the build
+  flag; a variable named unchecked still parses
+  (only identifier + block-start takes the
+  path), and checked blocks inside an unchecked
+  build stay unchecked (build flag dominates).
+Implementation: ASTNode.is_unchecked (ast_new
+zeroes it); parse_statement intercepts
+identifier "unchecked" + LBRACE; codegen
+g_codegen_unchecked (extern, driver --unchecked)
++ lexical g_unchecked (per-function init from
+the build flag, beside the proof clear);
+AST_BLOCK save/restore; read emission bypasses
+the proof check when unchecked; store emission
+(emit_lhs_rerooted) emits a raw lvalue when
+unchecked. Cache separation (safety, found by
+the fixture): --unchecked builds use
+<name>.unchecked.c / .unchecked.o, so a default
+build after an unchecked one never silently
+links unchecked code, and vice versa.
+Same class of bug, pre-existing, also fixed:
+--lto builds now use .lto.o (the LTO test built
+the same files twice and, when the second build
+crossed a second boundary, reused plain objects
+LTO cannot inline -- a timing-dependent fail;
+now deterministic, 3/3). Fixture
+tests/unchecked_project/ + run_unchecked_test.sh
+(computed-index read checked by default, raw in
+unchecked, raw everywhere under --unchecked,
+same output, ASan; unchecked-as-identifier
+pins). Measured, honestly: tokenizer bench
+unchanged (~0.60 s default vs ~0.61 s
+--unchecked, checksums exact) -- its hot path
+already has zero checked reads, as profiled;
+a 10M-iteration computed-index micro also shows
+no measurable win (checked min 41 ms vs
+unchecked min 40 ms -- the check is a predicted
+branch plus L1 loads, already near-free).
+Unchecked is a feature for code with expensive
+indices (the macro evaluates a complex index
+twice) and for hard guarantees of no checks,
+not a tokenizer win. Port restructuring is where
+the tokenizer win must come from.
+
 ## Step 4c design (2026-10-24, not yet implemented)
 
 Verified first, because it changes the shape of
@@ -614,8 +666,6 @@ local-scratch-container micro, not the tokenizer.
   "exhaust everything" authorization: unchecked
   region + port restructuring both included)
 
-- Unchecked region, opt-in only, design +
-  implementation.
 - Port restructuring of the co_SQLite tokenizer
   (table-driven, bulk reads, raw iteration).
 - HELD: explicit unchecked region (needs his call).

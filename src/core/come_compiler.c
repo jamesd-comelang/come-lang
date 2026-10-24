@@ -331,7 +331,10 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         } else {
             strcpy(rel_path, basename(abs_path));
         }
-        snprintf(c_file, sizeof(c_file), "%s/%s.c", g_ccache_dir, rel_path);
+        if (g_codegen_unchecked)
+            snprintf(c_file, sizeof(c_file), "%s/%s.unchecked.c", g_ccache_dir, rel_path);
+        else
+            snprintf(c_file, sizeof(c_file), "%s/%s.c", g_ccache_dir, rel_path);
     }
     
     char c_dir[PATH_MAX];
@@ -350,7 +353,26 @@ static void compile_file(const char *source_path, const char *forced_o_path,
     char *bn = basename(base_name);
     char *dot = strrchr(bn, '.');
     if (dot) *dot = 0;
-    snprintf(o_file, sizeof(o_file), "%s/%s.o", g_build_dir, bn);
+    // Object files also depend on the C compile
+    // flags: an --lto build's objects carry LTO IR,
+    // a plain build's do not, and LTO cannot inline
+    // across a plain object. Sharing one .o path
+    // made the LTO test timing-dependent (it builds
+    // the same files twice, plain then --lto; when
+    // the second build crossed a second boundary it
+    // reused the plain objects and the inlining pin
+    // failed). Suffix the .o path by flags, like
+    // the .c path above; the .c itself is flag-free
+    // except for --unchecked, so it keeps its own
+    // suffix only.
+    if (g_codegen_unchecked && g_lto)
+        snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.lto.o", g_build_dir, bn);
+    else if (g_codegen_unchecked)
+        snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.o", g_build_dir, bn);
+    else if (g_lto)
+        snprintf(o_file, sizeof(o_file), "%s/%s.lto.o", g_build_dir, bn);
+    else
+        snprintf(o_file, sizeof(o_file), "%s/%s.o", g_build_dir, bn);
     
     if (!forced_o_path) ensure_dir(g_build_dir);
 
@@ -1889,7 +1911,7 @@ static void print_usage(void) {
     fprintf(stderr,
         "Usage:\n"
         "  come build <file.co|dir> [-o output]   compile and link\n"
-        "    [--single-tu]                        compile all user code as one TU\n    [--lto]                                link-time optimize user code (user-only LTO; implies -O2; runtime stays prebuilt)\n"
+        "    [--single-tu]                        compile all user code as one TU\n    [--lto]                                link-time optimize user code (user-only LTO; implies -O2; runtime stays prebuilt)\n    [--unchecked]                          remove array bounds checks (opt-in; unsafe: out-of-bounds reads/writes become raw heap access)\n"
         "                                          (cross-module inlining without LTO)\n"
         "  come genc <file.co> -o <out.c>          emit C only\n"
         "  come check <file.co|dir>                compile, no link or run\n"
@@ -2259,6 +2281,8 @@ int main(int argc, char *argv[]) {
             g_single_tu = 1;
         } else if (strcmp(argv[i], "--lto") == 0) {
             g_lto = 1;
+        } else if (strcmp(argv[i], "--unchecked") == 0) {
+            g_codegen_unchecked = 1;
         } else {
             input = argv[i];
         }
