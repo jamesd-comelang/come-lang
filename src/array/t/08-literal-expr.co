@@ -1,0 +1,43 @@
+// COIL-145 (gap #13): an array literal is a general
+// expression, not just declaration sugar. In expression
+// positions codegen used to paste the raw braces into the
+// C, which is not a value; now the literal materializes the
+// header (a statement expression performing the same
+// construction as the declaration), with the element type
+// worked out from the elements. The tokenizer test-helper
+// shape - expect(sql, {types...}, {starts...}) - works.
+module main
+import std
+
+int check(int nums[], string names[]) {
+    if (nums[0] + nums[1] + nums[2] != 6 || nums.length() != 3) { return 1 }
+    if (names[0] != "x" || names.length() != 1) { return 2 }
+    return 0
+}
+
+int sum(int xs[]) {
+    int t = 0
+    int i = 0
+    while (i < xs.length()) { t = t + xs[i]; i = i + 1 }
+    return t
+}
+
+int main() {
+    if (check({1, 2, 3}, {"x"}) != 0) { std.out.printf("FAIL call args\n"); return 1 }
+    int[] a
+    a = {4, 5, 6}
+    if (sum(a) != 15) { std.out.printf("FAIL assign\n"); return 1 }
+    if (sum({10, 20}) != 30) { std.out.printf("FAIL arg\n"); return 1 }
+    int base = 5
+    if (sum({base, base + 1, 3 * 4}) != 23) { std.out.printf("FAIL expr elems\n"); return 1 }
+    string[] ss = {"a", "b"}
+    ss = {"c"}
+    if (ss[0] != "c" || ss.length() != 1) { std.out.printf("FAIL string assign\n"); return 1 }
+    double[] d
+    d = {1.5, 2.5}
+    if (d.length() != 2 || d[0] + d[1] < 3.9 || d[0] + d[1] > 4.1) { std.out.printf("FAIL double assign\n"); return 1 }
+    var v = {3, 4}
+    if (sum(v) != 7) { std.out.printf("FAIL var literal\n"); return 1 }
+    std.out.printf("PASS: 08-literal-expr\n")
+    return 0
+}

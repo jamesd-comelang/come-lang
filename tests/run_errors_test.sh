@@ -398,4 +398,31 @@ int main() {
 }
 EOF
 
+check empty_literal_arg "element type cannot be worked out here" <<'EOF'
+module main
+import std
+
+int sum(int xs[]) {
+    return xs.length()
+}
+
+int main() {
+    return sum({})
+}
+EOF
+
+check mixed_literal_arg "element type cannot be worked out here" <<'EOF'
+module main
+import std
+
+int sum(int xs[]) {
+    return xs.length()
+}
+
+int main() {
+    return sum({1, "x"})
+}
+EOF
+
 echo "COIL-136 reference cases: all 5 name the rule and the fix."
+echo "COIL-145 literal cases: both name the fix."

@@ -105,6 +105,7 @@ static char current_function_name[128] = "";
 static int g_in_fn_body = 0;
 static int g_fn_instance_form = 0; // COIL-140: body being generated is instance-form
 static int g_module_level = 0;     // COIL-140: generating a top-level node   // arming ERR source sites (COIL-139)
+static int g_raw_aggregate = 0;    // COIL-145: emit an array literal's raw braces (the declaration path's own C array) instead of materializing the header value
 static char current_module[256] = "main"; // Default to main if unspecified
 static char* current_imports[256];
 static int current_import_count = 0;
@@ -1858,6 +1859,111 @@ static void elem_c_type(const char* elem, char* out, size_t n) {
     else snprintf(out, n, "%s", elem);
 }
 
+static const char* array_literal_elem_type(ASTNode* agg, char* buf, size_t n);
+
+static int numeric_rank(const char* t) {
+    return strcmp(t, "int") == 0 ? 1 : strcmp(t, "long") == 0 ? 2 :
+           strcmp(t, "double") == 0 ? 3 : 0;
+}
+
+// The type of one array-literal element (COIL-145): literal
+// kinds directly, arithmetic by promotion over its operands,
+// anything else through expr_come_type. NULL when the type
+// is not knowable here.
+static const char* literal_expr_type(ASTNode* c, char* buf, size_t n) {
+    if (c->type == AST_STRING_LITERAL) { snprintf(buf, n, "string"); return buf; }
+    if (c->type == AST_BOOL_LITERAL) { snprintf(buf, n, "bool"); return buf; }
+    if (c->type == AST_NUMBER) {
+        if (strchr(c->text, '.') || strchr(c->text, 'e') || strchr(c->text, 'E') ||
+            strchr(c->text, 'f') || strchr(c->text, 'F')) snprintf(buf, n, "double");
+        else if (strchr(c->text, 'l') || strchr(c->text, 'L')) snprintf(buf, n, "long");
+        else snprintf(buf, n, "int");
+        return buf;
+    }
+    if (c->type == AST_AGGREGATE_INIT && strncmp(c->text, "struct ", 7) != 0 &&
+        !(c->child_count > 0 && c->children[0]->type == AST_MAP_PAIR)) {
+        // A nested array literal: T[] of the inner element.
+        char ib[160];
+        const char* inner = array_literal_elem_type(c, ib, sizeof(ib));
+        if (!inner) return NULL;
+        snprintf(buf, n, "%s[]", inner);
+        return buf;
+    }
+    if (c->type == AST_BINARY_OP && c->child_count >= 2) {
+        char lb[160], rb[160];
+        const char* lt = literal_expr_type(c->children[0], lb, sizeof(lb));
+        const char* rt = literal_expr_type(c->children[1], rb, sizeof(rb));
+        if (!lt || !rt) return NULL;
+        int rl = numeric_rank(lt), rr = numeric_rank(rt);
+        if (!rl || !rr) return NULL;
+        snprintf(buf, n, "%s", rr > rl ? rt : lt);
+        return buf;
+    }
+    if ((c->type == AST_UNARY_OP || c->type == AST_POST_INC || c->type == AST_POST_DEC) &&
+        c->child_count >= 1) {
+        return literal_expr_type(c->children[0], buf, n);
+    }
+    return expr_come_type(c, buf, n);
+}
+
+// The element type of an array literal: every element must
+// agree, with numeric promotion (int < long < double).
+static const char* array_literal_elem_type(ASTNode* agg, char* buf, size_t n) {
+    buf[0] = 0;
+    for (int i = 0; i < agg->child_count; i++) {
+        char cb[160];
+        const char* ct = literal_expr_type(agg->children[i], cb, sizeof(cb));
+        if (!ct) return NULL;
+        if (!buf[0]) {
+            snprintf(buf, n, "%s", ct);
+        } else if (strcmp(buf, ct) != 0) {
+            int rb = numeric_rank(buf), rc = numeric_rank(ct);
+            if (!rb || !rc) return NULL;
+            if (rc > rb) snprintf(buf, n, "%s", ct);
+        }
+    }
+    return buf[0] ? buf : NULL;
+}
+
+// Emit an array literal as a value (COIL-145): a statement
+// expression that builds the header - the same construction
+// the declaration path performs, packaged as an expression
+// so a literal can be passed to a call, assigned, or
+// returned. String elements are appended as owned strings,
+// like the string[] declaration.
+static void emit_array_literal_expr(FILE* f, ASTNode* agg) {
+    char ebuf[160];
+    const char* elem = agg->child_count > 0 ? array_literal_elem_type(agg, ebuf, sizeof(ebuf)) : NULL;
+    if (!elem) {
+        codegen_error("this array literal's element type cannot be worked out here - declare it with a type first (T[] name = { ... })");
+        fprintf(f, "COME_HDR_INIT(COME_CTX)");
+        return;
+    }
+    char ft[200];
+    snprintf(ft, sizeof(ft), "%s[]", elem);
+    char arr_ct[160];
+    header_c_type(ft, arr_ct, sizeof(arr_ct));
+    fprintf(f, "({ %s _al = COME_HDR_INIT(COME_CTX); ", arr_ct);
+    if (strcmp(elem, "string") == 0) {
+        for (int i = 0; i < agg->child_count; i++) {
+            fprintf(f, "{ come_string_t _e = ");
+            emit_string_obj(f, agg->children[i]);
+            fprintf(f, "; come_array_append_g((come_hdr_t*)&_al, sizeof(come_string_t), &_e); } ");
+        }
+    } else {
+        char ect[96];
+        elem_c_type(elem, ect, sizeof(ect));
+        fprintf(f, "%s _vals[] = { ", ect);
+        for (int i = 0; i < agg->child_count; i++) {
+            if (i) fprintf(f, ", ");
+            generate_expression(f, agg->children[i]);
+        }
+        fprintf(f, " }; come_array_ensure((come_hdr_t*)&_al, sizeof(%s), %d); memcpy(_al.data, _vals, sizeof(_vals)); _al.count = %d; ",
+                ect, agg->child_count, agg->child_count);
+    }
+    fprintf(f, "_al; })");
+}
+
 // A link .read() call (COIL-135): buffers travel through a
 // channel as boxed header cells; the default read emission
 // dereferences the cell into a header value. When the value
@@ -3516,6 +3622,16 @@ static void generate_expression(FILE* f, ASTNode* node) {
             }
             fprintf(f, "(%s)", node->text);
         }
+        // An array literal in a general expression position
+        // (COIL-145): materialize the header value instead of
+        // pasting the raw braces, which are not a C value.
+        // The declaration path sets g_raw_aggregate where it
+        // needs the braces for its own C array or struct.
+        if (strncmp(node->text, "struct ", 7) != 0 && !g_raw_aggregate &&
+            !(node->child_count > 0 && node->children[0]->type == AST_MAP_PAIR)) {
+            emit_array_literal_expr(f, node);
+            return;
+        }
         fprintf(f, "{ ");
         if (node->child_count == 0) {
             fprintf(f, "0");
@@ -4304,7 +4420,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                         fprintf(f, "%s %s = COME_HDR_INIT(COME_CTX);\n", arr_type, node->text);
                         emit_indent(f, indent);
                         fprintf(f, "{ %s _vals[] = ", elem_type);
+                        g_raw_aggregate = 1;
                         generate_expression(f, init_expr);
+                        g_raw_aggregate = 0;
                         fprintf(f, "; come_array_ensure((come_hdr_t*)&%s, sizeof(%s), %u); memcpy(%s.data, _vals, sizeof(_vals)); %s.count = %u; }\n",
                                 node->text, elem_type, alloc_count, node->text, node->text, count);
                     } else if (init_expr && !zero_init) {
@@ -4335,10 +4453,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                      }
                      
                      // For struct types with aggregate initializers, preserve the syntax
-                     if (init_expr && init_expr->type == AST_AGGREGATE_INIT && 
+                     if (init_expr && init_expr->type == AST_AGGREGATE_INIT &&
                          strncmp(type_node->text, "struct", 6) == 0) {
                          // Just emit the aggregate initializer as-is for structs
+                         g_raw_aggregate = 1;
                          generate_expression(f, init_expr);
+                         g_raw_aggregate = 0;
                      } else if (init_expr && init_expr->type == AST_NUMBER && strcmp(init_expr->text, "0") == 0) {
                           // Struct values zero-initialize with {0}
                           // (COIL-135: a struct whose first field is
@@ -4351,6 +4471,14 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                           } else {
                               generate_expression(f, init_expr);
                           }
+                     } else if (init_expr && init_expr->type == AST_AGGREGATE_INIT &&
+                                strcmp(type_node->text, "map") == 0) {
+                         // A legacy map's {} is the raw C
+                         // empty initializer (COIL-145: not an
+                         // array literal).
+                         g_raw_aggregate = 1;
+                         generate_expression(f, init_expr);
+                         g_raw_aggregate = 0;
                      } else {
                          generate_expression(f, init_expr);
                      }

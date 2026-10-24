@@ -260,6 +260,8 @@ import std
 
 int main() {
     int a[] = {10, 20, 30}        // a literal
+    show({1, 2, 3})               // literals are values:
+                                  // pass and assign them too
     a.append(40)                  // grow by one
     a.resize(10)                  // grow/shrink to a size;
                                   // new elements are zero
