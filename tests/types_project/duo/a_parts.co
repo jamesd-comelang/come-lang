@@ -1,0 +1,19 @@
+module duo
+
+export (Vec, make, pair)
+
+struct Vec {
+    int x
+    int y
+}
+
+struct Vec make(int x, int y) {
+    struct Vec v
+    v.x = x
+    v.y = y
+    return v
+}
+
+(int, int) pair() {
+    return 7, 8
+}

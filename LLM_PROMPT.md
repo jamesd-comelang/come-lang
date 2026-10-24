@@ -338,10 +338,12 @@ int answer() {          // plain functions are exported
   `std.file` (file objects), `std.proc` (environment and
   processes), `std.srand`/`std.rand`, time helpers.
   `import string` adds the string toolbox above.
-- Current limitation: another module's constants and struct
-  literals are not fully usable cross-module yet; pass
-  structs by value/reference between modules instead of
-  constructing foreign literals.
+- Another module's exported structs and tuple returns are
+  fully usable: return them, pass them, destructure them
+  (`(a, b) = mod.pair()`), read their fields. Current
+  limitation: another module's *constants* are not usable
+  cross-module yet - a constant works only in its declaring
+  file.
 - **Module-level tables.** Any type may be declared at
   module level, including `map{string, int}`. Header-typed
   module variables (string, arrays, maps) start as live

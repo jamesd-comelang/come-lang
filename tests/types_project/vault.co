@@ -1,0 +1,20 @@
+module vault
+
+export (open)
+
+// Stateful, with an uninitialized module variable directly
+// before a tuple-returning function: the parser used to
+// read the tuple type as the variable's parameter list,
+// silently dropping both (COIL-146). hidden_pair is not
+// exported - an importer that never touches it must still
+// build (its typedef and prototype stay home).
+int secret
+
+(int, int) hidden_pair() {
+    return 1, 2
+}
+
+int open() {
+    secret = 10
+    return secret
+}

@@ -2143,8 +2143,33 @@ static void parse_top_level_decl(ASTNode* program) {
              }
          }
          
+         // A '(' after "Type Name" is this declaration's
+         // parameter list - unless the token after the
+         // balanced group is another declaration's name, in
+         // which case the parens are the NEXT declaration's
+         // tuple return type and this one is a variable
+         // (COIL-146): "int seed" followed by "(int, int)
+         // pair()" used to consume the tuple type as seed's
+         // parameter list, silently dropping the variable
+         // and reparsing pair as a void function.
+         int paren_belongs_to_next = 0;
+         if (is_func_def && !implicit_type && current()->type == TOKEN_LPAREN) {
+             int depth = 0;
+             int q = pos;
+             do {
+                 if (tokens.tokens[q].type == TOKEN_LPAREN) depth++;
+                 else if (tokens.tokens[q].type == TOKEN_RPAREN) depth--;
+                 q++;
+             } while (depth > 0 && q < tokens.count);
+             if (q < tokens.count &&
+                 (tokens.tokens[q].type == TOKEN_IDENTIFIER ||
+                  tokens.tokens[q].type == TOKEN_MAIN)) {
+                 paren_belongs_to_next = 1;
+             }
+         }
+
          if (is_func_def) {
-             if (current()->type == TOKEN_LPAREN) {
+             if (current()->type == TOKEN_LPAREN && !paren_belongs_to_next) {
                  // Function definition: Type Name(...) { ... }
                  // OR Prototype: Type Name(...);
                  ASTNode* func = ast_new(AST_FUNCTION);

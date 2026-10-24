@@ -213,6 +213,15 @@ be explicitly exported. Only exported symbols are visible externally:
 export (PI, Point, add)
 ```
 
+Visibility is complete for functions and types: an importer sees an
+exported function's exact signature — including tuple return types
+(§8.2) and struct types (§7) — and an exported struct's full
+definition, so values of those types cross the boundary by value:
+returned, passed, destructured, and field-accessed. The same holds
+between the files of one directory module, where no export list
+applies. (Constants are the remaining gap: a constant is currently
+usable only in its declaring file.)
+
 ## 3.5 Module lifecycle: `module_init()` and `module_exit()`
 
 Every local module follows a deterministic lifecycle so memory contexts are

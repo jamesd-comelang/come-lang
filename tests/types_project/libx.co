@@ -1,0 +1,19 @@
+module libx
+
+export (pair, greet, scale)
+
+// A tuple return (spec 8.2) and a string return: the two
+// shapes an importer used to get wrong - the destructure
+// was rejected outright, and the string call was implicitly
+// declared as returning int (COIL-146).
+(int, int) pair() {
+    return 3, 4
+}
+
+string greet() {
+    return "hi"
+}
+
+int scale(int v, int k) {
+    return v * k
+}

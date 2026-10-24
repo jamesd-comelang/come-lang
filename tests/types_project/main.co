@@ -1,0 +1,25 @@
+module main
+import std
+import libx
+import geom
+import duo
+import vault
+
+(int, int) wrapped() {
+    return libx.pair()
+}
+
+int main() {
+    (a, b) = libx.pair()
+    std.out.printf("%d %d %s %d\n", a, b, libx.greet(), libx.scale(2, 21))
+    struct Point p = geom.make(3, 4)
+    std.out.printf("%d %d %d\n", p.x, p.y, geom.area(p))
+    (c, d) = wrapped()
+    std.out.printf("%d %d\n", c, d)
+    (e, f) = duo.pair()
+    struct Vec q = duo.make(5, 6)
+    std.out.printf("%d %d %d %d %d %d\n", e, f, duo.sum_pair(), duo.probe(), q.x, q.y)
+    vault v = vault.create()
+    std.out.printf("%d\n", v.open())
+    return 0
+}

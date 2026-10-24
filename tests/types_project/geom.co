@@ -1,0 +1,21 @@
+module geom
+
+export (Point, make, area)
+
+// A struct that crosses the module boundary by value, in
+// both directions (COIL-146).
+struct Point {
+    int x
+    int y
+}
+
+struct Point make(int x, int y) {
+    struct Point p
+    p.x = x
+    p.y = y
+    return p
+}
+
+int area(struct Point p) {
+    return p.x * p.y
+}

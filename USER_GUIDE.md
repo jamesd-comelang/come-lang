@@ -665,12 +665,13 @@ myapp/
     helpers_test.co  tests, run by `come test` (§15)
 ```
 
-Struct types and constants exported from a module are usable
-through it, with one current limitation: cross-module constants
-and struct *values* are not yet fully namespaced (see the
-spec's §3.4 note) — passing structs by value or reference
-between your own modules works; constructing another module's
-struct literal in your file may not yet.
+Struct types exported from a module are fully usable through
+it: a function can return another module's struct by value,
+take one as a parameter, and you can read its fields and
+pass it back — and tuple returns destructure across modules
+too (`(a, b) = libx.pair()`). One current limitation remains:
+cross-module *constants* are not yet usable (see the spec's
+§3.4 note) — a constant works only in its declaring file.
 
 **Stateful modules: instances.** The modules above are
 *stateless* - pure functions you call through the namespace

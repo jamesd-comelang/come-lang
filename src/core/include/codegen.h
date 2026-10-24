@@ -53,4 +53,17 @@ int codegen_module_fn_at(const char* module, int i, const char** name,
 int codegen_module_has_state(const char* module);
 int codegen_fn_stateful(const char* module, const char* fn, const char** chain_out);
 int codegen_module_var_index(const char* module, const char* name, const char** type_out);
+
+// Module struct registry (COIL-146): the driver registers
+// each user module's struct definitions (fields serialized
+// as "name\x1ftype" pairs joined by ';') so an importer's
+// codegen can emit the definitions its prototypes and
+// field accesses need - the types half of spec 3.4.
+void codegen_register_module_structs(const char* module,
+                                     const char** names, const char** defs,
+                                     const int* packeds, const int* aligns,
+                                     int count);
+int codegen_module_struct_count(const char* module);
+int codegen_module_struct_at(const char* module, int i, const char** name,
+                             const char** def, int* packed, int* align);
 #endif

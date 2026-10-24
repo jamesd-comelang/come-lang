@@ -1,0 +1,16 @@
+module duo
+
+export (sum_pair, probe)
+
+// Sibling-file use (COIL-146): pair() and make() live in
+// a_parts.co; this file's translation unit needs their
+// typedef, definition, and prototypes from the registry.
+int sum_pair() {
+    (a, b) = pair()
+    return a + b
+}
+
+int probe() {
+    struct Vec v = make(3, 4)
+    return v.x * 10 + v.y
+}

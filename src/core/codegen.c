@@ -896,6 +896,70 @@ int codegen_fn_stateful(const char* module, const char* fn, const char** chain_o
     return 0;
 }
 
+// === Module struct registry (COIL-146) ===
+// Each user module's struct definitions, registered by the
+// driver at parse time alongside the state registry: an
+// importer cannot use a struct another module returns or
+// takes until its own translation unit sees the definition
+// (the types half of spec 3.4). Field lists are serialized
+// as "name\x1ftype" pairs joined by ';'.
+#define MAX_MODULE_STRUCTS 32
+typedef struct {
+    char module[64];
+    char names[64][128];
+    char defs[64][2048];
+    int packeds[64];
+    int aligns[64];
+    int count;
+} ModuleStructs;
+static ModuleStructs g_module_structs[MAX_MODULE_STRUCTS];
+static int g_module_struct_modules = 0;
+
+void codegen_register_module_structs(const char* module,
+                                     const char** names, const char** defs,
+                                     const int* packeds, const int* aligns,
+                                     int count) {
+    ModuleStructs* slot = NULL;
+    for (int i = 0; i < g_module_struct_modules; i++)
+        if (strcmp(g_module_structs[i].module, module) == 0) slot = &g_module_structs[i];
+    if (!slot) {
+        if (g_module_struct_modules >= MAX_MODULE_STRUCTS) return;
+        slot = &g_module_structs[g_module_struct_modules++];
+        memset(slot, 0, sizeof(*slot));
+        snprintf(slot->module, sizeof(slot->module), "%s", module);
+    }
+    slot->count = 0;
+    for (int i = 0; i < count && slot->count < 64; i++) {
+        snprintf(slot->names[slot->count], sizeof(slot->names[0]), "%s", names[i]);
+        snprintf(slot->defs[slot->count], sizeof(slot->defs[0]), "%s", defs[i]);
+        slot->packeds[slot->count] = packeds[i];
+        slot->aligns[slot->count] = aligns[i];
+        slot->count++;
+    }
+}
+
+static ModuleStructs* module_structs_of(const char* module) {
+    for (int i = 0; i < g_module_struct_modules; i++)
+        if (strcmp(g_module_structs[i].module, module) == 0) return &g_module_structs[i];
+    return NULL;
+}
+
+int codegen_module_struct_count(const char* module) {
+    ModuleStructs* ms = module_structs_of(module);
+    return ms ? ms->count : 0;
+}
+
+int codegen_module_struct_at(const char* module, int i, const char** name,
+                             const char** def, int* packed, int* align) {
+    ModuleStructs* ms = module_structs_of(module);
+    if (!ms || i < 0 || i >= ms->count) return 0;
+    *name = ms->names[i];
+    *def = ms->defs[i];
+    if (packed) *packed = ms->packeds[i];
+    if (align) *align = ms->aligns[i];
+    return 1;
+}
+
 // The type a name has for dispatch purposes: a local's
 // recorded type, or - inside an instance-form body - a
 // module variable's declared type from the registry
@@ -1167,6 +1231,64 @@ static void collect_tuple_fns(ASTNode* ast) {
 static const TupleFn* find_tuple_fn(const char* name) {
     for (int i = 0; i < g_tuple_fn_count; i++) {
         if (strcmp(g_tuple_fns[i].name, name) == 0) return &g_tuple_fns[i];
+    }
+    return NULL;
+}
+
+// A tuple-returning function resolved through the module
+// registry (COIL-146): fills `out` from the registered
+// return type of `name` in `module`. The table above only
+// knows the file being generated; the registry knows every
+// file of every module in the build, which is what a
+// cross-file or cross-module destructure needs.
+static int registry_tuple_fn(const char* module, const char* name, TupleFn* out) {
+    const char* ret = codegen_module_fn_ret(module, name);
+    if (!ret || ret[0] != '(') return 0;
+    char inner[600];
+    snprintf(inner, sizeof(inner), "%.*s", (int)strlen(ret) - 2, ret + 1);
+    snprintf(out->name, sizeof(out->name), "%s", name);
+    out->count = split_types(inner, out->elems, 8);
+    for (int j = 0; j < out->count; j++) {
+        char* s = out->elems[j];
+        while (*s == ' ') memmove(s, s + 1, strlen(s));
+        size_t l = strlen(s);
+        while (l > 0 && s[l - 1] == ' ') s[--l] = 0;
+    }
+    return out->count > 0;
+}
+
+// Resolve a call node to a tuple function and its defining
+// module (written to modbuf): a plain call names a function
+// of this module (this file's table first, then the
+// registry for sibling files); a method call names one of
+// the receiver module's functions, through the namespace or
+// an instance variable alike.
+static const TupleFn* resolve_tuple_call(ASTNode* call, char* modbuf, size_t modn,
+                                         TupleFn* scratch) {
+    if (!call) return NULL;
+    if (call->type == AST_CALL) {
+        const TupleFn* tf = find_tuple_fn(call->text);
+        if (tf) {
+            snprintf(modbuf, modn, "%s", current_module);
+            return tf;
+        }
+        if (registry_tuple_fn(current_module, call->text, scratch)) {
+            snprintf(modbuf, modn, "%s", current_module);
+            return scratch;
+        }
+        return NULL;
+    }
+    if (call->type == AST_METHOD_CALL && call->child_count >= 1 &&
+        call->children[0] && call->children[0]->type == AST_IDENTIFIER) {
+        const char* rn = call->children[0]->text;
+        const char* lt = get_local_variable_type(rn);
+        const char* mod = rn;
+        if (lt && strncmp(lt, "instance:", 9) == 0) mod = lt + 9;
+        else if (lt && codegen_module_has_state(lt)) mod = lt;
+        if (registry_tuple_fn(mod, call->text, scratch)) {
+            snprintf(modbuf, modn, "%s", mod);
+            return scratch;
+        }
     }
     return NULL;
 }
@@ -4684,8 +4806,16 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // destructures the returned struct (COIL-127).
             emit_line_directive(f, node);
             ASTNode* rhs = node->children[2];
-            if (rhs && rhs->type == AST_CALL && strcmp(rhs->text, "colink") != 0) {
-                const TupleFn* tf = find_tuple_fn(rhs->text);
+            int is_colink = rhs && rhs->type == AST_CALL && strcmp(rhs->text, "colink") == 0;
+            if (rhs && !is_colink && (rhs->type == AST_CALL || rhs->type == AST_METHOD_CALL)) {
+                // The callee may live in this file, a sibling
+                // file of this module, or another module
+                // entirely (COIL-146): resolve through the
+                // registry as well as the local table, and
+                // name the typedef by its defining module.
+                char defmod[128];
+                TupleFn scratch;
+                const TupleFn* tf = resolve_tuple_call(rhs, defmod, sizeof(defmod), &scratch);
                 if (!tf) {
                     codegen_error("the (a, b) = ... form is for colink() or a tuple-returning function (spec 8.2, 9.2)");
                     break;
@@ -4700,7 +4830,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 char tup[32];
                 snprintf(tup, sizeof(tup), "__tup%d", tup_counter++);
                 emit_indent(f, indent);
-                fprintf(f, "come_%s__%s_ret_t %s = ", current_module, tf->name, tup);
+                fprintf(f, "come_%s__%s_ret_t %s = ", defmod, tf->name, tup);
                 generate_expression(f, rhs);
                 fprintf(f, ";\n");
                 for (int i = 0; i < 2; i++) {
@@ -4719,7 +4849,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 }
                 break;
             }
-            if (!rhs || rhs->type != AST_CALL || strcmp(rhs->text, "colink") != 0) {
+            if (!is_colink) {
                 codegen_error("the (a, b) = ... form is for colink() or a tuple-returning function (spec 8.2, 9.2)");
                 break;
             }
@@ -4743,6 +4873,39 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 codegen_error("coroutines cannot return a value (spec 9.1); results travel through links");
             }
             if (g_cur_tuple) {
+                // Forwarding a tuple call (COIL-146): return
+                // f() where f returns the same number of
+                // values - in this file, a sibling file, or
+                // another module. Each function's return
+                // struct is its own C type, so unless the
+                // callee is this very function the value is
+                // rebuilt field by field.
+                if (node->child_count == 1 &&
+                    (node->children[0]->type == AST_CALL ||
+                     node->children[0]->type == AST_METHOD_CALL)) {
+                    char defmod[128];
+                    TupleFn scratch;
+                    const TupleFn* tf = resolve_tuple_call(node->children[0],
+                                                           defmod, sizeof(defmod), &scratch);
+                    if (tf && tf->count == g_cur_tuple->count) {
+                        if (strcmp(defmod, current_module) == 0 &&
+                            strcmp(tf->name, g_cur_tuple->name) == 0) {
+                            fprintf(f, "return ");
+                            generate_expression(f, node->children[0]);
+                            fprintf(f, ";\n");
+                        } else {
+                            fprintf(f, "return ({ come_%s__%s_ret_t _t = ", defmod, tf->name);
+                            generate_expression(f, node->children[0]);
+                            fprintf(f, "; (come_%s__%s_ret_t){", current_module, g_cur_tuple->name);
+                            for (int i = 0; i < tf->count; i++) {
+                                if (i) fprintf(f, ", ");
+                                fprintf(f, "_t._%d", i);
+                            }
+                            fprintf(f, "}; });\n");
+                        }
+                        break;
+                    }
+                }
                 // Tuple return (spec 8.2): build the generated
                 // struct from the comma-separated values.
                 if (node->child_count != g_cur_tuple->count) {
@@ -5434,17 +5597,28 @@ static void emit_proto_param(FILE* f, const char* t) {
     }
 }
 
-// Prototypes for a stateful module's functions, emitted
-// into an importer's file (COIL-140): without them a call
-// to a string-returning function would be implicitly
-// declared as returning int and corrupt the value - the
-// pre-existing gap for plain modules is recorded in the
-// findings list; instance modules are exact from the start.
-static void emit_import_prototypes(FILE* f, const char* mod) {
+// Prototypes for another module's functions, emitted into
+// an importer's file (COIL-140 for stateful modules,
+// COIL-146 for every module): without them a call is
+// implicitly declared as returning int, which corrupts
+// string, struct, and tuple returns alike. With `own` set
+// the module is the file's own (a directory module's other
+// files): everything is visible, and functions this file
+// itself defines are skipped - the local passes declare
+// those. For an import, only exported symbols are declared
+// (spec 3.4), and the __inst twin exists only when the
+// module has an instance surface at all.
+static void emit_import_prototypes(FILE* f, const char* mod, int own) {
     int n = codegen_module_fn_count(mod);
+    int has_state = codegen_module_has_state(mod);
     for (int i = 0; i < n; i++) {
         const char *nm, *ret, *params;
         if (!codegen_module_fn_at(mod, i, &nm, &ret, &params)) continue;
+        if (own) {
+            if (find_module_fn_sig(nm)) continue;
+        } else if (!module_symbol_visible(mod, nm)) {
+            continue;
+        }
         int st = codegen_fn_stateful(mod, nm, NULL);
         char rbuf[320];
         if (ret[0] == '(') snprintf(rbuf, sizeof(rbuf), "come_%s__%s_ret_t", mod, nm);
@@ -5460,7 +5634,7 @@ static void emit_import_prototypes(FILE* f, const char* mod) {
             emit_proto_param(f, parts[j]);
         }
         fprintf(f, ");\n");
-        if (!st) {
+        if (!st && has_state) {
             fprintf(f, "%s come_%s__%s__inst(come_%s__instance_t*", rbuf, mod, nm, mod);
             for (int j = 0; j < np; j++) {
                 fprintf(f, ", ");
@@ -5469,6 +5643,88 @@ static void emit_import_prototypes(FILE* f, const char* mod) {
             fprintf(f, ");\n");
         }
     }
+}
+
+// One imported struct definition, rendered exactly as the
+// defining module renders it (COIL-146): the layout an
+// importer's field accesses and by-value calls are
+// compiled against must be the defining layout.
+static void emit_imported_struct(FILE* f, const char* name, const char* def,
+                                 int packed, int align) {
+    fprintf(f, "struct");
+    if (packed) fprintf(f, " __attribute__((packed))");
+    if (align > 0) fprintf(f, " __attribute__((aligned(%d)))", align);
+    fprintf(f, " %s {\n", name);
+    const char* p = def;
+    while (*p) {
+        const char* semi = strchr(p, ';');
+        size_t flen = semi ? (size_t)(semi - p) : strlen(p);
+        const char* us = memchr(p, '\x1f', flen);
+        if (us) {
+            char fname[128], ftype[160];
+            snprintf(fname, sizeof(fname), "%.*s", (int)(us - p), p);
+            snprintf(ftype, sizeof(ftype), "%.*s", (int)(flen - (size_t)(us - p) - 1), us + 1);
+            size_t tl = strlen(ftype);
+            if (tl > 2 && strcmp(ftype + tl - 2, "[]") == 0)
+                fprintf(f, "    come_hdr_t %s;\n", fname);
+            else
+                fprintf(f, "    %s %s;\n", ftype, fname);
+        }
+        if (!semi) break;
+        p = semi + 1;
+    }
+    fprintf(f, "};\n");
+    fprintf(f, "typedef struct %s %s;\n", name, name);
+}
+
+// The full surface one module presents to a translation
+// unit that is not its defining file (COIL-146): exported
+// struct definitions, tuple return typedefs, and exact
+// prototypes, in dependency order (structs before the
+// typedefs and prototypes that name them). With `own` set
+// the surface is the rest of the file's own module - a
+// directory module's sibling files - where export lists do
+// not apply and definitions this file makes itself are
+// skipped (its own passes emit those).
+static void emit_module_surface(FILE* f, const char* mod, int own) {
+    int ns = codegen_module_struct_count(mod);
+    for (int i = 0; i < ns; i++) {
+        const char *nm, *def;
+        int pk, al;
+        if (!codegen_module_struct_at(mod, i, &nm, &def, &pk, &al)) continue;
+        if (!own && !module_symbol_visible(mod, nm)) continue;
+        if (own) {
+            int local = 0;
+            for (int j = 0; j < g_struct_count; j++)
+                if (strcmp(g_struct_names[j], nm) == 0) local = 1;
+            if (local) continue;
+        }
+        emit_imported_struct(f, nm, def, pk, al);
+    }
+    int nf = codegen_module_fn_count(mod);
+    for (int i = 0; i < nf; i++) {
+        const char *nm, *ret, *params;
+        if (!codegen_module_fn_at(mod, i, &nm, &ret, &params)) continue;
+        if (!ret || ret[0] != '(') continue;
+        if (!own && !module_symbol_visible(mod, nm)) continue;
+        if (own && find_tuple_fn(nm)) continue;
+        char inner[600];
+        snprintf(inner, sizeof(inner), "%.*s", (int)strlen(ret) - 2, ret + 1);
+        char parts[8][160];
+        int np = split_types(inner, parts, 8);
+        fprintf(f, "typedef struct { ");
+        for (int j = 0; j < np; j++) {
+            char ct[300];
+            char* s = parts[j];
+            while (*s == ' ') memmove(s, s + 1, strlen(s));
+            size_t l = strlen(s);
+            while (l > 0 && s[l - 1] == ' ') s[--l] = 0;
+            come_type_to_c(s, ct, sizeof(ct));
+            fprintf(f, "%s _%d; ", ct, j);
+        }
+        fprintf(f, "} come_%s__%s_ret_t;\n", mod, nm);
+    }
+    emit_import_prototypes(f, mod, own);
 }
 
 // The instance runtime of a stateful module, emitted by
@@ -5707,9 +5963,23 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                     current_imports[i], current_imports[i]);
             fprintf(f, "void come_%s__destroy(come_%s__instance_t*);\n",
                     current_imports[i], current_imports[i]);
-            emit_import_prototypes(f, current_imports[i]);
         }
+        // Every import's exported surface - struct
+        // definitions, tuple typedefs, exact prototypes
+        // (COIL-146). System modules are not in the
+        // registry; their surface is the runtime headers
+        // and the hand-written prototypes above.
+        emit_module_surface(f, current_imports[i], 0);
     }
+    // The rest of this file's own module (COIL-146): a
+    // directory module's sibling files define structs and
+    // functions this file uses, and their definitions and
+    // prototypes belong here too. The collections the
+    // local checks consult run here as well as at the
+    // generation tail - both passes collect the same file.
+    collect_structs(ast);
+    collect_module_fns(ast);
+    emit_module_surface(f, current_module, 1);
     
     // Module memory context
     if (g_codegen_suppress_singletons) {

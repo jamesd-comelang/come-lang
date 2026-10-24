@@ -450,6 +450,9 @@ static int scan_co_dir(const char *dir, char paths[][PATH_MAX], int max_paths) {
 // wrong call. Each stateful function keeps a witness chain
 // ("tick -> bump -> count") for the namespace error.
 typedef struct { char name[128]; char type[160]; char file[PATH_MAX]; } AnaVar;
+// A struct definition for the COIL-146 registry: fields
+// serialized as "name\x1ftype" pairs joined by ';'.
+typedef struct { char name[128]; char def[2048]; int packed; int align; } AnaStruct;
 typedef struct {
     char name[128];
     char ret[64];
@@ -507,14 +510,31 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     g_ana_home_file[0] = 0;
     static AnaVar vars[64];
     static AnaFn fns[192];
-    int var_count = 0, fn_count = 0;
+    static AnaStruct structs[64];
+    int var_count = 0, fn_count = 0, struct_count = 0;
     for (int a = 0; a < nast; a++) {
         ASTNode *ast = asts[a];
         if (!ast || ast->type != AST_PROGRAM) continue;
         for (int i = 0; i < ast->child_count; i++) {
             ASTNode *ch = ast->children[i];
             if (!ch) continue;
-            if (ch->type == AST_VAR_DECL && ch->text[0] && var_count < 64) {
+            if (ch->type == AST_STRUCT_DECL && ch->text[0] && struct_count < 64) {
+                AnaStruct *st = &structs[struct_count];
+                memset(st, 0, sizeof(*st));
+                snprintf(st->name, sizeof(st->name), "%s", ch->text);
+                st->packed = ch->layout_packed;
+                st->align = ch->layout_align;
+                st->def[0] = 0;
+                for (int j = 0; j < ch->child_count; j++) {
+                    ASTNode *fd = ch->children[j];
+                    if (!fd || fd->type != AST_VAR_DECL || fd->child_count < 2 || !fd->children[1]) continue;
+                    if (st->def[0]) strncat(st->def, ";", sizeof(st->def) - strlen(st->def) - 1);
+                    strncat(st->def, fd->text, sizeof(st->def) - strlen(st->def) - 1);
+                    strncat(st->def, "\x1f", sizeof(st->def) - strlen(st->def) - 1);
+                    strncat(st->def, fd->children[1]->text, sizeof(st->def) - strlen(st->def) - 1);
+                }
+                struct_count++;
+            } else if (ch->type == AST_VAR_DECL && ch->text[0] && var_count < 64) {
                 AnaVar *v = &vars[var_count++];
                 memset(v, 0, sizeof(*v));
                 snprintf(v->name, sizeof(v->name), "%s", ch->text);
@@ -533,10 +553,29 @@ static void analyze_module(const char *module_name, ASTNode **asts,
                 if (ch->child_count > 0 && ch->children[0])
                     snprintf(fn->ret, sizeof(fn->ret), "%s", ch->children[0]->text);
                 fn->params[0] = 0;
+                int first_param = 1;
                 for (int k = 1; k < ch->child_count; k++) {
                     ASTNode *pr = ch->children[k];
                     if (!pr || pr->type == AST_BLOCK) break;
                     if (pr->type != AST_VAR_DECL || pr->child_count < 2) continue;
+                    // A struct method (COIL-146): the parser
+                    // mangles Struct.method to Struct_method
+                    // and injects a first parameter named
+                    // "self" of type "Struct*" - the '.' the
+                    // check above looks for never survives.
+                    // Methods are not module functions: they
+                    // stay out of the registry surface.
+                    if (first_param && strcmp(pr->text, "self") == 0) {
+                        const char *us = strchr(fn->name, '_');
+                        if (us) {
+                            char want[160];
+                            snprintf(want, sizeof(want), "%.*s*",
+                                     (int)(us - fn->name), fn->name);
+                            if (strcmp(pr->children[1]->text, want) == 0)
+                                fn->is_method = 1;
+                        }
+                    }
+                    first_param = 0;
                     if (fn->params[0]) strncat(fn->params, ",", sizeof(fn->params) - strlen(fn->params) - 1);
                     strncat(fn->params, pr->children[1]->text, sizeof(fn->params) - strlen(fn->params) - 1);
                 }
@@ -635,6 +674,13 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     }
     codegen_register_module_state(module_name, vnames, vtypes, var_count, sf, sc, sn, has_main,
                                   fnn, fnr, fnp, fnn_count);
+    const char *stn[64], *std_[64];
+    int stpk[64], stal[64];
+    for (int i = 0; i < struct_count; i++) {
+        stn[i] = structs[i].name; std_[i] = structs[i].def;
+        stpk[i] = structs[i].packed; stal[i] = structs[i].align;
+    }
+    codegen_register_module_structs(module_name, stn, std_, stpk, stal, struct_count);
 }
 
 // Compile all files of a directory module as one module (COIL-108).
