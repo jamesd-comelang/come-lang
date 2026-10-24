@@ -522,6 +522,35 @@ dummy-"" new_len calls in string.c. Pre-existing
 before the NUL-scanner audit, which preserved
 these allocation lines untouched.
 
+## Design 6 follow-up (DONE 2026-10-24, verdict: full LTO wins ~33%)
+
+Runtime objects are now built with -flto, so a
+user LTO link can inline runtime calls into user
+code (which gen-only LTO and user-only single-TU
+cannot do, since they lack runtime LTO info).
+-flto is added only in the runtime modules own
+Makefiles (mem/map/array/coro append it, incl.
+link.o via coro; std/string include it in their
+CFLAGS= lines); Makefile.inc itself is unchanged,
+so the compiler core, which also includes it,
+builds without -flto. (An earlier attempt edited
+Makefile.inc directly and leaked -flto into the
+core build; reverted and scoped per-module.)
+Measured on the tokenizer (checksums identical):
+control (-O2, -flto runtime, no LTO link)
+0.55-0.60 s vs full LTO (COME_CFLAGS="-O2 -flto",
+runtime + user code + link all -flto) 0.37-0.39 s
+- about a third faster, distributions
+non-overlapping (one 0.51 s cold first run
+excluded). Honest scope: runtime -flto alone
+does not speed up default builds (the control
+matches the old 0.54 s baseline within noise);
+the win needs the user to opt into LTO via
+COME_CFLAGS="-O2 -flto". So this change ENABLES
+an opt-in ~33% win at no measured default cost.
+Suites green from clean with the -flto runtime
+(Come 67/67, co_SQLite 7/7).
+
 ## Remaining (in order)
 
 - Design 2 (remainder): general transient-value
@@ -533,6 +562,3 @@ these allocation lines untouched.
   tiers driven by escape analysis. Needs general
   arenas (the frame-checkpoint mechanism now
   exists, but the tiers need arena values to skip).
-- Design 6 follow-up: runtime inlining (full LTO
-  or single-TU including runtime) - measure
-  before assuming it helps.
