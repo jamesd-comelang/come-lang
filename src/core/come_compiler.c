@@ -231,12 +231,20 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         for (int i = 0; i < ast->child_count; i++) {
             ASTNode* ch = ast->children[i];
             if (ch && ch->type == AST_EXPORT) {
-                const char* names[64];
+                // Past the cap the old code silently
+                // dropped the rest of the list (COIL-152);
+                // refuse the list instead.
+                if (ch->child_count > COME_MAX_EXPORTS)
+                    die("module '%s': the export list names %d symbols; the limit is %d",
+                        ast->text, ch->child_count, COME_MAX_EXPORTS);
+                const char* names[COME_MAX_EXPORTS];
                 int n = 0;
-                for (int j = 0; j < ch->child_count && n < 64; j++) {
+                for (int j = 0; j < ch->child_count && n < COME_MAX_EXPORTS; j++) {
                     names[n++] = ch->children[j]->text;
                 }
-                if (n > 0) codegen_register_module_exports(ast->text, names, n);
+                if (n > 0 && codegen_register_module_exports(ast->text, names, n) != 0)
+                    die("module '%s': more than %d exported symbols in total - the export registry is full",
+                        ast->text, COME_MAX_EXPORTS);
             }
         }
     }

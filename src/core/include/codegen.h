@@ -26,7 +26,15 @@ extern int g_codegen_system_module;
 // exported names as it parses the module's files; codegen then
 // rejects cross-module calls to symbols the module did not
 // export. A module with no export statement stays open.
-void codegen_register_module_exports(const char* module, const char** names, int count);
+// The most names one module may export (COIL-152). The
+// driver refuses a longer list outright; the registry
+// never truncates one silently.
+#define COME_MAX_EXPORTS 1024
+// Registers exported names; returns -1 when a name did
+// not fit under COME_MAX_EXPORTS (the caller refuses the
+// build - a silently dropped export is the bug COIL-152
+// removes).
+int codegen_register_module_exports(const char* module, const char** names, int count);
 // COIL-129: the driver registers every symbol (function,
 // global, constant) of a directory module's files before
 // generating any of them, so cross-file references are

@@ -538,30 +538,34 @@ static const char* find_module_fn_sig(const char* name) {
 // Module export registry (spec 3.4, COIL-127): see codegen.h.
 typedef struct {
     char module[128];
-    char names[64][128];
+    char names[COME_MAX_EXPORTS][128];
     int count;
 } ModuleExports;
 static ModuleExports g_exports[64];
 static int g_exports_count = 0;
 
-void codegen_register_module_exports(const char* module, const char** names, int count) {
+int codegen_register_module_exports(const char* module, const char** names, int count) {
     ModuleExports* e = NULL;
     for (int i = 0; i < g_exports_count; i++) {
         if (strcmp(g_exports[i].module, module) == 0) { e = &g_exports[i]; break; }
     }
     if (!e) {
-        if (g_exports_count >= 64) return;
+        if (g_exports_count >= 64) return -1;
         e = &g_exports[g_exports_count++];
         snprintf(e->module, sizeof(e->module), "%s", module);
         e->count = 0;
     }
-    for (int i = 0; i < count && e->count < 64; i++) {
+    int overflow = 0;
+    for (int i = 0; i < count; i++) {
         int dup = 0;
         for (int j = 0; j < e->count; j++) {
             if (strcmp(e->names[j], names[i]) == 0) dup = 1;
         }
-        if (!dup) snprintf(e->names[e->count++], sizeof(e->names[0]), "%s", names[i]);
+        if (dup) continue;
+        if (e->count >= COME_MAX_EXPORTS) { overflow = 1; continue; }
+        snprintf(e->names[e->count++], sizeof(e->names[0]), "%s", names[i]);
     }
+    return overflow ? -1 : 0;
 }
 
 // 1 when `symbol` may be referenced from outside `module`:
