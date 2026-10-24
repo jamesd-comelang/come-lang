@@ -6462,8 +6462,18 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 emit_indent(f, indent);
                 fprintf(f, "}\n");
             } else {
-                fprintf(f, "\n");
+                // COIL-159: a bare body must be braced.
+                // generate_node prepends the err_arm
+                // statement, and without braces the arm -
+                // not the body - became the loop body in
+                // C, so the body ran once after the loop
+                // (silent wrong results since COIL-139).
+                // Plain C braces only: no scope frame,
+                // preserving the bare body's semantics.
+                fprintf(f, "{\n");
                 generate_node(f, body, indent + 4);
+                emit_indent(f, indent);
+                fprintf(f, "}\n");
             }
             g_loop_depth_count--;
             g_break_depth--;

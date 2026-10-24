@@ -1,0 +1,21 @@
+module core_test
+import std
+
+// COIL-159: a braceless for body must run inside the loop.
+// Before the fix, generate_node's err_arm statement became
+// the loop body in C, so the body ran once after the loop
+// (silent wrong results since COIL-139).
+int f(int x) {
+    x = x + 1
+    return x
+}
+
+int main() {
+    int s = 0
+    for (int i = 0; i < 1000; i++) s = f(s)
+    if (s != 1000) { std.out.printf("FAIL: bare for body ran %d times, want 1000\n", s); return 1 }
+    int t = 0
+    for (int i = 0; i < 100; i++) t = t + i
+    if (t != 4950) { std.out.printf("FAIL: bare for sum %d, want 4950\n", t); return 1 }
+    return 0
+}
