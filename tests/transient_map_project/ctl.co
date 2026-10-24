@@ -1,0 +1,50 @@
+module main
+import std
+
+map{string, string} map_return() {
+    string a = "a"
+    string b = "b"
+    map{string, string} m
+    m["k"] = a + b
+    return m
+}
+
+int showlen(map{string, string} a) {
+    return a.length()
+}
+
+int map_callarg() {
+    string a = "a"
+    string b = "b"
+    map{string, string} m
+    m["k"] = a + b
+    if (showlen(m) == 1) {
+        return 1
+    }
+    return 0
+}
+
+int map_loop_outer() {
+    string a = "a"
+    string b = "b"
+    map{string, string} m
+    int i = 0
+    while (i < 2) {
+        m["k"] = a + b
+        i = i + 1
+    }
+    if (m["k"] == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    map{string, string} r = map_return()
+    if (r["k"] == "ab" && map_callarg() == 1 && map_loop_outer() == 1) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

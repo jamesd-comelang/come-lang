@@ -3698,8 +3698,14 @@ static void emit_adopt_value(FILE* f, int indent, const char* lv,
                 dst, lv, t, lv, t, dst);
         if (strcmp(mv, "string") == 0) {
             emit_indent(f, indent + 12);
-            fprintf(f, "if ((%s).data[_ca%d].value) { come_string_t* _cv = (come_string_t*)(%s).data[_ca%d].value; if (come_scope_adopt(%s, _cv->data)) _cv->ctx = %s; }\n",
-                    lv, t, lv, t, dst, dst);
+            // The value cell itself is a talloc chunk in
+            // the source scope too: adopting only its
+            // bytes leaves the cell to die with the
+            // frame, and the entry still points at it
+            // (use-after-free on a returned map -- found
+            // by the 4c-maps fixture under ASan).
+            fprintf(f, "if ((%s).data[_ca%d].value) { come_string_t* _cv = (come_string_t*)(%s).data[_ca%d].value; if (come_scope_adopt(%s, _cv->data)) _cv->ctx = %s; come_scope_adopt(%s, _cv); }\n",
+                    lv, t, lv, t, dst, dst, dst);
         } else {
             emit_indent(f, indent + 12);
             fprintf(f, "come_scope_adopt(%s, (%s).data[_ca%d].value);\n", dst, lv, t);
@@ -3882,6 +3888,14 @@ static void emit_map_ctx(FILE* f, ASTNode* base, const char* map_var) {
 }
 
 static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char* vtype, ASTNode* key_expr, ASTNode* val_expr) {
+    // Step 4c-maps: a transient map never escapes,
+    // so its keys/values never need eager promotion
+    // on put. Literal construction (base == NULL)
+    // builds a temporary that is then adopted, so
+    // it always promotes -- only named-local index
+    // stores suppress.
+    int transient_map = (base != NULL && map_var &&
+        codegen_transient_container(current_module, current_function_name, map_var));
     // COIL-157: entries live in the map's own context.
     // A map built in a loop and kept (or returned) keeps
     // its entries; a map dropped with its scope frees
@@ -3895,15 +3909,19 @@ static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char
         generate_expression(f, val_expr);
         fprintf(f, "); { come_string_t _ck = ");
         emit_string_expr(f, key_expr);
+        fprintf(f, ";");
         // Design 2 (redesign): promote an arena key
         // instead of adopting it (see emit_adopt_value).
-        fprintf(f, "; if (come_arena_contains(_ck.data)) _ck = come_string_promote(_ck, ");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, "); else if (come_scope_adopt(");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, ", _ck.data)) _ck.ctx = ");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, "; come_map_put(");
+        if (!transient_map) {
+            fprintf(f, " if (come_arena_contains(_ck.data)) _ck = come_string_promote(_ck, ");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, "); else if (come_scope_adopt(");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, ", _ck.data)) _ck.ctx = ");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, ";");
+        }
+        fprintf(f, " come_map_put(");
         emit_map_base_ref(f, base, map_var);
         fprintf(f, ", _ck, _vp); } }\n");
     } else if (strcmp(vtype, "string") == 0) {
@@ -3911,23 +3929,31 @@ static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char
         // stored value is a header value, not a pointer.
         fprintf(f, "{ come_string_t _cv = ");
         emit_string_expr(f, val_expr);
+        fprintf(f, ";");
         // Design 2 (redesign): promote an arena value
         // instead of adopting it (see emit_adopt_value).
-        fprintf(f, "; if (come_arena_contains(_cv.data)) _cv = come_string_promote(_cv, ");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, "); else if (come_scope_adopt(");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, ", _cv.data)) _cv.ctx = ");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, "; come_string_t* _vp = (come_string_t*)mem_talloc_alloc(");
+        if (!transient_map) {
+            fprintf(f, " if (come_arena_contains(_cv.data)) _cv = come_string_promote(_cv, ");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, "); else if (come_scope_adopt(");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, ", _cv.data)) _cv.ctx = ");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, ";");
+        }
+        fprintf(f, " come_string_t* _vp = (come_string_t*)mem_talloc_alloc(");
         emit_map_ctx(f, base, map_var);
         fprintf(f, ", sizeof(come_string_t)); *_vp = _cv; { come_string_t _ck = ");
         emit_string_expr(f, key_expr);
-        fprintf(f, "; if (come_scope_adopt(");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, ", _ck.data)) _ck.ctx = ");
-        emit_map_ctx(f, base, map_var);
-        fprintf(f, "; come_map_put(");
+        fprintf(f, ";");
+        if (!transient_map) {
+            fprintf(f, " if (come_scope_adopt(");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, ", _ck.data)) _ck.ctx = ");
+            emit_map_ctx(f, base, map_var);
+            fprintf(f, ";");
+        }
+        fprintf(f, " come_map_put(");
         emit_map_base_ref(f, base, map_var);
         fprintf(f, ", _ck, _vp); } }\n");
     } else {

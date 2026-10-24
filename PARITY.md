@@ -20,8 +20,8 @@ merged, or reverted independently later. Branch:
   frame tiers. Sliced like step 3: 4a (loop-body
   locals + printf borrows, DONE), 4b
   (multi-assignment init, DONE), first-assignment
-  locals (DONE), 4c-arrays (DONE, see below)
-  first, then 4c-maps, 4d (frame tiers).
+  locals (DONE), 4c-arrays (DONE), 4c-maps
+  (DONE, see below) first, then 4d (frame tiers).
 - HELD OUT (needs an explicit call, not covered by
   "do them"): an explicit unchecked/unsafe region.
   It is the only design that guarantees 1x, and it
@@ -391,6 +391,46 @@ Maps are NOT in this cutoff (emit_map_put
 suppression needs the named-local-only guard
 for literal construction) -- 4c-maps next.
 
+## Step 4c-maps DONE (2026-10-24): transient map containers (no eager key/value promotion)
+
+The container registry (transient.c) now records
+typed maps ("map{...}"; legacy plain "map"
+excluded) alongside arrays, sharing the
+never-escapes rule and the scope-depth store
+check. Codegen suppresses eager promotion in
+emit_map_put for named-local index stores only
+(base != NULL): int-value puts drop the key
+promote/adopt, string-value puts drop the value
+promote/adopt and the key adopt. Literal
+construction (base == NULL) always promotes --
+it builds a temporary that is then adopted, so
+suppressing there would be useless and unsafe.
+Test: `tests/transient_map_project/` +
+`tests/run_transient_map_test.sh` (positives:
+string-map, int-map, loop-body map -- NO
+promote and NO scope-adopt anywhere; controls:
+return, call arg, outer-loop store -- promote
+present; literal case pinned function-level to
+still promote; ASan). Two soundness fixes found
+by this work, both in this cutoff: (1) map
+adoption now also adopts string value CELLS, not
+just their bytes -- returning a map previously
+freed its value cells on frame pop
+(use-after-free, caught by the fixture under
+ASan); (2) scope depth now counts enclosing
+BLOCKs, not just loops, for first-assignment
+strings AND containers -- a value built in an
+inner block and stored into an outer container
+dies at block end, and the old loop-only depth
+called it safe (caught by the map scope test,
+which stores an inner-block string into an outer
+map; the same hole is closed for arrays and
+first-assignment strings). Suites green from
+clean (Come exit 0, "all green"; co_SQLite 7/7).
+Tokenizer bench: ~0.60 s, essentially unchanged
+(no maps in its hot path, as predicted). Step 4
+remaining: 4d frame tiers only.
+
 ## Step 4c design (2026-10-24, not yet implemented)
 
 Verified first, because it changes the shape of
@@ -466,11 +506,13 @@ local-scratch-container micro, not the tokenizer.
 
 ## Remaining (in order)
 
-- Step 4c-maps: transient containers, maps
-  (emit_map_put suppression for named transient
-  locals only; literal construction excluded).
 - Step 4d: Design 5 frame tiers (checkpoint /
   full), unblocked by 4a-4c.
+- Then, under the 2026-10-24 "exhaust everything"
+  authorization (unchecked region + port
+  restructuring both included): general interval
+  analysis, Rust/Go baselines, unchecked
+  opt-in, port restructuring.
 - HELD: explicit unchecked region (needs his call).
 - Future (not in the current step list): general
   interval analysis -- arbitrary index arithmetic,

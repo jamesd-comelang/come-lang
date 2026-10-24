@@ -1,0 +1,7 @@
+ok map_str
+ok map_int
+ok map_loop_body
+ok map_literal
+ok map_return
+ok map_callarg
+ok map_loop_outer

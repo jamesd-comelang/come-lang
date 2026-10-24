@@ -286,7 +286,14 @@ static int trans_is_pure_receiver_method(const char* m) {
 // declaration sits. First assignments (step 4b
 // remainder) are tracked here too: for each name, the
 // first ASSIGN's RHS concat-ness and whether every
-// assignment shares the declaration's loop depth.
+// assignment shares the declaration's SCOPE depth.
+// Scope depth counts enclosing BLOCKs, not just
+// loops: a value built in a nested block (or
+// if-branch) and stored into an outer variable
+// dies at block end, so such an assignment is
+// unsafe even though it is not in a loop (found by
+// the map scope test, which stores an inner-block
+// string into an outer map).
 static void trans_collect(ASTNode* node, TransCtx* ctx, int loop_depth) {
     if (!node) return;
     if (node->type == AST_ASSIGN && strcmp(node->text, "=") == 0 &&
@@ -335,8 +342,7 @@ static void trans_collect(ASTNode* node, TransCtx* ctx, int loop_depth) {
                 trans_expr_is_string(init, ctx));
     }
     int child_loop = loop_depth;
-    if (node->type == AST_WHILE || node->type == AST_FOR ||
-        node->type == AST_DO_WHILE) child_loop = loop_depth + 1;
+    if (node->type == AST_BLOCK) child_loop = loop_depth + 1;
     for (int i = 0; i < node->child_count; i++)
         trans_collect(node->children[i], ctx, child_loop);
 }
@@ -393,7 +399,8 @@ static int trans_container_use_bad(ASTNode* node, const char* name) {
         if (!ch) continue;
         if (ch->type == AST_IDENTIFIER && strcmp(ch->text, name) == 0) {
             int ok = 0;
-            if (node->type == AST_METHOD_CALL && i == 0) ok = 1;
+            if (node->type == AST_METHOD_CALL && i == 0 &&
+                strcmp(node->text, "chown") != 0) ok = 1;
             else if (node->type == AST_ARRAY_ACCESS && i == 0) ok = 1;
             else if (node->type == AST_ASSIGN && i == 0) ok = 1;
             if (!ok) return 1;
@@ -432,19 +439,23 @@ static int trans_cont_is_param(TransContCtx* ctx, const char* name) {
     return 0;
 }
 
-// Walk the body in order, recording array locals
-// and the loop depth of every element-adding store
+// Walk the body in order, recording array/map locals
+// and the scope depth of every element-adding store
 // into them (append/insert/set method calls and
 // index-store assignments). A store at a depth
-// other than the declaration's depth is loop-unsafe:
-// an outer container appended to in a loop would
-// hold arena elements freed at iteration end.
+// other than the declaration's depth is unsafe:
+// an outer container stored to from a nested scope
+// (loop body, block, if-branch) would hold values
+// freed at that scope's end. Scope depth counts
+// enclosing BLOCKs (loop bodies are BLOCKs, so the
+// loop rule is subsumed).
 static void trans_cont_collect(ASTNode* node, TransContCtx* ctx, int loop_depth) {
     if (!node) return;
     if (node->type == AST_VAR_DECL && node->child_count >= 2) {
         ASTNode* type_node = node->children[1];
         const char* t = type_node ? type_node->text : NULL;
-        if (t && strchr(t, '[') != NULL) {
+        if (t && (strchr(t, '[') != NULL ||
+                  strncmp(t, "map{", 4) == 0)) {
             if (trans_cont_find(ctx, node->text) >= 0) {
                 if (ctx->shadowed_count < TRANS_MAX_NAMES)
                     snprintf(ctx->shadowed[ctx->shadowed_count++], 128, "%s", node->text);
@@ -475,8 +486,7 @@ static void trans_cont_collect(ASTNode* node, TransContCtx* ctx, int loop_depth)
             ctx->loop_unsafe[idx] = 1;
     }
     int child_loop = loop_depth;
-    if (node->type == AST_WHILE || node->type == AST_FOR ||
-        node->type == AST_DO_WHILE) child_loop = loop_depth + 1;
+    if (node->type == AST_BLOCK) child_loop = loop_depth + 1;
     for (int i = 0; i < node->child_count; i++)
         trans_cont_collect(node->children[i], ctx, child_loop);
 }
