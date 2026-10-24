@@ -1,0 +1,25 @@
+// COIL-141: string.byte_array() must reach the runtime. The
+// codegen constructs come_string_<method> for string methods,
+// but the runtime exported this one as come_string_to_byte_array,
+// so the call was implicitly declared, returned int, and
+// initializing a byte[] from it failed in the generated C
+// ("invalid initializer").
+module main
+import std
+
+int main() {
+    string s = "AB"
+    byte[] b = s.byte_array()
+    if (b.length() != 2) { std.out.printf("FAIL length %d\n", b.length()); return 1 }
+    if (b[0] != 65 || b[1] != 66) { std.out.printf("FAIL bytes %d %d\n", b[0], b[1]); return 1 }
+    byte[] e = "".byte_array()
+    if (e.length() != 0) { std.out.printf("FAIL empty %d\n", e.length()); return 1 }
+    // UTF-8 bytes: "é" is the two bytes 0xC3 0xA9, which a byte
+    // holds signed as -61, -87.
+    byte[] u = "é".byte_array()
+    byte u0 = u[0]
+    byte u1 = u[1]
+    if (u.length() != 2 || u0 != -61 || u1 != -87) { std.out.printf("FAIL utf8 %d %d %d\n", u.length(), u0, u1); return 1 }
+    std.out.printf("PASS: 08-byte-array\n")
+    return 0
+}

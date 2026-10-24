@@ -584,7 +584,7 @@ int come_string_sscanf(come_string_t a, const char* fmt, ...) {
     return r;
 }
 
-come_byte_array_t come_string_to_byte_array(come_string_t a) {
+come_byte_array_t come_string_byte_array(come_string_t a) {
     come_byte_array_t ba = COME_HDR_INIT(sctx(a));
     ba.data = (uint8_t*)mem_talloc_alloc(a.ctx, a.count ? a.count : 1);
     if (!ba.data) return ba;

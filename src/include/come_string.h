@@ -102,7 +102,7 @@ int come_string_sscanf(come_string_t a, const char* fmt, ...);
 int come_string_vsscanf(come_string_t a, const char* fmt, va_list args);
 
 // Conversions
-come_byte_array_t come_string_to_byte_array(come_string_t a);
+come_byte_array_t come_string_byte_array(come_string_t a);
 long come_string_tol(come_string_t a);
 long come_string_tol_base(come_string_t a, int base);
 double come_string_tod(come_string_t a);
