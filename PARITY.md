@@ -589,6 +589,36 @@ twice) and for hard guarantees of no checks,
 not a tokenizer win. Port restructuring is where
 the tokenizer win must come from.
 
+## Port restructuring DONE (2026-10-24, co_SQLite redesign 74bce7c)
+
+fast_scan v3 (the A3 single-function scanner,
+revived now that port restructuring is
+authorized): whole body runs unchecked (every
+read guarded by the code's own while/if logic,
+so raw reads are in bounds; unchecked only
+drops the redundant macro ternary); keyword
+path uses lookup_lower (no char-index walk,
+no substr allocation, matching tk_scan); all
+break-based run loops converted to flag exits
+so loop bodies are clean (no per-iteration
+scope frames: pushes 63 -> 3, checked reads
+48 -> 0). Verified: co_SQLite 7/7 green (07
+differential fast == slow, transitively vs C),
+bench checksums exact. Measured (identical
+work, 2,530,480 tokens): default fast ~490 ms
+vs slow ~600 ms (18% win); with --lto both
+~380 ms (LTO equalizes them). Conclusion:
+scanner structure is NO LONGER the bottleneck
+under LTO -- the remaining gap to Rust (~80 ms)
+and Go (~131 ms) is runtime/codegen overhead
+(headers, markers, map implementation, method
+dispatch), not the scanner's shape. Further
+parity work belongs at the language/runtime
+level, not in the port. The faithful tk_scan
+remains the primary scanner; fast_scan is a
+verified faster alternative (adoption is the
+founder's call).
+
 ## Step 4c design (2026-10-24, not yet implemented)
 
 Verified first, because it changes the shape of
@@ -666,8 +696,7 @@ local-scratch-container micro, not the tokenizer.
   "exhaust everything" authorization: unchecked
   region + port restructuring both included)
 
-- Port restructuring of the co_SQLite tokenizer
-  (table-driven, bulk reads, raw iteration).
+
 - HELD: explicit unchecked region (needs his call).
 - Future (not in the current step list): general
   interval analysis -- arbitrary index arithmetic,
