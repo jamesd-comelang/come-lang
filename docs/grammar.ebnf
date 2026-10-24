@@ -72,6 +72,7 @@ type           = primitive_type
                | identifier           /* struct, union, or alias name */
                | array_type
                | map_type
+               | "&" "(" "struct" identifier ")"   /* reference (spec 6.2) */
                ;
 array_type     = type "[" [ integer ] "]" ;
 map_type       = "map" "{" type "," type "}" ;

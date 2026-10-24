@@ -756,34 +756,23 @@ away from a ready implementation.
    precise about the context model, or (B) the promotion
    passage is rewritten as reject-only. Every other part of
    §7.2 has been written around this paragraph.
-2. **§3.4 namespacing.** Module constants and types are not
-   namespaced in generated C, so cross-module
-   `geom.Point`/`geom.PI` do not resolve, struct values
-   cannot be materialized by importers, and cross-module
-   reference calls are unchecked. This is now on the
-   critical path for two features (below and module
-   instances).
-3. **Module instances.** Discussed 2026-10-22: namespace-only
-   `import` plus `.create()` for instances, with
-   statefulness computed transitively over the call graph
-   and namespace-export violations reported as authoring
-   errors. Undecided: default instance or none, exit as a
-   lifetime hook or a method, language feature vs the
-   already-working pattern (a state struct plus functions
-   taking `&(struct State)`), and calls on an exited
-   instance.
-4. **v1.1.0 release.** The v1.1.0 stories (COIL-135–138)
-   are complete on `main`; tagging and releasing are the
-   maintainer's go-ahead.
+
+Resolved since this section was written: the §3.4
+namespacing question — cross-module types resolve and
+struct values materialize in importers (COIL-146), and a
+constant belongs to its module, visible per the export
+rule (COIL-148); module instances, decided and built
+(COIL-140, with the module-scope creation rule in
+COIL-149); and the v1.1.0 release (2026-10-23).
 
 ### Known limitations
 
 The canonical list is the **COIL-137 findings list**
-(29 items, kept with the maintainer's working files;
+(36 items, kept with the maintainer's working files;
 `come-edge-case-findings.md`). The load-bearing ones:
 
-- **Typed-map `.remove()` is broken in codegen** (emits a
-  call to an unrelated runtime function; cannot build).
+- **Typed-map `.remove()` is broken in codegen** (the
+  call compiles to a no-op — the entry silently stays).
 - **Integer `/` and `%` by zero crash** with SIGFPE;
   float→int out-of-range casts and signed overflow are C
   undefined behavior; there is no `-fwrapv` yet.
@@ -812,8 +801,7 @@ The canonical list is the **COIL-137 findings list**
   mistypes a string `+` result as a string list and does
   not know `substr()`'s return type; some type errors
   still surface as raw C diagnostics; coroutine stack
-  overflow is a crash, not a report; `grammar.ebnf`
-  predates the COIL-136 reference productions.
+  overflow is a crash, not a report.
 
 ### Planned features (post-v1 backlog, from the roadmap)
 
@@ -831,5 +819,4 @@ The canonical list is the **COIL-137 findings list**
   list: structs as payload types (one story closing the
   array/map/spawn/link gaps together), struct `.dup()`,
   and the hardening batch (defined divide-by-zero and
-  cast behavior, per-coroutine `ERR` with defined
-  clearing, a coroutine stack guard page).
+  cast behavior, a coroutine stack guard page).
