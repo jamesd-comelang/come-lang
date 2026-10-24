@@ -1503,7 +1503,8 @@ static int mayfail_method_fails(const char* m) {
         "at", "tol", "tod", "insert", "remove", "get",
         "open", "close", "fdopen", "reopen", "fileno",
         "read", "write", "getc", "putc", "gets", "puts",
-        "fname", "ungetc", "getenv", "init", "exit", NULL };
+        "fname", "ungetc", "getenv", "init", "exit",
+        "lookup_lower", NULL };
     for (int i = 0; fails[i]; i++)
         if (strcmp(m, fails[i]) == 0) return 1;
     return 0;
@@ -2272,7 +2273,7 @@ static int is_typed_map_method(ASTNode* receiver, const char* method) {
            strcmp(method, "delete") == 0 || strcmp(method, "clear") == 0 ||
            strcmp(method, "keys") == 0 || strcmp(method, "type") == 0 ||
            strcmp(method, "owner") == 0 || strcmp(method, "chown") == 0 ||
-           strcmp(method, "dup") == 0;
+           strcmp(method, "lookup_lower") == 0 || strcmp(method, "dup") == 0;
 }
 
 // Emit an expression in a position that needs a come_string_t:
@@ -4367,6 +4368,28 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  fprintf(f, "come_map_keys(");
                  generate_expression(f, receiver);
                  fprintf(f, ")");
+             } else if (strcmp(method, "lookup_lower") == 0) {
+                 // Byte-range lookup with the range lowercased
+                 // (Design 3): m.lookup_lower(bytes, pos, len)
+                 // returns the value with ERR set on a miss,
+                 // like a typed map read, but materializes no
+                 // string. Args default to an empty range.
+                 fprintf(f, "({ void* _p = come_map_get_lower_e(");
+                 generate_expression(f, receiver);
+                 fprintf(f, ", ");
+                 if (node->child_count > 1) generate_expression(f, node->children[1]);
+                 else fprintf(f, "(come_byte_array_t){0}");
+                 fprintf(f, ", ");
+                 if (node->child_count > 2) generate_expression(f, node->children[2]);
+                 else fprintf(f, "0");
+                 fprintf(f, ", ");
+                 if (node->child_count > 3) generate_expression(f, node->children[3]);
+                 else fprintf(f, "0");
+                 if (strcmp(mvt, "int") == 0) {
+                     fprintf(f, "); _p ? *(int*)_p : 0; })");
+                 } else {
+                     fprintf(f, "); _p ? *(come_string_t*)_p : come_string_new(COME_CTX, \"\"); })");
+                 }
              } else if (strcmp(method, "type") == 0) {
                  fprintf(f, "come_string_new(COME_CTX, \"map\")");
              } else if (strcmp(method, "owner") == 0) {

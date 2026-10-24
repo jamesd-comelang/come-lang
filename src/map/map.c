@@ -106,6 +106,48 @@ void* come_map_get_e(come_map_t m, come_string_t key) {
     return v;
 }
 
+// Byte-range lookup with the range lowercased (ASCII) for
+// hashing and comparison, and no string materialization
+// (Design 3 verification: the keyword path's substr +
+// lower + map read collapse into this one call). Contract:
+// the range is lowercased, so it matches keys stored in
+// lowercase; a stored uppercase byte can never match,
+// because its stored hash differs. On a miss sets ERR
+// (ENOENT), like come_map_get_e; out of range sets ERR
+// (ERANGE). Returns the value cell or NULL.
+void* come_map_get_lower_e(come_map_t m, come_byte_array_t b, int pos, int len) {
+    if (!m.data || m.cap == 0) { come_ERR_set(ENOENT, "map key not found"); return NULL; }
+    const unsigned char* data = (const unsigned char*)b.data;
+    if (!data || pos < 0 || len < 0 || (int64_t)pos + (int64_t)len > (int64_t)b.count) {
+        come_ERR_set(ERANGE, "byte range out of bounds");
+        return NULL;
+    }
+    uint32_t hash = 5381;
+    for (int i = 0; i < len; i++) {
+        unsigned char c = data[pos + i];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        hash = ((hash << 5) + hash) + c;
+    }
+    uint32_t idx = hash % m.cap;
+    uint32_t start = idx;
+    while (m.data[idx].occupied) {
+        const char* k = kdata(&m.data[idx].key);
+        if (strlen(k) == (size_t)len) {
+            int eq = 1;
+            for (int i = 0; i < len; i++) {
+                unsigned char c = data[pos + i];
+                if (c >= 'A' && c <= 'Z') c += 32;
+                if (c != (unsigned char)k[i]) { eq = 0; break; }
+            }
+            if (eq) return m.data[idx].value;
+        }
+        idx = (idx + 1) % m.cap;
+        if (idx == start) break;
+    }
+    come_ERR_set(ENOENT, "map key not found");
+    return NULL;
+}
+
 void come_map_remove(come_map_t* m, come_string_t key) {
     if (!m || !m->data) return;
 

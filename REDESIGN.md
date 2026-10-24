@@ -62,12 +62,61 @@ the test still pins the uncovered region, now accurately.
 
 ## Remaining (in order)
 
-- Design 3: string views (non-allocating substr/slices) +
-  byte view + ASCII fast path. Biggest measured cost
-  (keyword path ~2/3 of full-workload time).
+- Design 3 — keyword-path verification (DONE 2026-10-24)
+
+Views alone would not have fixed the keyword path: `lower()`
+must allocate by nature (it changes bytes), and the branch
+also paid a char-index walk plus a substr alloc. So the
+verification uses the sound primitive the path actually
+needs, instead of general views:
+
+- New runtime `come_map_get_lower_e(map, bytes, pos, len)`
+  (src/map/map.c): DJB2 over the range lowercased
+  (ASCII) on the fly — the same hash as the stored
+  lowercase keys — then linear-probe with a lowercased
+  compare. No allocation. Miss sets ERR (ENOENT) like
+  get_e; out of range sets ERR (ERANGE). Contract:
+  matches keys stored in lowercase; a stored uppercase
+  byte can never match (its hash differs).
+- New typed-map method `m.lookup_lower(bytes, pos, len)`
+  (codegen dispatch + may-fail list, so A4 arms its
+  statements): returns the value with ERR set on a miss,
+  mirroring a typed map read, for int and string values.
+- co_SQLite `redesign` branch: tk_scan's keyword branch
+  now does `kw.lookup_lower(b, pos, j - pos)` with the
+  ERR dance, replacing the tk_char_index walk + substr
+  + lower + map read. `sql` is now unused in tk_scan
+  (signature kept so callers don't change; dropping it
+  is follow-up cleanup if the path is adopted).
+
+Results (same bench, checksums identical):
+
+- Faithful + A4: 2.01 s -> 0.90 s with the lookup.
+- Faithful + A4 + generated-only LTO: ~0.75 s.
+  Gap to C (0.033 s) now ~23x, from ~115x at the start
+  of perf work and ~42x at A5+combo.
+- Suites green from clean, 0 warnings: Come 67 passed,
+  0 failed; co_SQLite 7 passed, 0 failed (differential
+  vs C, upstream tokenize.test, fuzz all cover the new
+  path). fastscan (A3 trial) untouched; it can adopt
+  lookup_lower too.
+
+What Design 3 did NOT do, and why: general substr views
+and byte views are unsound without escape analysis — a
+view dangles when its parent's scope pops first, and
+return adoption would corrupt the parent by re-parenting
+its data chunk. So general views ride on Design 1
+(escape analysis), which will either prove views
+transient or reject escaping ones. The ASCII fast path
+was assessed and parked: the tokenizer is byte-based,
+so char-level O(1) indexing buys it nothing measurable;
+it may still help char-heavy code later.
+
+## Remaining (in order)
+
 - Design 1+2: escape analysis + arena scopes for
   non-escaping values. A4's fixpoint is the reusable
-  machinery.
+  machinery. Unlocks sound general views (above).
 - Design 5: frame tiers (no frame / checkpoint / full
   frame) driven by escape analysis. Needs arenas first.
 - Design 6: cross-module inlining / single-TU codegen.

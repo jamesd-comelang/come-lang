@@ -43,6 +43,7 @@ void come_map_free(come_map_t* m);
 // method table. ERR is errno-backed, so a miss sets errno = ENOENT,
 // which is what ERR.no()/ERR.str() report.
 void* come_map_get_e(come_map_t m, come_string_t key);
+void* come_map_get_lower_e(come_map_t m, come_byte_array_t b, int pos, int len);
 int come_map_remove_e(come_map_t* m, come_string_t key);
 void come_map_clear(come_map_t* m);
 come_string_list_t come_map_keys(come_map_t m);
