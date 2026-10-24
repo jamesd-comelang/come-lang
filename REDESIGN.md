@@ -114,10 +114,70 @@ it may still help char-heavy code later.
 
 ## Remaining (in order)
 
+- Design 5 no-frame tier (DONE 2026-10-24)
+
+Stub trial first: plain push/pop as no-ops (with
+pop_to_marker still really popping the function
+marker, or markers strand) gave 0.90 s -> 0.60 s,
+checksums identical — block/loop frames were a
+third of the bench. So the no-frame tier was built
+for real, without escape analysis: a block's frame
+is skipped only when the frame would be empty.
+
+- Predicate `block_is_clean` (codegen.c): mirrors
+  frame_walk_clean at codegen time against live
+  local tables (the analysis tracker is stale by
+  then). Clean = scalar-only locals, plain `=`
+  only, `+` only on provably scalar operands,
+  calls only to frameless functions, methods only
+  length/bytesize/owner or same-module frameless
+  calls. String/aggregate literals, break/continue,
+  spawn/yield, switch, non-frameless calls all
+  disqualify.
+- Why it is sound: lexical depths are unchanged
+  (scope_depth_push/pop still run), so break
+  targets and variable scopes resolve exactly as
+  before; pop_to_depth pops "everything above an
+  index", which stays correct when the missing
+  frames are empty. Buffer variables referenced
+  inside the block are declared outside it (a
+  buffer declaration anywhere in the subtree
+  disqualifies), so their adoption targets, at
+  depths shallower than the block, are unaffected.
+  Returned buffers adopt to caller_ctx, a
+  marker-based lookup, never to a skipped block.
+- Emission: AST_BLOCK, WHILE, FOR, DO_WHILE
+  bodies skip push/pop when clean; SPAWN bodies
+  left alone (conservative). The C braces stay.
+- Test: tests/run_cleanblock_test.sh +
+  tests/cleanblock_project/ (output + ASan +
+  generated-C push count == 3: dirty loop,
+  break loop, break if; clean loop, clean if,
+  and outer-buffer-assign if all skip).
+
+Results (same bench, checksums identical):
+
+- Faithful + A4 + lookup: 0.90 s -> 0.66 s.
+- Faithful + A4 + lookup + clean blocks +
+  generated-only LTO: ~0.52 s. Gap to C
+  (0.033 s) now ~16x, from ~115x at the start
+  of perf work.
+- Suites green from clean, 0 warnings: Come
+  67 passed, 0 failed (plus the new cleanblock
+  e2e); co_SQLite 7 passed, 0 failed.
+
+The checkpoint and full-frame tiers of Design 5
+still need escape analysis (a checkpoint is an
+arena pointer save/restore), so they wait on
+Design 1+2.
+
+## Remaining (in order)
+
 - Design 1+2: escape analysis + arena scopes for
   non-escaping values. A4's fixpoint is the reusable
-  machinery. Unlocks sound general views (above).
-- Design 5: frame tiers (no frame / checkpoint / full
-  frame) driven by escape analysis. Needs arenas first.
+  machinery. Unlocks sound general views (above)
+  and the checkpoint tier.
+- Design 5 (remainder): checkpoint / full-frame
+  tiers driven by escape analysis.
 - Design 6: cross-module inlining / single-TU codegen.
   LTO already covers most of this; lowest priority.

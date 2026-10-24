@@ -1,0 +1,48 @@
+module main
+import std
+int main() {
+    // Clean loop body: scalars only, no calls, no
+    // literals -> its per-iteration frame is skipped.
+    int s = 0
+    int i = 0
+    while (i < 100) {
+        s = s + i
+        i = i + 1
+    }
+    std.out.printf("%d\n", s)
+    // Dirty loop body: string concatenation allocates
+    // per iteration -> its frame is kept.
+    string t = ""
+    int k = 0
+    while (k < 3) {
+        t = t + "x"
+        k = k + 1
+    }
+    std.out.printf("%s %d\n", t, k)
+    // A break anywhere in the body (here inside the
+    // if) keeps both the loop body and the if block
+    // framed: the loop-target math must see frames.
+    int b = 0
+    int m = 0
+    while (m < 10) {
+        if (m == 3) { break }
+        b = b + 1
+        m = m + 1
+    }
+    std.out.printf("%d %d\n", b, m)
+    // Clean if block: a scalar assignment only.
+    int v = 0
+    if (s == 4950) {
+        v = 42
+    }
+    std.out.printf("%d\n", v)
+    // Clean if block: assigning an outer buffer
+    // variable from an outer buffer value allocates
+    // nothing, so no frame is needed.
+    string out = ""
+    if (v == 42) {
+        out = t
+    }
+    std.out.printf("%s\n", out)
+    return 0
+}

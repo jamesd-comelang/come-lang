@@ -2376,6 +2376,197 @@ static void emit_file_closes_for(FILE* f, ASTNode* block, int upto, int indent) 
 }
 
 static void generate_node(FILE* f, ASTNode* node, int indent);
+// ---- Clean blocks (redesign, Design 5 no-frame tier) ----
+// A block whose frame would be empty may skip its push/pop:
+// the frame's only job is freeing what the block creates,
+// and a clean block creates nothing. The predicate mirrors
+// frame_walk_clean, but runs at codegen time against the
+// live local tables (the analysis tracker is stale by
+// then), with one extra conservatism: a call used as a
+// `+` operand is never scalar, since its return type is
+// not visible here. Soundness notes:
+// - Lexical depths are unchanged: scope_depth_push/pop
+//   still run, so break/continue targets and variable
+//   scopes resolve exactly as before; only frame
+//   presence changes, and pop_to_depth pops "everything
+//   above an index", which stays correct when the
+//   missing frames are empty.
+// - Buffer variables referenced inside the block are
+//   declared outside it (a buffer declaration anywhere
+//   in the subtree disqualifies), so their adoption
+//   targets, at depths shallower than the block, are
+//   unaffected by the missing frame.
+// - A returned buffer value adopts to caller_ctx, a
+//   marker-based lookup, never to a skipped block.
+// - Break/continue fall in the default case and
+//   disqualify, so the loop-target math never sees a
+//   skipped frame on its path.
+typedef struct { char name[128]; char type[128]; } CleanVar;
+static CleanVar g_clean_vars[512];
+static int g_clean_var_count = 0;
+
+static const char* clean_var_get(const char* name) {
+    for (int i = g_clean_var_count - 1; i >= 0; i--)
+        if (strcmp(g_clean_vars[i].name, name) == 0) return g_clean_vars[i].type;
+    return NULL;
+}
+
+static void clean_var_set(const char* name, const char* type) {
+    if (g_clean_var_count >= 512) return;
+    snprintf(g_clean_vars[g_clean_var_count].name, sizeof(g_clean_vars[0].name), "%s", name);
+    snprintf(g_clean_vars[g_clean_var_count].type, sizeof(g_clean_vars[0].type), "%s", type);
+    g_clean_var_count++;
+}
+
+// Identifier type: the walk's own tracker first (a
+// declaration inside the block), then codegen's tables
+// (enclosing locals and module variables).
+static const char* clean_ident_type(const char* name) {
+    const char* t = clean_var_get(name);
+    if (t) return t;
+    return dispatch_type_of(name);
+}
+
+static int clean_operand_scalar(ASTNode* n) {
+    if (!n) return 0;
+    switch (n->type) {
+        case AST_NUMBER: case AST_BOOL_LITERAL: return 1;
+        case AST_IDENTIFIER: return frame_scalar_type(clean_ident_type(n->text));
+        case AST_ARRAY_ACCESS: {
+            if (n->child_count < 1 || !n->children[0] ||
+                n->children[0]->type != AST_IDENTIFIER) return 0;
+            const char* t = clean_ident_type(n->children[0]->text);
+            if (!t) return 0;
+            if (strcmp(t, "string") == 0) return 1; // s[i] is wchar
+            size_t L = strlen(t);
+            if (L > 2 && strcmp(t + L - 2, "[]") == 0) {
+                char base[128];
+                snprintf(base, sizeof(base), "%.*s", (int)(L - 2), t);
+                return frame_scalar_type(base);
+            }
+            return 0;
+        }
+        case AST_CAST:
+            return n->child_count >= 1 && n->children[0] &&
+                   frame_scalar_type(n->children[0]->text);
+        case AST_METHOD_CALL:
+            return strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0;
+        case AST_TERNARY:
+            return n->child_count >= 3 && clean_operand_scalar(n->children[1]) &&
+                   clean_operand_scalar(n->children[2]);
+        default: return 0; // calls: return type not visible here
+    }
+}
+
+static int clean_walk(ASTNode* n) {
+    if (!n) return 1;
+    switch (n->type) {
+        case AST_BLOCK:
+        case AST_IF:
+        case AST_ELSE:
+        case AST_WHILE:
+        case AST_FOR:
+        case AST_DO_WHILE: {
+            int save = g_clean_var_count;
+            int ok = 1;
+            for (int i = 0; i < n->child_count && ok; i++)
+                ok = clean_walk(n->children[i]);
+            g_clean_var_count = save;
+            return ok;
+        }
+        case AST_VAR_DECL: {
+            if (n->child_count < 2 || !n->children[1]) return 0;
+            const char* t = n->children[1]->text;
+            ASTNode* init = n->children[0];
+            if (frame_scalar_type(t)) {
+                clean_var_set(n->text, t);
+                return clean_walk(init);
+            }
+            if (strcmp(t, "var") == 0) {
+                if (!init) return 0;
+                if (init->type == AST_NUMBER) { clean_var_set(n->text, "int"); return 1; }
+                if (init->type == AST_BOOL_LITERAL) { clean_var_set(n->text, "bool"); return 1; }
+                if (init->type == AST_IDENTIFIER) {
+                    const char* it = clean_ident_type(init->text);
+                    if (frame_scalar_type(it)) { clean_var_set(n->text, it); return 1; }
+                }
+                return 0;
+            }
+            return 0; // buffer, struct, ref, instance, unknown: needs a frame
+        }
+        case AST_ASSIGN: {
+            if (strcmp(n->text, "=") != 0) return 0; // compound: string += allocates
+            for (int i = 0; i < n->child_count; i++)
+                if (!clean_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_CALL: {
+            if (!codegen_is_frameless(current_module, n->text)) return 0;
+            for (int i = 0; i < n->child_count; i++)
+                if (!clean_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_METHOD_CALL: {
+            // A same-module call written module.fn(...).
+            if (n->child_count > 0 && n->children[0] &&
+                n->children[0]->type == AST_IDENTIFIER &&
+                strcmp(n->children[0]->text, current_module) == 0) {
+                if (!codegen_is_frameless(current_module, n->text)) return 0;
+                for (int i = 0; i < n->child_count; i++)
+                    if (!clean_walk(n->children[i])) return 0;
+                return 1;
+            }
+            if (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0 ||
+                strcmp(n->text, "owner") == 0) {
+                for (int i = 0; i < n->child_count; i++)
+                    if (!clean_walk(n->children[i])) return 0;
+                return 1;
+            }
+            return 0;
+        }
+        case AST_BINARY_OP: {
+            if (n->child_count >= 2 && strcmp(n->text, "+") == 0) {
+                if (!clean_operand_scalar(n->children[0]) ||
+                    !clean_operand_scalar(n->children[1]))
+                    return 0;
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (!clean_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_CAST: {
+            if (n->child_count < 1 || !n->children[0]) return 0;
+            if (!frame_scalar_type(n->children[0]->text)) return 0;
+            for (int i = 1; i < n->child_count; i++)
+                if (!clean_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_RETURN:
+        case AST_UNARY_OP:
+        case AST_POST_INC:
+        case AST_POST_DEC:
+        case AST_TERNARY:
+        case AST_ARRAY_ACCESS:
+        case AST_MEMBER_ACCESS:
+        case AST_IDENTIFIER:
+        case AST_NUMBER:
+        case AST_BOOL_LITERAL:
+            for (int i = 0; i < n->child_count; i++)
+                if (!clean_walk(n->children[i])) return 0;
+            return 1;
+        default:
+            return 0; // string/aggregate literals, break, continue,
+                      // switch, spawn, yield, printf, net, ... : needs a frame
+    }
+}
+
+// 1 = the block's frame would be empty: skip its push/pop.
+static int block_is_clean(ASTNode* block) {
+    if (!block || block->type != AST_BLOCK) return 0;
+    g_clean_var_count = 0;
+    return clean_walk(block);
+}
+
 static void generate_block_children(FILE* f, ASTNode* block, int indent) {
     for (int i = 0; i < block->child_count; i++) {
         ASTNode* ch = block->children[i];
@@ -6100,17 +6291,21 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // two sibling blocks could not reuse a name.
             // COIL-157: it is also its own scope context:
             // buffers a block creates die at its end.
+            // Redesign: a clean block's frame would be
+            // empty, so it is skipped; the C braces stay,
+            // and lexical depth counting is unchanged.
             emit_indent(f, indent);
             fprintf(f, "{\n");
+            int clean = block_is_clean(node);
             emit_indent(f, indent + 1);
-            fprintf(f, "come_scope_push();\n");
+            if (!clean) fprintf(f, "come_scope_push();\n");
             scope_depth_push();
             generate_block_children(f, node, indent + 1);
             scope_depth_pop();
             // A block ending in a return never reaches its
             // pop: the return already popped to the marker.
-            if (node->child_count == 0 ||
-                node->children[node->child_count - 1]->type != AST_RETURN) {
+            if (!clean && (node->child_count == 0 ||
+                node->children[node->child_count - 1]->type != AST_RETURN)) {
                 emit_indent(f, indent + 1);
                 fprintf(f, "come_scope_pop();\n");
             }
@@ -7034,16 +7229,20 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // Body is a block usually?
             ASTNode* body = node->children[1];
             if (body->type == AST_BLOCK) {
+                 // Clean blocks (redesign): a frame that
+                 // would be empty is skipped; lexical
+                 // depth counting is unchanged.
+                 int clean = block_is_clean(body);
                  emit_indent(f, indent+4);
-                 fprintf(f, "come_scope_push();\n");
+                 if (!clean) fprintf(f, "come_scope_push();\n");
                  scope_depth_push();
                  for(int i=0; i<body->child_count; i++) generate_node(f, body->children[i], indent+4);
                  scope_depth_pop();
                  // A body ending in a return never reaches
                  // its pop: the return already popped to
                  // the marker.
-                 if (body->child_count == 0 ||
-                     body->children[body->child_count - 1]->type != AST_RETURN) {
+                 if (!clean && (body->child_count == 0 ||
+                     body->children[body->child_count - 1]->type != AST_RETURN)) {
                      emit_indent(f, indent+4);
                      fprintf(f, "come_scope_pop();\n");
                  }
@@ -7067,16 +7266,20 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
              ASTNode* body = node->children[0];
             if (body->type == AST_BLOCK) {
+                 // Clean blocks (redesign): a frame that
+                 // would be empty is skipped; lexical
+                 // depth counting is unchanged.
+                 int clean = block_is_clean(body);
                  emit_indent(f, indent+4);
-                 fprintf(f, "come_scope_push();\n");
+                 if (!clean) fprintf(f, "come_scope_push();\n");
                  scope_depth_push();
                  for(int i=0; i<body->child_count; i++) generate_node(f, body->children[i], indent+4);
                  scope_depth_pop();
                  // A body ending in a return never reaches
                  // its pop: the return already popped to
                  // the marker.
-                 if (body->child_count == 0 ||
-                     body->children[body->child_count - 1]->type != AST_RETURN) {
+                 if (!clean && (body->child_count == 0 ||
+                     body->children[body->child_count - 1]->type != AST_RETURN)) {
                      emit_indent(f, indent+4);
                      fprintf(f, "come_scope_pop();\n");
                  }
@@ -7149,8 +7352,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             ASTNode* body = node->children[3];
             if (body->type == AST_BLOCK) {
                 fprintf(f, "{\n");
+                // Clean blocks (redesign): a frame that
+                // would be empty is skipped; lexical
+                // depth counting is unchanged.
+                int clean = block_is_clean(body);
                 emit_indent(f, indent + 4);
-                fprintf(f, "come_scope_push();\n");
+                if (!clean) fprintf(f, "come_scope_push();\n");
                 scope_depth_push();
                 for (int i = 0; i < body->child_count; i++) {
                     generate_node(f, body->children[i], indent + 4);
@@ -7159,8 +7366,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 // A body ending in a return never reaches
                 // its pop: the return already popped to
                 // the marker.
-                if (body->child_count == 0 ||
-                    body->children[body->child_count - 1]->type != AST_RETURN) {
+                if (!clean && (body->child_count == 0 ||
+                    body->children[body->child_count - 1]->type != AST_RETURN)) {
                     emit_indent(f, indent + 4);
                     fprintf(f, "come_scope_pop();\n");
                 }
