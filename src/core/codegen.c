@@ -2980,12 +2980,189 @@ static int block_is_clean(ASTNode* block) {
     return clean_walk(block);
 }
 
+// Parity step 1 (parity branch): guard-dominated bounds-check
+// elimination, narrow slice. A proven set of (buffer,
+// index) identifier pairs threads through statement
+// generation: an early-exit guard adds its pair after
+// the guard statement, a positive guard adds its pair
+// inside its then-branch only, and any statement
+// containing an assignment or a call voids all pairs
+// (conservative: it may have changed a proven buffer
+// or index). Block entry saves the set and block exit
+// restores it, so proofs never leak out of a block or
+// into a loop body's next iteration. Function entry
+// clears the set. If a proof fails for any reason,
+// the access keeps its check -- a missed proof can
+// only miss an optimization, never remove a
+// load-bearing check.
+typedef struct { char buf[128]; char idx[128]; } BoundProof;
+static BoundProof g_bound_proofs[64];
+static int g_bound_proof_count = 0;
+static void bound_proof_clear(void) { g_bound_proof_count = 0; }
+static void bound_proof_add(const char* buf, const char* idx) {
+    for (int i = 0; i < g_bound_proof_count; i++)
+        if (strcmp(g_bound_proofs[i].buf, buf) == 0 &&
+            strcmp(g_bound_proofs[i].idx, idx) == 0) return;
+    if (g_bound_proof_count >= 64) return;
+    snprintf(g_bound_proofs[g_bound_proof_count].buf, 128, "%s", buf);
+    snprintf(g_bound_proofs[g_bound_proof_count].idx, 128, "%s", idx);
+    g_bound_proof_count++;
+}
+static int bound_proof_has(const char* buf, const char* idx) {
+    for (int i = 0; i < g_bound_proof_count; i++)
+        if (strcmp(g_bound_proofs[i].buf, buf) == 0 &&
+            strcmp(g_bound_proofs[i].idx, idx) == 0) return 1;
+    return 0;
+}
+static int bound_proof_save(BoundProof* dst) {
+    int n = g_bound_proof_count;
+    for (int i = 0; i < n; i++) dst[i] = g_bound_proofs[i];
+    return n;
+}
+static void bound_proof_restore(BoundProof* src, int n) {
+    for (int i = 0; i < n; i++) g_bound_proofs[i] = src[i];
+    g_bound_proof_count = n;
+}
+// Is node `<buf>.length()` with an identifier receiver?
+// If so, copy the receiver name to buf_out and return 1.
+static int bound_len_call(ASTNode* node, char* buf_out) {
+    if (!node || node->type != AST_METHOD_CALL ||
+        strcmp(node->text, "length") != 0) return 0;
+    if (node->child_count < 1 || !node->children[0] ||
+        node->children[0]->type != AST_IDENTIFIER) return 0;
+    snprintf(buf_out, 128, "%.127s", node->children[0]->text);
+    return 1;
+}
+static int bound_is_ident(ASTNode* node, const char** name_out) {
+    if (!node || node->type != AST_IDENTIFIER) return 0;
+    if (name_out) *name_out = node->text;
+    return 1;
+}
+static int bound_is_zero(ASTNode* node) {
+    return node && node->type == AST_NUMBER && strcmp(node->text, "0") == 0;
+}
+#define BOUND_NEG 1
+#define BOUND_GE_LEN 2
+#define BOUND_GE_ZERO 3
+#define BOUND_LT_LEN 4
+// If node is a comparison proving a bound, fill idx_out
+// (and buf_out for the length kinds) and return the
+// kind; else 0. Operand order is normalized (both
+// `i < len` and `len > i` count, and so on).
+static int bound_cmp_kind(ASTNode* node, char* idx_out, char* buf_out) {
+    if (!node || node->type != AST_BINARY_OP || node->child_count < 2) return 0;
+    ASTNode* l = node->children[0];
+    ASTNode* r = node->children[1];
+    if (!l || !r) return 0;
+    const char* op = node->text;
+    const char* iname = NULL;
+    char lbuf[128] = "", rbuf[128] = "";
+    int llen = bound_len_call(l, lbuf);
+    int rlen = bound_len_call(r, rbuf);
+    if (strcmp(op, "<") == 0 && bound_is_ident(l, &iname) && bound_is_zero(r)) {
+        snprintf(idx_out, 128, "%s", iname); return BOUND_NEG;
+    }
+    if (strcmp(op, ">") == 0 && bound_is_zero(l) && bound_is_ident(r, &iname)) {
+        snprintf(idx_out, 128, "%s", iname); return BOUND_NEG;
+    }
+    if (strcmp(op, ">=") == 0 && bound_is_ident(l, &iname) && rlen) {
+        snprintf(idx_out, 128, "%s", iname); snprintf(buf_out, 128, "%s", rbuf); return BOUND_GE_LEN;
+    }
+    if (strcmp(op, "<=") == 0 && llen && bound_is_ident(r, &iname)) {
+        snprintf(idx_out, 128, "%s", iname); snprintf(buf_out, 128, "%s", lbuf); return BOUND_GE_LEN;
+    }
+    if (strcmp(op, ">=") == 0 && bound_is_ident(l, &iname) && bound_is_zero(r)) {
+        snprintf(idx_out, 128, "%s", iname); return BOUND_GE_ZERO;
+    }
+    if (strcmp(op, "<=") == 0 && bound_is_zero(l) && bound_is_ident(r, &iname)) {
+        snprintf(idx_out, 128, "%s", iname); return BOUND_GE_ZERO;
+    }
+    if (strcmp(op, "<") == 0 && bound_is_ident(l, &iname) && rlen) {
+        snprintf(idx_out, 128, "%s", iname); snprintf(buf_out, 128, "%s", rbuf); return BOUND_LT_LEN;
+    }
+    if (strcmp(op, ">") == 0 && llen && bound_is_ident(r, &iname)) {
+        snprintf(idx_out, 128, "%s", iname); snprintf(buf_out, 128, "%s", lbuf); return BOUND_LT_LEN;
+    }
+    return 0;
+}
+// Early-exit guard: `i < 0 || i >= len` (either order),
+// same index, length over one buffer.
+static int bound_early_exit_guard(ASTNode* cond, char* buf_out, char* idx_out) {
+    if (!cond || cond->type != AST_BINARY_OP ||
+        strcmp(cond->text, "||") != 0 || cond->child_count < 2) return 0;
+    char idx0[128] = "", buf0[128] = "", idx1[128] = "", buf1[128] = "";
+    int k0 = bound_cmp_kind(cond->children[0], idx0, buf0);
+    int k1 = bound_cmp_kind(cond->children[1], idx1, buf1);
+    if (k0 == 0 || k1 == 0) return 0;
+    if (!((k0 == BOUND_NEG && k1 == BOUND_GE_LEN) ||
+          (k0 == BOUND_GE_LEN && k1 == BOUND_NEG))) return 0;
+    if (strcmp(idx0, idx1) != 0) return 0;
+    snprintf(idx_out, 128, "%s", idx0);
+    snprintf(buf_out, 128, "%s", k0 == BOUND_GE_LEN ? buf0 : buf1);
+    return 1;
+}
+// Positive guard: `i >= 0 && i < len` (either order),
+// same index and buffer (the length side's buffer).
+static int bound_positive_guard(ASTNode* cond, char* buf_out, char* idx_out) {
+    if (!cond || cond->type != AST_BINARY_OP ||
+        strcmp(cond->text, "&&") != 0 || cond->child_count < 2) return 0;
+    char idx0[128] = "", buf0[128] = "", idx1[128] = "", buf1[128] = "";
+    int k0 = bound_cmp_kind(cond->children[0], idx0, buf0);
+    int k1 = bound_cmp_kind(cond->children[1], idx1, buf1);
+    if (k0 == 0 || k1 == 0) return 0;
+    if (!((k0 == BOUND_GE_ZERO && k1 == BOUND_LT_LEN) ||
+          (k0 == BOUND_LT_LEN && k1 == BOUND_GE_ZERO))) return 0;
+    if (strcmp(idx0, idx1) != 0) return 0;
+    snprintf(idx_out, 128, "%s", idx0);
+    snprintf(buf_out, 128, "%s", k0 == BOUND_LT_LEN ? buf0 : buf1);
+    return 1;
+}
+// Does this if-body unconditionally exit (a single
+// return / break / continue, bare or in a block)?
+static int bound_body_exits(ASTNode* body) {
+    if (!body) return 0;
+    if (body->type == AST_RETURN || body->type == AST_BREAK ||
+        body->type == AST_CONTINUE) return 1;
+    if (body->type == AST_BLOCK && body->child_count == 1) {
+        ASTNode* s = body->children[0];
+        if (s && (s->type == AST_RETURN || s->type == AST_BREAK ||
+                  s->type == AST_CONTINUE)) return 1;
+    }
+    return 0;
+}
+// Does this subtree contain an assignment or a call?
+// (Conservative void trigger: any of them may have
+// changed a proven buffer or index.)
+static int bound_subtree_has_assign_or_call(ASTNode* node) {
+    if (!node) return 0;
+    if (node->type == AST_ASSIGN || node->type == AST_CALL ||
+        node->type == AST_METHOD_CALL) return 1;
+    for (int i = 0; i < node->child_count; i++)
+        if (bound_subtree_has_assign_or_call(node->children[i])) return 1;
+    return 0;
+}
 static void generate_block_children(FILE* f, ASTNode* block, int indent) {
+    // Parity step 1: proofs are scoped to this block.
+    BoundProof saved[64];
+    int saved_count = bound_proof_save(saved);
     for (int i = 0; i < block->child_count; i++) {
         ASTNode* ch = block->children[i];
         if (ch && ch->type == AST_RETURN) emit_file_closes_for(f, block, i, indent);
         generate_node(f, ch, indent);
+        // Void on any assignment or call in the statement
+        // (conservative), then re-add if this statement is
+        // an early-exit guard with no else: its own
+        // length() call voids first, so the add must come
+        // after the void for the guard's proof to survive.
+        if (bound_subtree_has_assign_or_call(ch)) bound_proof_clear();
+        if (ch && ch->type == AST_IF && ch->child_count == 2) {
+            char buf[128], idx[128];
+            if (bound_early_exit_guard(ch->children[0], buf, idx) &&
+                bound_body_exits(ch->children[1]))
+                bound_proof_add(buf, idx);
+        }
     }
+    bound_proof_restore(saved, saved_count);
     // At the block's end (unless the last statement is a return:
     // the closes already ran before it).
     if (block->child_count == 0 || block->children[block->child_count - 1]->type != AST_RETURN)
@@ -4159,6 +4336,22 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 fprintf(f, "(*(int*)come_oob_slot_bytes_at(\"");
                 fprint_escaped_cstr(f, source_filename);
                 fprintf(f, "\", %d, \"come_%s__%s\"))", node->source_line, current_module, current_function_name);
+            } else if (base->type == AST_IDENTIFIER &&
+                       node->children[1]->type == AST_IDENTIFIER &&
+                       bound_proof_has(base->text, node->children[1]->text)) {
+                // Parity step 1: guard-dominated access.
+                // The guard already proved 0 <= idx < count
+                // for these exact identifiers, unmodified
+                // since, so the check is redundant. Raw form
+                // is an lvalue like the macro, evaluating
+                // each operand once (safe: identifiers have
+                // no side effects, unlike the macro's two
+                // evaluations).
+                fprintf(f, "((%s*)(", et);
+                generate_expression(f, base);
+                fprintf(f, ".data))[");
+                generate_expression(f, node->children[1]);
+                fprintf(f, "]");
             } else {
                 fprintf(f, "COME_ARR_GET_T(");
                 generate_expression(f, node->children[0]);
@@ -6101,6 +6294,8 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 
         strncpy(current_function_name, node->text, sizeof(current_function_name) - 1);
         current_function_name[sizeof(current_function_name) - 1] = '\0';
+        // Parity step 1: no proof carries across functions.
+        bound_proof_clear();
         g_cur_tuple = NULL;
         if (ret_type->text[0] == '(') {
             // Tuple return (spec 8.2): the C function returns
@@ -6793,7 +6988,16 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, "if (");
             generate_expression(f, node->children[0]);
             fprintf(f, ") {\n");
+            // Parity step 1: a positive guard proves its
+            // pair inside the then-branch only (after the
+            // if, the guard may have been false).
+            char pbuf[128], pidx[128];
+            int is_pos = bound_positive_guard(node->children[0], pbuf, pidx);
+            BoundProof saved_pos[64];
+            int saved_pos_count = 0;
+            if (is_pos) { saved_pos_count = bound_proof_save(saved_pos); bound_proof_add(pbuf, pidx); }
             generate_node(f, node->children[1], indent + 4);
+            if (is_pos) { bound_proof_restore(saved_pos, saved_pos_count); }
             emit_indent(f, indent);
             fprintf(f, "}");
             if (node->child_count > 2) {

@@ -26,7 +26,40 @@ merged, or reverted independently later. Branch:
   It is the only design that guarantees 1x, and it
   breaks Come's safety promise for that region.
 
-## Step 1 design: guard-dominated bounds-check elimination (DESIGN 2026-10-24, not yet implemented)
+## Step 1 DONE (2026-10-24): guard-dominated bounds-check elimination, narrow slice
+
+Implemented in codegen.c (proof set threaded through
+`generate_block_children`: early-exit guard adds its
+pair after the guard statement, positive guard adds
+its pair inside the then-branch only, any statement
+with an assignment or call voids all pairs, block
+save/restore scopes proofs, function entry clears).
+Array reads with a proven (identifier buffer,
+identifier index) emit raw `((T*)(h.data))[idx]`
+instead of `COME_ARR_GET_T` (also an lvalue, and it
+evaluates each operand once, fixing the macro's
+double evaluation for these operands). String
+indexing (`s[i]` -> wchar walk) is NOT covered --
+its check is intertwined with the UTF-8 walk, not a
+plain ternary. Test: `tests/bounds_project/` +
+`tests/run_bounds_test.sh` (combined + pos/ctl pins:
+pos has raw and no COME_ARR_GET_T, ctl the reverse;
+ASan; boundary i == len - 1 valid, i == len and
+i == -1 caught by the guard). Suites green from
+clean (Come 79 passed lines, exit 0, "all green";
+co_SQLite 7/7). Real tokenizer `tk_byte` verified
+raw in generated C (`(uint8_t*)(b.data))[i]`).
+Bench (checksums identical): ~0.66 s, UNCHANGED
+from the 0.62-0.68 s pre-step-1 range -- honest
+result, not a win on this workload: the per-byte
+cost is the `tk_byte` call itself (43.7M calls, not
+inlined at default flags) plus the guard's
+`length()` call, not the redundant check. That is
+what step 3 (intrinsics) targets; step 1 still pays
+where checks dominate (and it removes a check per
+byte that no longer needs proving).
+
+## Step 1 design (superseded by the DONE section above; kept for the soundness record)
 
 Target: an array/string access `b[i]` whose bounds
 check is redundant because a dominating guard already

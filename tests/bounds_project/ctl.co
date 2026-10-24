@@ -1,0 +1,29 @@
+module main
+import std
+
+int get_unguarded(byte[] b, int i) {
+    return int(b[i])
+}
+
+int get_void(byte[] b, int i) {
+    int j = i
+    if (j < 0 || j >= b.length()) { return 0 }
+    j = j + 1
+    return int(b[j])
+}
+
+int get_complex(byte[] b, int i) {
+    if (i < 0 || i >= b.length()) { return 0 }
+    return int(b[i + 1])
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    if (get_unguarded(b, 2) == 108 && get_void(b, 0) == 101 && get_complex(b, 0) == 101) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

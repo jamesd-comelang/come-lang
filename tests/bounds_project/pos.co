@@ -1,0 +1,25 @@
+module main
+import std
+
+int get_guarded(byte[] b, int i) {
+    if (i < 0 || i >= b.length()) { return 0 }
+    return int(b[i])
+}
+
+int get_pos(byte[] b, int i) {
+    if (0 <= i && i < b.length()) {
+        return int(b[i])
+    }
+    return 0
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    if (get_guarded(b, 0) == 104 && get_pos(b, 1) == 101) {
+        std.out.printf("ok pos\n")
+    } else {
+        std.out.printf("FAIL pos\n")
+    }
+    return 0
+}

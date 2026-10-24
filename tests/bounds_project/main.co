@@ -1,0 +1,61 @@
+module main
+import std
+
+int get_guarded(byte[] b, int i) {
+    if (i < 0 || i >= b.length()) { return 0 }
+    return int(b[i])
+}
+
+int get_pos(byte[] b, int i) {
+    if (0 <= i && i < b.length()) {
+        return int(b[i])
+    }
+    return 0
+}
+
+int get_unguarded(byte[] b, int i) {
+    return int(b[i])
+}
+
+int get_void(byte[] b, int i) {
+    int j = i
+    if (j < 0 || j >= b.length()) { return 0 }
+    j = j + 1
+    return int(b[j])
+}
+
+int get_complex(byte[] b, int i) {
+    if (i < 0 || i >= b.length()) { return 0 }
+    return int(b[i + 1])
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    if (get_guarded(b, 0) == 104 && get_guarded(b, 4) == 111 && get_guarded(b, 5) == 0 && get_guarded(b, -1) == 0) {
+        std.out.printf("ok guarded\n")
+    } else {
+        std.out.printf("FAIL guarded\n")
+    }
+    if (get_pos(b, 1) == 101 && get_pos(b, 5) == 0 && get_pos(b, -1) == 0) {
+        std.out.printf("ok pos\n")
+    } else {
+        std.out.printf("FAIL pos\n")
+    }
+    if (get_unguarded(b, 2) == 108) {
+        std.out.printf("ok unguarded\n")
+    } else {
+        std.out.printf("FAIL unguarded\n")
+    }
+    if (get_void(b, 0) == 101) {
+        std.out.printf("ok void\n")
+    } else {
+        std.out.printf("FAIL void\n")
+    }
+    if (get_complex(b, 0) == 101) {
+        std.out.printf("ok complex\n")
+    } else {
+        std.out.printf("FAIL complex\n")
+    }
+    return 0
+}
