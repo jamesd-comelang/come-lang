@@ -503,6 +503,40 @@ unchanged, as profiled. Remaining exhaust work
 below is now the main lever: baselines,
 unchecked, port restructuring.
 
+## Rust/Go baselines DONE (2026-10-24, measured, not guessed)
+
+Faithful Rust + Go ports of sqlite3GetToken
+(Come tokenizer logic, TK_* values and the 147
+keyword codes copied from the Come sources, no
+hand transcription) in ~/workspace/baselines/
+(rust/main.rs + consts.rs, go/main.go +
+consts.go; workload.sql copied from
+co_SQLite/tools/bench/). Both reproduce the
+bench exactly on identical work (4,000 lines,
+20 passes): 2,530,480 tokens, typesum
+285119860, lensum 7962360. Timings (shell
+date, 3 runs, same VM):
+- C (cc -O2, reference): ~33 ms.
+- Rust (rustc -C opt-level=3, std HashMap):
+  ~80 ms (81/79/79).
+- Go (go build, default): ~131 ms
+  (128/134/131).
+- Come (default, no --lto): ~622 ms
+  (633/599/635).
+- Come (--lto): ~380 ms (earlier).
+So the real targets: beat Go needs < 131 ms
+(4.7x from Come default, 2.9x from --lto);
+beat Rust needs < 80 ms (7.8x / 4.8x). The
+guesses (Rust 40-80, Go 60-150) are retired --
+Rust landed at the top of its guess, Go inside
+it. Toolchains installed user-local (no sudo):
+~/sdk/go (1.23.0), ~/.cargo (rustc 1.99.1).
+The gap is dominated by per-byte/per-token
+function calls and map lookups, not bounds
+checks (already zero in the hot path) -- which
+is why unchecked + port restructuring are the
+remaining levers, in that order.
+
 ## Step 4c design (2026-10-24, not yet implemented)
 
 Verified first, because it changes the shape of
@@ -580,8 +614,6 @@ local-scratch-container micro, not the tokenizer.
   "exhaust everything" authorization: unchecked
   region + port restructuring both included)
 
-- Rust/Go baselines on identical work (toolchains
-  needed; none in the VM now).
 - Unchecked region, opt-in only, design +
   implementation.
 - Port restructuring of the co_SQLite tokenizer
