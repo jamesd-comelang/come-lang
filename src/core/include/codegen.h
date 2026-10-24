@@ -1,5 +1,6 @@
 #ifndef CODEGEN_H
 #define CODEGEN_H
+#include <stdio.h>
 #include "ast.h"
 int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_file, int gen_line_map);
 
@@ -104,4 +105,13 @@ void codegen_register_module_mayfail(const char* module, const char** names, int
 int codegen_mayfail_known(const char* module);
 int codegen_is_mayfail(const char* module, const char* fn);
 int codegen_stmt_may_fail(ASTNode* node);
+// Design 1 (redesign): the driver computes each module's
+// may-escape parameters from all of its files' ASTs and
+// registers the escaping ones here; `come escapes` dumps
+// the classification, and future codegen (arenas, views)
+// will consult it.
+void codegen_analyze_escapes(const char* module, ASTNode** asts, int nast);
+int codegen_esc_module_known(const char* module);
+int codegen_esc_param_escapes(const char* module, const char* fn, const char* param);
+void codegen_dump_escapes(FILE* out);
 #endif

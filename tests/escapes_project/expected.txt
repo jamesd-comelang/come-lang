@@ -1,0 +1,15 @@
+main.id(s): escapes
+main.len_of(s): transient
+main.keep(s): transient
+main.leak(s): escapes
+main.store_it(s): escapes
+main.pass_through(s): escapes
+main.use_only(s): transient
+main.dup_ref(s): escapes
+main.dup_copy(s): transient
+main.append_global(s): escapes
+main.reparent(s): escapes
+main.reparent(t): transient
+main.outer_assign(s): transient
+main.assign_leak(s): escapes
+main.index_global(s): escapes

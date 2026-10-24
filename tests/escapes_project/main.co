@@ -1,0 +1,77 @@
+module main
+
+string g
+map{string, string} gm
+string[] garr
+
+string id(string s) {
+    return s
+}
+
+int len_of(string s) {
+    return s.length()
+}
+
+string keep(string s) {
+    string t = s
+    return "x"
+}
+
+string leak(string s) {
+    string t = s
+    return t
+}
+
+void store_it(string s) {
+    g = s
+}
+
+string pass_through(string s) {
+    return id(s)
+}
+
+int use_only(string s) {
+    return len_of(s)
+}
+
+string dup_ref(string s) {
+    string t = s.dup(0)
+    return t
+}
+
+string dup_copy(string s) {
+    string t = s.dup()
+    return t
+}
+
+void append_global(string s) {
+    garr.append(s)
+}
+
+void reparent(string s, string t) {
+    s.chown(t)
+}
+
+string outer_assign(string s) {
+    string t = ""
+    t = s
+    return "z"
+}
+
+string assign_leak(string s) {
+    string t = ""
+    t = s
+    return t
+}
+
+void index_global(string s) {
+    gm["k"] = s
+}
+
+int add(int a, int b) {
+    return a + b
+}
+
+int main() {
+    return 0
+}

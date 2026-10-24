@@ -107,10 +107,12 @@ view dangles when its parent's scope pops first, and
 return adoption would corrupt the parent by re-parenting
 its data chunk. So general views ride on Design 1
 (escape analysis), which will either prove views
-transient or reject escaping ones. The ASCII fast path
-was assessed and parked: the tokenizer is byte-based,
-so char-level O(1) indexing buys it nothing measurable;
-it may still help char-heavy code later.
+transient or reject escaping ones. UPDATE 2026-10-24:
+Design 1 is done (see below); general views are now
+actionable. The ASCII fast path was assessed and
+parked: the tokenizer is byte-based, so char-level
+O(1) indexing buys it nothing measurable; it may
+still help char-heavy code later.
 
 ## Remaining (in order)
 
@@ -173,11 +175,66 @@ Design 1+2.
 
 ## Remaining (in order)
 
-- Design 1+2: escape analysis + arena scopes for
-  non-escaping values. A4's fixpoint is the reusable
-  machinery. Unlocks sound general views (above)
-  and the checkpoint tier.
+- Design 1: escape analysis (DONE 2026-10-24)
+
+May-escape fixpoint over functions and locals, in
+codegen.c, run in analyze_module alongside
+frameless/mayfail. A buffer parameter escapes if
+it is returned (buffer return type), stored in a
+module variable, an instance field, or a container,
+passed to a function whose corresponding parameter
+escapes, captured by a coroutine (spawn/yield),
+re-parented by chown, or flows through a local
+that escapes (assignment and dup(0) edges, backward
+propagation). Unknown and cross-module callees
+escape their identifier arguments; container
+mutators (put/append/insert/set/cpy) escape theirs.
+Pure methods (length/bytesize/owner) and other
+runtime methods borrow. Scalars are never dumped.
+New driver command `come escapes <file.co|dir>`
+prints one line per buffer parameter:
+"module.fn(param): escapes|transient".
+
+- Test: tests/run_escapes_test.sh +
+  tests/escapes_project/ (15 classifications,
+  including the edge cases: keep/transient via a
+  non-escaping local, pass_through/escapes via the
+  interprocedural fixpoint, dup_copy/transient via
+  the deep-copy distinction, reparent(t)/transient
+  via receiver-only chown). The fixture also
+  passes `come check`, so it is compilable Come.
+- Application: `come escapes` on the co_SQLite
+  tokenizer (directory module) gives 21 transient
+  and 1 escapes: open(sql) — the cursor retaining
+  its input, which is its job. tk_scan's b/sql/kw,
+  tk_keyword_in's m/word, and get_token's sql are
+  all transient (borrowed, not retained).
+- Suites green from clean, 0 warnings: Come
+  67 passed, 0 failed (plus the new escapes e2e);
+  co_SQLite 7 passed, 0 failed. Bench unchanged
+  (~0.61 s vs 0.66 s, noise): no codegen change
+  this turn, by design — the analysis is the
+  prerequisite, not a speedup by itself.
+
+What this does NOT do: arenas (Design 2) are still
+a runtime change (bump allocator, promotion on
+adopt/chown/dup, checkpoints) — the analysis it
+needs is done, but the runtime is not. Spawn/yield
+rules are implemented (over-approximate, walk the
+subtree for identifiers) but not covered by the
+fixture (no bare spawn/yield example to copy);
+they can only add escapes, never remove, and the
+walk is null-checked.
+
+## Remaining (in order)
+
+- Design 2: arena scopes (runtime change: bump
+  allocator, promotion on adopt, checkpoints).
+  The analysis it needs is done.
+- Design 3: general string views + byte view
+  (implementation; the analysis it needs is done).
+  ASCII fast path stays parked (low value).
 - Design 5 (remainder): checkpoint / full-frame
-  tiers driven by escape analysis.
+  tiers driven by escape analysis. Needs arenas.
 - Design 6: cross-module inlining / single-TU codegen.
   LTO already covers most of this; lowest priority.

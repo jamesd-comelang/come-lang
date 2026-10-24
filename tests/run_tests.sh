@@ -38,6 +38,7 @@ bash tests/run_table_test.sh
 bash tests/run_map_scope_test.sh
 bash tests/run_frameless_test.sh
 bash tests/run_cleanblock_test.sh
+bash tests/run_escapes_test.sh
 bash tests/run_types_test.sh
 bash tests/run_capacity_test.sh
 bash tests/run_consts_test.sh

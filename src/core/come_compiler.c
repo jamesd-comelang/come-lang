@@ -844,6 +844,9 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     // A4 (redesign): may-fail functions for this module,
     // from the same pre-scan ASTs.
     codegen_analyze_mayfail(module_name, asts, nast);
+    // Design 1 (redesign): may-escape parameters for this module,
+    // from the same pre-scan ASTs.
+    codegen_analyze_escapes(module_name, asts, nast);
 }
 
 // Compile all files of a directory module as one module (COIL-108).
@@ -1848,7 +1851,90 @@ static void print_usage(void) {
         "  come run <file.co> [--] [args...]       build to a temp binary and run it\n"
         "  come test [root] [--cover] [--race] [--bench]\n"
         "                                          build and run the .co tests in t/ dirs\n"
-        "  come fmt <file.co|dir> [...]            reformat sources in place\n");
+        "  come fmt <file.co|dir> [...]            reformat sources in place\n"
+        "  come escapes <file.co|dir>              dump may-escape parameters\n");
+}
+
+/* ----- come escapes: dump the may-escape classification ----- */
+// Design 1 (redesign): parses a file, or a directory
+// module's .co files, runs the module analysis
+// (frameless, mayfail, escapes), and prints one line
+// per buffer-typed parameter: "module.fn(param):
+// escapes|transient". No code is generated and nothing
+// is linked, so no C toolchain is needed. Imports are
+// not resolved: cross-module calls escape their
+// identifier arguments (the analysis's safe default).
+static int cmd_escapes(int argc, char *argv[]) {
+    const char *input = NULL;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0) g_verbose = 1;
+        else input = argv[i];
+    }
+    if (!input) {
+        fprintf(stderr, "Usage: come escapes <file.co|dir>\n");
+        return 1;
+    }
+    struct stat st;
+    if (stat(input, &st) == 0 && S_ISDIR(st.st_mode)) {
+        char (*paths)[PATH_MAX] = malloc(64 * sizeof(*paths));
+        int n = scan_co_dir(input, paths, 64);
+        if (n == 0) {
+            fprintf(stderr, "No .co files in %s\n", input);
+            free(paths);
+            return 1;
+        }
+        ASTNode *asts[64];
+        const char *files[64];
+        int ast_count = 0;
+        char module[128] = {0};
+        for (int i = 0; i < n && ast_count < 64; i++) {
+            ASTNode *ast = NULL;
+            if (parse_file(paths[i], &ast) != 0 || !ast) {
+                fprintf(stderr, "Parsing failed: %s\n", paths[i]);
+                for (int j = 0; j < ast_count; j++) ast_free(asts[j]);
+                free(paths);
+                return 1;
+            }
+            asts[ast_count] = ast;
+            files[ast_count] = paths[i];
+            ast_count++;
+            if (ast->type == AST_PROGRAM && ast->text[0] && !module[0])
+                snprintf(module, sizeof(module), "%s", ast->text);
+        }
+        if (!module[0]) {
+            char tmp[PATH_MAX];
+            snprintf(tmp, sizeof(tmp), "%s", input);
+            char *bn = basename(tmp);
+            snprintf(module, sizeof(module), "%s", bn);
+        }
+        analyze_module(module, asts, files, ast_count);
+        codegen_dump_escapes(stdout);
+        for (int i = 0; i < ast_count; i++) ast_free(asts[i]);
+        free(paths);
+        return 0;
+    }
+    ASTNode *ast = NULL;
+    if (parse_file(input, &ast) != 0 || !ast) {
+        fprintf(stderr, "Parsing failed: %s\n", input);
+        return 1;
+    }
+    char modbuf[PATH_MAX];
+    const char *mod = NULL;
+    if (ast->type == AST_PROGRAM && ast->text[0]) {
+        mod = ast->text;
+    } else {
+        snprintf(modbuf, sizeof(modbuf), "%s", input);
+        char *bn = basename(modbuf);
+        char *dot = strrchr(bn, '.');
+        if (dot) *dot = 0;
+        mod = bn;
+    }
+    ASTNode *one = ast;
+    const char *one_file = input;
+    analyze_module(mod, &one, &one_file, 1);
+    codegen_dump_escapes(stdout);
+    ast_free(ast);
+    return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -1856,6 +1942,9 @@ int main(int argc, char *argv[]) {
 
     // Developer commands (COIL-138). fmt needs no C toolchain.
     if (argc >= 2 && strcmp(argv[1], "fmt") == 0) return cmd_fmt(argc, argv);
+
+    // escapes is pure analysis: parse and classify, no C toolchain.
+    if (argc >= 2 && strcmp(argv[1], "escapes") == 0) return cmd_escapes(argc, argv);
 
     // Ensure we have gcc before doing anything else
     check_build_essentials();

@@ -1943,6 +1943,398 @@ static int split_types(const char* s, char parts[][160], int max_parts) {
     }
     return n;
 }
+// ---- Design 1 (redesign): may-escape analysis ----
+// For each function, which buffer-typed parameters may
+// escape the call: be returned, stored in a module
+// variable, an instance field, or a container, passed
+// to a function whose corresponding parameter escapes,
+// captured by a coroutine, or re-parented by chown.
+// Over-approximation is safe (an escaping value is
+// treated conservatively); under-approximation would
+// let an arena or a view free a live value, so every
+// rule escapes on doubt: unknown callees, cross-module
+// calls, and container mutators all count as escaping.
+// The analysis is a monotone fixpoint over functions
+// and locals: escaping sets only grow, so it
+// terminates. It runs in analyze_module alongside
+// frameless/mayfail, and the registry is what future
+// codegen (arenas, views) will consult. `come escapes`
+// dumps the classification: "escapes" vs "transient"
+// (provably non-escaping, safe for an arena or view).
+// Precision gaps, all in the safe direction: values
+// flowing through a container index (m[k]) or a
+// non-mutator method result are not tracked back to
+// the container; cross-module calls escape their
+// identifier arguments; mutator arguments escape even
+// when the container is local; names are tracked flat
+// (shadowing over-approximates by name).
+#define ESC_MAX_FNS 256
+#define ESC_MAX_NAMES 320
+#define ESC_MAX_PARAMS 64
+
+typedef struct {
+    char name[128];
+    ASTNode* node;      // AST_FUNCTION
+    ASTNode* body;      // BLOCK child, or NULL
+    char ret[128];
+    char names[ESC_MAX_NAMES][128]; // params first, then locals
+    int is_param[ESC_MAX_NAMES];
+    int is_buffer[ESC_MAX_NAMES];   // params only
+    int esc[ESC_MAX_NAMES];         // fixpoint state
+    int count;
+    int param_count;
+} EscFn;
+
+static EscFn g_esc_fns[ESC_MAX_FNS];
+static int g_esc_fn_count = 0;
+static char g_esc_module[128];
+
+// Registry of escaping parameters, for cross-module
+// use by future codegen passes.
+#define ESC_REG_MAX 4096
+typedef struct { char module[128]; char fn[128]; char param[128]; } EscReg;
+static EscReg g_esc_reg[ESC_REG_MAX];
+static int g_esc_reg_count = 0;
+static char g_esc_reg_modules[64][128];
+static int g_esc_reg_module_count = 0;
+
+static void esc_reg_add(const char* module, const char* fn, const char* param) {
+    for (int i = 0; i < g_esc_reg_count; i++)
+        if (strcmp(g_esc_reg[i].module, module) == 0 &&
+            strcmp(g_esc_reg[i].fn, fn) == 0 &&
+            strcmp(g_esc_reg[i].param, param) == 0) return;
+    if (g_esc_reg_count >= ESC_REG_MAX) return;
+    EscReg* r = &g_esc_reg[g_esc_reg_count++];
+    snprintf(r->module, sizeof(r->module), "%s", module);
+    snprintf(r->fn, sizeof(r->fn), "%s", fn);
+    snprintf(r->param, sizeof(r->param), "%s", param);
+}
+
+int codegen_esc_module_known(const char* module) {
+    if (!module) return 0;
+    for (int i = 0; i < g_esc_reg_module_count; i++)
+        if (strcmp(g_esc_reg_modules[i], module) == 0) return 1;
+    return 0;
+}
+
+int codegen_esc_param_escapes(const char* module, const char* fn, const char* param) {
+    if (!module || !fn || !param) return 0;
+    for (int i = 0; i < g_esc_reg_count; i++)
+        if (strcmp(g_esc_reg[i].module, module) == 0 &&
+            strcmp(g_esc_reg[i].fn, fn) == 0 &&
+            strcmp(g_esc_reg[i].param, param) == 0) return 1;
+    return 0;
+}
+
+static int esc_name_index(EscFn* fn, const char* name) {
+    if (!fn || !name) return -1;
+    for (int i = 0; i < fn->count; i++)
+        if (strcmp(fn->names[i], name) == 0) return i;
+    return -1;
+}
+
+static void esc_mark(EscFn* fn, const char* name, int* changed) {
+    int idx = esc_name_index(fn, name);
+    if (idx < 0) return;
+    if (!fn->esc[idx]) { fn->esc[idx] = 1; if (changed) *changed = 1; }
+}
+
+static void esc_add_name(EscFn* fn, const char* name, int is_param, int is_buffer) {
+    if (!fn || !name || !name[0]) return;
+    if (esc_name_index(fn, name) >= 0) return; // shadowing: first wins, by name
+    if (fn->count >= ESC_MAX_NAMES) return;
+    int idx = fn->count++;
+    snprintf(fn->names[idx], sizeof(fn->names[idx]), "%s", name);
+    fn->is_param[idx] = is_param;
+    fn->is_buffer[idx] = is_buffer;
+    fn->esc[idx] = 0;
+    if (is_param) fn->param_count++;
+}
+
+// The names[] index of a function's p-th parameter
+// (params are added first, in declared order), or -1.
+static int esc_param_index(EscFn* fn, int p) {
+    if (!fn || p < 0) return -1;
+    int seen = 0;
+    for (int i = 0; i < fn->count; i++) {
+        if (!fn->is_param[i]) continue;
+        if (seen == p) return i;
+        seen++;
+    }
+    return -1;
+}
+
+static void esc_collect_names(ASTNode* n, EscFn* fn) {
+    if (!n || !fn) return;
+    if (n->type == AST_VAR_DECL) {
+        esc_add_name(fn, n->text, 0, 0);
+        // The type node (children[1]) names a type, not
+        // a variable: only the init may hold decls.
+        if (n->child_count > 0 && n->children[0]) esc_collect_names(n->children[0], fn);
+        return;
+    }
+    for (int i = 0; i < n->child_count; i++)
+        if (n->children[i]) esc_collect_names(n->children[i], fn);
+}
+
+// A dup(0) ref creation: method "dup" with an argument,
+// receiver an identifier. Returns the receiver name or NULL.
+static const char* esc_dup0_receiver(ASTNode* n) {
+    if (!n || n->type != AST_METHOD_CALL || strcmp(n->text, "dup") != 0) return NULL;
+    if (n->child_count < 2) return NULL; // dup() with no arg is a deep copy
+    if (!n->children[0] || n->children[0]->type != AST_IDENTIFIER) return NULL;
+    return n->children[0]->text;
+}
+
+// Mark receivers of dup(0) refs anywhere inside an
+// expression (a ref stored or returned escapes its
+// source). Plain identifiers inside are NOT marked:
+// f(x) keeps x unless f retains it (the call rule).
+static void esc_mark_dup0_in(ASTNode* n, EscFn* fn, int* changed) {
+    if (!n || !fn) return;
+    const char* recv = esc_dup0_receiver(n);
+    if (recv) { esc_mark(fn, recv, changed); return; }
+    for (int i = 0; i < n->child_count; i++)
+        if (n->children[i]) esc_mark_dup0_in(n->children[i], fn, changed);
+}
+
+// A value in a return/store position: the value itself
+// escapes (an identifier, or the elements of an
+// aggregate literal), and any dup(0) ref inside it
+// escapes its source. Anything else (a call, an index,
+// a concatenation) is a new value: its operands do
+// not escape here (calls are covered by the call rule).
+static void esc_mark_value_expr(ASTNode* e, EscFn* fn, int* changed) {
+    if (!e || !fn) return;
+    if (e->type == AST_IDENTIFIER) { esc_mark(fn, e->text, changed); return; }
+    const char* recv = esc_dup0_receiver(e);
+    if (recv) { esc_mark(fn, recv, changed); return; }
+    if (e->type == AST_AGGREGATE_INIT || e->type == AST_MAP_PAIR) {
+        for (int i = 0; i < e->child_count; i++)
+            if (e->children[i]) esc_mark_value_expr(e->children[i], fn, changed);
+        return;
+    }
+    esc_mark_dup0_in(e, fn, changed);
+}
+
+// Every identifier in a subtree (spawn capture, yield):
+// over-approximate, the coroutine outlives the call.
+static void esc_mark_all_identifiers(ASTNode* n, EscFn* fn, int* changed) {
+    if (!n || !fn) return;
+    if (n->type == AST_IDENTIFIER) { esc_mark(fn, n->text, changed); return; }
+    for (int i = 0; i < n->child_count; i++)
+        if (n->children[i]) esc_mark_all_identifiers(n->children[i], fn, changed);
+}
+
+// The identifier (or dup(0) source) passed as a call
+// argument, or NULL if the argument is a new value.
+static const char* esc_arg_value(ASTNode* arg) {
+    if (!arg) return NULL;
+    if (arg->type == AST_IDENTIFIER) return arg->text;
+    return esc_dup0_receiver(arg);
+}
+
+// Apply the call rule for one call site: each
+// identifier argument escapes if the callee's
+// corresponding parameter escapes, or (for unknown
+// or cross-module callees) unconditionally.
+static void esc_apply_call(EscFn* fn, const char* callee_module, const char* callee,
+                           ASTNode* call, int arg_start, int* changed) {
+    if (!fn || !call || !callee) return;
+    int callee_idx = -1;
+    if (!callee_module || strcmp(callee_module, g_esc_module) == 0) {
+        for (int i = 0; i < g_esc_fn_count; i++)
+            if (strcmp(g_esc_fns[i].name, callee) == 0) { callee_idx = i; break; }
+    }
+    for (int a = arg_start; a < call->child_count; a++) {
+        const char* v = esc_arg_value(call->children[a]);
+        if (!v) continue;
+        if (callee_idx >= 0) {
+            EscFn* cf = &g_esc_fns[callee_idx];
+            int pidx = esc_param_index(cf, a - arg_start);
+            if (pidx >= 0 && cf->esc[pidx]) esc_mark(fn, v, changed);
+        } else {
+            // Unknown or cross-module callee: escapes on doubt.
+            esc_mark(fn, v, changed);
+        }
+    }
+}
+
+static void esc_walk(ASTNode* n, EscFn* fn, int* changed) {
+    if (!n || !fn) return;
+    switch (n->type) {
+        case AST_VAR_DECL: {
+            // Edge: the initializer flows into the declared name.
+            if (n->child_count > 0 && n->children[0]) {
+                ASTNode* init = n->children[0];
+                int idx = esc_name_index(fn, n->text);
+                if (idx >= 0 && fn->esc[idx]) {
+                    const char* v = esc_arg_value(init);
+                    if (v) esc_mark(fn, v, changed);
+                }
+                esc_walk(init, fn, changed);
+            }
+            return; // never walk the type node
+        }
+        case AST_ASSIGN: {
+            if (n->child_count >= 2 && strcmp(n->text, "=") == 0) {
+                ASTNode* lhs = n->children[0];
+                ASTNode* rhs = n->children[1];
+                if (lhs && lhs->type == AST_IDENTIFIER) {
+                    int idx = esc_name_index(fn, lhs->text);
+                    if (idx >= 0) {
+                        // A local: the value flows into it (edge).
+                        if (fn->esc[idx]) {
+                            const char* v = esc_arg_value(rhs);
+                            if (v) esc_mark(fn, v, changed);
+                        }
+                    } else {
+                        // A module variable: the value escapes.
+                        esc_mark_value_expr(rhs, fn, changed);
+                    }
+                } else if (lhs && (lhs->type == AST_MEMBER_ACCESS || lhs->type == AST_ARRAY_ACCESS)) {
+                    // An instance field or a container element: escapes.
+                    esc_mark_value_expr(rhs, fn, changed);
+                }
+                // Other LHS shapes (destructuring): no sink; walk below.
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (n->children[i]) esc_walk(n->children[i], fn, changed);
+            return;
+        }
+        case AST_CALL: {
+            esc_apply_call(fn, NULL, n->text, n, 0, changed);
+            for (int i = 0; i < n->child_count; i++)
+                if (n->children[i]) esc_walk(n->children[i], fn, changed);
+            return;
+        }
+        case AST_METHOD_CALL: {
+            // A same-module call written module.fn(...).
+            if (n->child_count > 0 && n->children[0] &&
+                n->children[0]->type == AST_IDENTIFIER &&
+                strcmp(n->children[0]->text, g_esc_module) == 0) {
+                esc_apply_call(fn, g_esc_module, n->text, n, 1, changed);
+            } else if (strcmp(n->text, "chown") == 0) {
+                if (n->child_count > 0 && n->children[0] &&
+                    n->children[0]->type == AST_IDENTIFIER)
+                    esc_mark(fn, n->children[0]->text, changed);
+            } else if (strcmp(n->text, "put") == 0 || strcmp(n->text, "append") == 0 ||
+                       strcmp(n->text, "insert") == 0 || strcmp(n->text, "set") == 0 ||
+                       strcmp(n->text, "cpy") == 0) {
+                // A container mutator stores its arguments.
+                for (int i = 1; i < n->child_count; i++) {
+                    const char* v = esc_arg_value(n->children[i]);
+                    if (v) esc_mark(fn, v, changed);
+                }
+            }
+            // Pure methods (length/bytesize/owner) and other
+            // runtime methods borrow their arguments.
+            for (int i = 0; i < n->child_count; i++)
+                if (n->children[i]) esc_walk(n->children[i], fn, changed);
+            return;
+        }
+        case AST_RETURN: {
+            if (fn->ret[0] && strcmp(fn->ret, "void") != 0 && !frame_scalar_type(fn->ret)) {
+                for (int i = 0; i < n->child_count; i++)
+                    if (n->children[i]) esc_mark_value_expr(n->children[i], fn, changed);
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (n->children[i]) esc_walk(n->children[i], fn, changed);
+            return;
+        }
+        case AST_SPAWN:
+        case AST_YIELD: {
+            esc_mark_all_identifiers(n, fn, changed);
+            for (int i = 0; i < n->child_count; i++)
+                if (n->children[i]) esc_walk(n->children[i], fn, changed);
+            return;
+        }
+        default: {
+            for (int i = 0; i < n->child_count; i++)
+                if (n->children[i]) esc_walk(n->children[i], fn, changed);
+            return;
+        }
+    }
+}
+
+static void esc_collect_function(ASTNode* fn_node, EscFn* f) {
+    if (fn_node->child_count > 0 && fn_node->children[0] &&
+        fn_node->children[0]->type != AST_VAR_DECL &&
+        fn_node->children[0]->type != AST_BLOCK)
+        snprintf(f->ret, sizeof(f->ret), "%.*s", (int)sizeof(f->ret) - 1, fn_node->children[0]->text);
+    else
+        snprintf(f->ret, sizeof(f->ret), "void");
+    ASTNode* body = NULL;
+    for (int i = 0; i < fn_node->child_count; i++) {
+        ASTNode* ch = fn_node->children[i];
+        if (!ch) continue;
+        if (ch->type == AST_VAR_DECL) {
+            const char* t = (ch->child_count >= 2 && ch->children[1]) ? ch->children[1]->text : "var";
+            int is_buffer = !frame_scalar_type(t) && strcmp(t, "void") != 0;
+            esc_add_name(f, ch->text, 1, is_buffer);
+        } else if (ch->type == AST_BLOCK) {
+            body = ch;
+        }
+    }
+    f->body = body;
+    if (body) esc_collect_names(body, f);
+}
+
+void codegen_analyze_escapes(const char* module, ASTNode** asts, int nast) {
+    if (!module) return;
+    snprintf(g_esc_module, sizeof(g_esc_module), "%s", module);
+    g_esc_fn_count = 0;
+    for (int a = 0; a < nast; a++) {
+        ASTNode* ast = asts[a];
+        if (!ast || ast->type != AST_PROGRAM) continue;
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode* ch = ast->children[i];
+            if (!ch || ch->type != AST_FUNCTION || !ch->text[0]) continue;
+            if (g_esc_fn_count >= ESC_MAX_FNS) continue;
+            EscFn* f = &g_esc_fns[g_esc_fn_count];
+            memset(f, 0, sizeof(*f));
+            snprintf(f->name, sizeof(f->name), "%.*s", (int)sizeof(f->name) - 1, ch->text);
+            f->node = ch;
+            esc_collect_function(ch, f);
+            g_esc_fn_count++;
+        }
+    }
+    int changed = 1, iter = 0;
+    while (changed && iter < 10000) {
+        changed = 0; iter++;
+        for (int i = 0; i < g_esc_fn_count; i++) {
+            EscFn* f = &g_esc_fns[i];
+            if (f->body) esc_walk(f->body, f, &changed);
+        }
+    }
+    int known = 0;
+    for (int i = 0; i < g_esc_reg_module_count; i++)
+        if (strcmp(g_esc_reg_modules[i], module) == 0) known = 1;
+    if (!known && g_esc_reg_module_count < 64) {
+        snprintf(g_esc_reg_modules[g_esc_reg_module_count], sizeof(g_esc_reg_modules[0]), "%s", module);
+        g_esc_reg_module_count++;
+    }
+    for (int i = 0; i < g_esc_fn_count; i++) {
+        EscFn* f = &g_esc_fns[i];
+        for (int j = 0; j < f->count; j++) {
+            if (f->is_param[j] && f->is_buffer[j] && f->esc[j])
+                esc_reg_add(module, f->name, f->names[j]);
+        }
+    }
+}
+
+void codegen_dump_escapes(FILE* out) {
+    if (!out) return;
+    for (int i = 0; i < g_esc_fn_count; i++) {
+        EscFn* f = &g_esc_fns[i];
+        for (int j = 0; j < f->count; j++) {
+            if (!f->is_param[j] || !f->is_buffer[j]) continue;
+            fprintf(out, "%s.%s(%s): %s\n", g_esc_module, f->name, f->names[j],
+                    f->esc[j] ? "escapes" : "transient");
+        }
+    }
+}
+
 // ---- Tuple returns (spec 8.2, COIL-127) ----
 // A function declared `(int, string) f(...)` returns a
 // generated C struct by value; call sites destructure it
