@@ -1,0 +1,21 @@
+module main
+import std
+
+int string_len(string s) {
+    return s.length()
+}
+
+int map_len(map{string, int} m) {
+    return m.length()
+}
+
+int main() {
+    string u = "héllo"
+    map{string, int} m = {"a": 1, "b": 2}
+    if (string_len(u) == 5 && map_len(m) == 2) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

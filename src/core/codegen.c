@@ -5499,7 +5499,26 @@ static void generate_expression(FILE* f, ASTNode* node) {
                         plain_string = 1;
                     }
                 }
-                strcpy(c_func, plain_string ? "come_string_len" : "come_string_list_len");
+                if (plain_string) {
+                    strcpy(c_func, "come_string_len");
+                } else {
+                    // Parity step 3: array/list length
+                    // intrinsic. come_string_list_len only
+                    // returns list.count, so read the
+                    // header field directly (no call).
+                    // Plain strings are excluded above:
+                    // their length counts characters, not
+                    // bytes, so it still needs the walking
+                    // call. The field is uint32_t, exactly
+                    // like the call's return, so this
+                    // preserves the unsigned comparison
+                    // behavior (finding 38) -- it is not
+                    // a fix for that finding.
+                    fprintf(f, "(");
+                    generate_expression(f, receiver);
+                    fprintf(f, ".count)");
+                    return;
+                }
             }
             else if (strcmp(method, "tol") == 0) strcpy(c_func, node->child_count > 1 ? "come_string_tol_base" : "come_string_tol");
             else snprintf(c_func, sizeof(c_func), "come_string_%s", method);

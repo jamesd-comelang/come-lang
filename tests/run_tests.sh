@@ -44,6 +44,7 @@ bash tests/run_arena_test.sh
 bash tests/run_transient_test.sh
 bash tests/run_bounds_test.sh
 bash tests/run_bounds_loop_test.sh
+bash tests/run_intrinsic_test.sh
 bash tests/run_view_ops_test.sh
 bash tests/run_types_test.sh
 bash tests/run_capacity_test.sh

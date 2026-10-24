@@ -14,9 +14,9 @@ merged, or reverted independently later. Branch:
   (DONE, see below).
 - Step 2: loop guards -- while positive-form and
   counted for (DONE, see below).
-- Step 3: runtime intrinsics for hot ops (length,
-  small compares, byte reads as inline code) and
-  whole-program TU if intrinsics alone fall short.
+- Step 3: runtime intrinsics (DONE, see below);
+  whole-program TU continuation (measured, see
+  below; implementation next within step 3).
 - Step 4: Design 1+2 remainder (loop-body locals,
   multi-assignment fixpoint, array/map promotion)
   then Design 5 frame tiers.
@@ -57,6 +57,46 @@ inlined at default flags) plus the guard's
 what step 3 (intrinsics) targets; step 1 still pays
 where checks dominate (and it removes a check per
 byte that no longer needs proving).
+
+## Step 3 DONE (intrinsic part, 2026-10-24): array/list .length() as a header-count intrinsic
+
+Non-string `.length()` (byte[], string[], T[] --
+the "shared" length path) no longer calls
+`come_string_list_len`; it emits `(receiver).count`
+directly. The function only returned list.count, so
+the intrinsic is exactly equivalent (same value,
+same uint32_t type, same single evaluation of the
+receiver). Plain strings are excluded: their length
+counts characters, not bytes, so they keep the
+walking `come_string_len` call. Maps are excluded:
+they keep `come_map_len`. The legacy `len` method
+name is left as a call (not hot). The intrinsic
+preserves the unsigned comparison behavior
+(finding 38) -- it is not a fix for that finding.
+Test: `tests/intrinsic_project/` +
+`tests/run_intrinsic_test.sh` (byte/list positives
+with `.count` present and no list_len call; string
+(UTF-8 "hello" with an accent, 5 chars not 6 bytes)
+and map controls pinned to their calls by
+function-level generated-C checks; ASan). Suites
+green from clean (Come exit 0, "all green";
+co_SQLite 7/7). Real tokenizer verified: tk_byte's
+guard is now `(i >= (b.count))`, zero list_len calls
+in the tokenizer modules. Bench (checksums
+identical): ~0.64 s, essentially unchanged from
+step 2's ~0.65 s -- the length call was not the
+bottleneck; the tk_byte CALL itself is.
+MEASURED (step 3 continuation): user-code-only LTO
+(COME_CFLAGS="-O2 -flto", runtime NOT rebuilt with
+-flto) moves the bench 0.64 s -> ~0.37 s (1.7x),
+matching the redesign's full-LTO figure -- so the
+win is from inlining USER code (tk_byte across
+modules), and runtime -flto adds little on top.
+Whole-program TU / an LTO build mode is therefore
+the step-3 continuation that actually moves the
+bench; it is NOT folded into this cutoff (it is a
+build-system change, to be done as its own tagged
+piece, opt-in first, default only on his call).
 
 ## Step 2 DONE (2026-10-24): loop guards (while positive-form, counted for)
 
@@ -174,8 +214,9 @@ per byte; report it, do not assume it).
 
 ## Remaining (in order)
 
-- Step 3: runtime intrinsics, whole-program TU if
-  needed.
+- Step 3 continuation: whole-program TU / LTO build
+  mode (measured 0.64 s -> ~0.37 s user-only LTO;
+  opt-in first, default only on his call).
 - Step 4: Design 1+2 remainder, then Design 5
   frame tiers.
 - HELD: explicit unchecked region (needs his call).

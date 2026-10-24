@@ -1,0 +1,22 @@
+module main
+import std
+
+int byte_len(byte[] b) {
+    return b.length()
+}
+
+int list_len(string[] parts) {
+    return parts.length()
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    string[] parts = "a,b,c".split(",")
+    if (byte_len(b) == 5 && list_len(parts) == 3) {
+        std.out.printf("ok pos\n")
+    } else {
+        std.out.printf("FAIL pos\n")
+    }
+    return 0
+}

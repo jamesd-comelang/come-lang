@@ -1,0 +1,47 @@
+module main
+import std
+
+int byte_len(byte[] b) {
+    return b.length()
+}
+
+int list_len(string[] parts) {
+    return parts.length()
+}
+
+int string_len(string s) {
+    return s.length()
+}
+
+int map_len(map{string, int} m) {
+    return m.length()
+}
+
+int main() {
+    string s = "hello"
+    byte[] b = s.byte_array()
+    string[] parts = "a,b,c".split(",")
+    string u = "héllo"
+    map{string, int} m = {"a": 1, "b": 2}
+    if (byte_len(b) == 5) {
+        std.out.printf("ok byte_len\n")
+    } else {
+        std.out.printf("FAIL byte_len\n")
+    }
+    if (list_len(parts) == 3) {
+        std.out.printf("ok list_len\n")
+    } else {
+        std.out.printf("FAIL list_len\n")
+    }
+    if (string_len(u) == 5) {
+        std.out.printf("ok string_len\n")
+    } else {
+        std.out.printf("FAIL string_len\n")
+    }
+    if (map_len(m) == 2) {
+        std.out.printf("ok map_len\n")
+    } else {
+        std.out.printf("FAIL map_len\n")
+    }
+    return 0
+}
