@@ -134,6 +134,34 @@ static void trans_first_reg_add(const char* module, const char* fn, const char* 
     snprintf(r->name, sizeof(r->name), "%s", name);
 }
 
+// Transient container registry (step 4c-arrays): an
+// array local that never escapes (see the PARITY.md
+// 4c design for the rule) may hold arena elements
+// without eager promotion on store.
+static TransReg g_trans_cont_reg[TRANS_REG_MAX];
+static int g_trans_cont_reg_count = 0;
+
+static void trans_cont_reg_add(const char* module, const char* fn, const char* name) {
+    for (int i = 0; i < g_trans_cont_reg_count; i++)
+        if (strcmp(g_trans_cont_reg[i].module, module) == 0 &&
+            strcmp(g_trans_cont_reg[i].fn, fn) == 0 &&
+            strcmp(g_trans_cont_reg[i].name, name) == 0) return;
+    if (g_trans_cont_reg_count >= TRANS_REG_MAX) return;
+    TransReg* r = &g_trans_cont_reg[g_trans_cont_reg_count++];
+    snprintf(r->module, sizeof(r->module), "%s", module);
+    snprintf(r->fn, sizeof(r->fn), "%s", fn);
+    snprintf(r->name, sizeof(r->name), "%s", name);
+}
+
+int codegen_transient_container(const char* module, const char* fn, const char* name) {
+    if (!module || !fn || !name) return 0;
+    for (int i = 0; i < g_trans_cont_reg_count; i++)
+        if (strcmp(g_trans_cont_reg[i].module, module) == 0 &&
+            strcmp(g_trans_cont_reg[i].fn, fn) == 0 &&
+            strcmp(g_trans_cont_reg[i].name, name) == 0) return 1;
+    return 0;
+}
+
 int codegen_transient_first_assign(const char* module, const char* fn, const char* name) {
     if (!module || !fn || !name) return 0;
     for (int i = 0; i < g_trans_first_reg_count; i++)
@@ -348,6 +376,111 @@ static int trans_use_bad(ASTNode* node, const char* name) {
     return 0;
 }
 
+// Container use scan (step 4c-arrays): every
+// identifier use of the container must be a
+// built-in method receiver (array methods never
+// retain the receiver), an array-access base
+// (index read, or an index store into the
+// container itself), or a rebinding target.
+// Anything else -- return, call/method argument,
+// store, aliasing init/RHS, dup, spawn/yield --
+// is an escape and disqualifies it. Default deny:
+// an unlisted parent is bad.
+static int trans_container_use_bad(ASTNode* node, const char* name) {
+    if (!node) return 0;
+    for (int i = 0; i < node->child_count; i++) {
+        ASTNode* ch = node->children[i];
+        if (!ch) continue;
+        if (ch->type == AST_IDENTIFIER && strcmp(ch->text, name) == 0) {
+            int ok = 0;
+            if (node->type == AST_METHOD_CALL && i == 0) ok = 1;
+            else if (node->type == AST_ARRAY_ACCESS && i == 0) ok = 1;
+            else if (node->type == AST_ASSIGN && i == 0) ok = 1;
+            if (!ok) return 1;
+        }
+        if (trans_container_use_bad(ch, name)) return 1;
+    }
+    return 0;
+}
+
+typedef struct {
+    char names[TRANS_MAX_NAMES][128];
+    int decl_depth[TRANS_MAX_NAMES];
+    int loop_unsafe[TRANS_MAX_NAMES];
+    int count;
+    char shadowed[TRANS_MAX_NAMES][128];
+    int shadowed_count;
+    char params[TRANS_MAX_NAMES][128];
+    int param_count;
+} TransContCtx;
+
+static int trans_cont_find(TransContCtx* ctx, const char* name) {
+    for (int i = 0; i < ctx->count; i++)
+        if (strcmp(ctx->names[i], name) == 0) return i;
+    return -1;
+}
+
+static int trans_cont_is_shadowed(TransContCtx* ctx, const char* name) {
+    for (int i = 0; i < ctx->shadowed_count; i++)
+        if (strcmp(ctx->shadowed[i], name) == 0) return 1;
+    return 0;
+}
+
+static int trans_cont_is_param(TransContCtx* ctx, const char* name) {
+    for (int i = 0; i < ctx->param_count; i++)
+        if (strcmp(ctx->params[i], name) == 0) return 1;
+    return 0;
+}
+
+// Walk the body in order, recording array locals
+// and the loop depth of every element-adding store
+// into them (append/insert/set method calls and
+// index-store assignments). A store at a depth
+// other than the declaration's depth is loop-unsafe:
+// an outer container appended to in a loop would
+// hold arena elements freed at iteration end.
+static void trans_cont_collect(ASTNode* node, TransContCtx* ctx, int loop_depth) {
+    if (!node) return;
+    if (node->type == AST_VAR_DECL && node->child_count >= 2) {
+        ASTNode* type_node = node->children[1];
+        const char* t = type_node ? type_node->text : NULL;
+        if (t && strchr(t, '[') != NULL) {
+            if (trans_cont_find(ctx, node->text) >= 0) {
+                if (ctx->shadowed_count < TRANS_MAX_NAMES)
+                    snprintf(ctx->shadowed[ctx->shadowed_count++], 128, "%s", node->text);
+            } else if (ctx->count < TRANS_MAX_NAMES) {
+                snprintf(ctx->names[ctx->count], 128, "%s", node->text);
+                ctx->decl_depth[ctx->count] = loop_depth;
+                ctx->count++;
+            }
+        }
+    }
+    if (node->type == AST_METHOD_CALL &&
+        (strcmp(node->text, "append") == 0 ||
+         strcmp(node->text, "insert") == 0 ||
+         strcmp(node->text, "set") == 0) &&
+        node->child_count >= 1 &&
+        node->children[0]->type == AST_IDENTIFIER) {
+        int idx = trans_cont_find(ctx, node->children[0]->text);
+        if (idx >= 0 && loop_depth != ctx->decl_depth[idx])
+            ctx->loop_unsafe[idx] = 1;
+    }
+    if (node->type == AST_ASSIGN && strcmp(node->text, "=") == 0 &&
+        node->child_count >= 2 &&
+        node->children[0]->type == AST_ARRAY_ACCESS &&
+        node->children[0]->child_count >= 1 &&
+        node->children[0]->children[0]->type == AST_IDENTIFIER) {
+        int idx = trans_cont_find(ctx, node->children[0]->children[0]->text);
+        if (idx >= 0 && loop_depth != ctx->decl_depth[idx])
+            ctx->loop_unsafe[idx] = 1;
+    }
+    int child_loop = loop_depth;
+    if (node->type == AST_WHILE || node->type == AST_FOR ||
+        node->type == AST_DO_WHILE) child_loop = loop_depth + 1;
+    for (int i = 0; i < node->child_count; i++)
+        trans_cont_collect(node->children[i], ctx, child_loop);
+}
+
 void codegen_analyze_transient(const char* module, ASTNode** asts, int nast) {
     if (!module) return;
     for (int a = 0; a < nast; a++) {
@@ -391,6 +524,18 @@ void codegen_analyze_transient(const char* module, ASTNode** asts, int nast) {
                 if (trans_is_param(&ctx, name)) continue;
                 if (trans_use_bad(body, name)) continue;
                 trans_first_reg_add(module, ch->text, name);
+            }
+            TransContCtx cctx;
+            memset(&cctx, 0, sizeof(cctx));
+            trans_cont_collect(body, &cctx, 0);
+            for (int i = 0; i < cctx.count; i++) {
+                const char* name = cctx.names[i];
+                if (cctx.loop_unsafe[i]) continue;
+                if (trans_is_shadowed(&ctx, name)) continue;
+                if (trans_cont_is_shadowed(&cctx, name)) continue;
+                if (trans_is_param(&ctx, name)) continue;
+                if (trans_container_use_bad(body, name)) continue;
+                trans_cont_reg_add(module, ch->text, name);
             }
         }
     }

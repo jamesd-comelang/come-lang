@@ -1,0 +1,6 @@
+ok cont_append
+ok cont_index
+ok cont_loop_body
+ok cont_return
+ok cont_callarg
+ok cont_loop_outer

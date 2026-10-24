@@ -45,6 +45,7 @@ bash tests/run_transient_test.sh
 bash tests/run_transient_loop_test.sh
 bash tests/run_transient_multi_test.sh
 bash tests/run_transient_first_test.sh
+bash tests/run_transient_cont_test.sh
 bash tests/run_bounds_test.sh
 bash tests/run_bounds_loop_test.sh
 bash tests/run_intrinsic_test.sh

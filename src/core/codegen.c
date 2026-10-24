@@ -3411,7 +3411,13 @@ static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const c
     // never store, so they never adopt.
     int adopt_elem = (strcmp(method, "append") == 0 || strcmp(method, "insert") == 0 ||
                       strcmp(method, "set") == 0) &&
-                     type_needs_adopt(elem) && expr_is_lvalue_chain(receiver);
+                     type_needs_adopt(elem) && expr_is_lvalue_chain(receiver) &&
+                     // Step 4c-arrays: a transient container
+                     // never escapes, so its elements never
+                     // need eager promotion on store.
+                     !(receiver->type == AST_IDENTIFIER &&
+                       codegen_transient_container(current_module, current_function_name,
+                                                   receiver->text));
     if (adopt_elem) {
         fprintf(f, "void* _actx = (");
         generate_expression(f, receiver);
@@ -7845,7 +7851,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                             fprintf(f, "%s _come_v = ", ctype);
                             generate_expression(f, rhs);
                             fprintf(f, ";\n");
-                            emit_adopt_value(f, indent + 4, "_come_v", ltype, dst);
+                            // Step 4c-arrays: no eager adopt
+                            // into a transient container.
+                            if (!(anode->child_count >= 1 &&
+                                  anode->children[0]->type == AST_IDENTIFIER &&
+                                  codegen_transient_container(current_module, current_function_name,
+                                                              anode->children[0]->text)))
+                                emit_adopt_value(f, indent + 4, "_come_v", ltype, dst);
                             emit_indent(f, indent + 4);
                             generate_expression(f, lhs);
                             fprintf(f, " = _come_v;\n");
@@ -7874,7 +7886,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                             fprintf(f, "%s _come_v = ", ctype);
                             generate_expression(f, rhs);
                             fprintf(f, ";\n");
-                            emit_adopt_value(f, indent + 4, "_come_v", ltype, "_come_arr.ctx");
+                            // Step 4c-arrays: no eager adopt
+                            // into a transient container.
+                            if (!(anode->child_count >= 1 &&
+                                  anode->children[0]->type == AST_IDENTIFIER &&
+                                  codegen_transient_container(current_module, current_function_name,
+                                                              anode->children[0]->text)))
+                                emit_adopt_value(f, indent + 4, "_come_v", ltype, "_come_arr.ctx");
                             emit_indent(f, indent + 4);
                             emit_lhs_rerooted(f, lhs, anode->children[0], "_come_arr");
                             fprintf(f, " = _come_v;\n");

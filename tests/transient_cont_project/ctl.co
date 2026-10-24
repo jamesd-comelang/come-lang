@@ -1,0 +1,50 @@
+module main
+import std
+
+string[] cont_return() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    arr.append(a + b)
+    return arr
+}
+
+int showlen(string[] a) {
+    return a.length()
+}
+
+int cont_callarg() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    arr.append(a + b)
+    if (showlen(arr) == 1) {
+        return 1
+    }
+    return 0
+}
+
+int cont_loop_outer() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    int i = 0
+    while (i < 2) {
+        arr.append(a + b)
+        i = i + 1
+    }
+    if (arr[0] == "ab" && arr[1] == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    string[] r = cont_return()
+    if (r[0] == "ab" && cont_callarg() == 1 && cont_loop_outer() == 1) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

@@ -1,0 +1,117 @@
+module main
+import std
+
+int cont_append() {
+    string a = "a"
+    string b = "b"
+    string c = "c"
+    string d = "d"
+    string[] arr
+    arr.append(a + b)
+    arr.append(c + d)
+    if (arr[0] == "ab" && arr[1] == "cd") {
+        return 1
+    }
+    return 0
+}
+
+int cont_index() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    arr.append("x")
+    arr[0] = a + b
+    if (arr[0] == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int cont_loop_body() {
+    string a = "a"
+    string b = "b"
+    int i = 0
+    int ok = 1
+    while (i < 2) {
+        string[] arr
+        arr.append(a + b)
+        if (arr[0] != "ab") {
+            ok = 0
+        }
+        i = i + 1
+    }
+    return ok
+}
+
+string[] cont_return() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    arr.append(a + b)
+    return arr
+}
+
+int showlen(string[] a) {
+    return a.length()
+}
+
+int cont_callarg() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    arr.append(a + b)
+    if (showlen(arr) == 1) {
+        return 1
+    }
+    return 0
+}
+
+int cont_loop_outer() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    int i = 0
+    while (i < 2) {
+        arr.append(a + b)
+        i = i + 1
+    }
+    if (arr[0] == "ab" && arr[1] == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    if (cont_append() == 1) {
+        std.out.printf("ok cont_append\n")
+    } else {
+        std.out.printf("FAIL cont_append\n")
+    }
+    if (cont_index() == 1) {
+        std.out.printf("ok cont_index\n")
+    } else {
+        std.out.printf("FAIL cont_index\n")
+    }
+    if (cont_loop_body() == 1) {
+        std.out.printf("ok cont_loop_body\n")
+    } else {
+        std.out.printf("FAIL cont_loop_body\n")
+    }
+    string[] r = cont_return()
+    if (r[0] == "ab") {
+        std.out.printf("ok cont_return\n")
+    } else {
+        std.out.printf("FAIL cont_return\n")
+    }
+    if (cont_callarg() == 1) {
+        std.out.printf("ok cont_callarg\n")
+    } else {
+        std.out.printf("FAIL cont_callarg\n")
+    }
+    if (cont_loop_outer() == 1) {
+        std.out.printf("ok cont_loop_outer\n")
+    } else {
+        std.out.printf("FAIL cont_loop_outer\n")
+    }
+    return 0
+}

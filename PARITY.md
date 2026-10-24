@@ -20,8 +20,8 @@ merged, or reverted independently later. Branch:
   frame tiers. Sliced like step 3: 4a (loop-body
   locals + printf borrows, DONE), 4b
   (multi-assignment init, DONE), first-assignment
-  locals (DONE, see below) first, then 4c
-  (array/map promotion), 4d (frame tiers).
+  locals (DONE), 4c-arrays (DONE, see below)
+  first, then 4c-maps, 4d (frame tiers).
 - HELD OUT (needs an explicit call, not covered by
   "do them"): an explicit unchecked/unsafe region.
   It is the only design that guarantees 1x, and it
@@ -353,6 +353,44 @@ check), ASan, full suites, bench (expect a
 measurable tokenizer move from removing one check
 per byte; report it, do not assume it).
 
+## Step 4c-arrays DONE (2026-10-24): transient array containers (no eager element promotion)
+
+A separate container registry in transient.c
+(codegen_transient_container): an array local
+with an explicit array type is transient iff
+every use is a built-in method receiver, an
+array-access base, or a rebinding target, and
+every element-adding store (append/insert/set
+method call, index-store assignment) shares the
+declaration's loop depth (so an outer container
+appended to in a loop is excluded -- its arena
+elements would dangle at iteration end). Params
+and shadowed names excluded; `var` arrays
+excluded (no inferred array type in the
+analysis). Codegen suppresses eager element
+promotion for transient receivers: the
+adopt_elem condition in the method-call emission
+(append/insert/set) and the _come_v adopt in
+both index-store blocks (fixed + dynamic) in
+the statement ASSIGN case. Element escapes via
+reads (arr[i] then stored/returned) are still
+promoted by the net at those sites. Test:
+`tests/transient_cont_project/` +
+`tests/run_transient_cont_test.sh` (positives:
+append, index-store, loop-body container -- NO
+promote and NO scope-adopt anywhere in
+positives; controls: return, call arg,
+outer-loop store -- promote present; ASan).
+Suites green from clean (Come exit 0, "all
+green"; co_SQLite 7/7). Tokenizer bench: ~0.60
+s, essentially unchanged (no containers in its
+hot path, as predicted). Container micro (1M
+loop-body array appends of an arena concat):
+old compiler ~298 ms vs new ~218 ms = 1.37x.
+Maps are NOT in this cutoff (emit_map_put
+suppression needs the named-local-only guard
+for literal construction) -- 4c-maps next.
+
 ## Step 4c design (2026-10-24, not yet implemented)
 
 Verified first, because it changes the shape of
@@ -428,12 +466,9 @@ local-scratch-container micro, not the tokenizer.
 
 ## Remaining (in order)
 
-- Step 4c-arrays: transient containers, arrays
-  (design above; suppress eager element
-  promotion for never-escaping array locals).
 - Step 4c-maps: transient containers, maps
   (emit_map_put suppression for named transient
-  locals only).
+  locals only; literal construction excluded).
 - Step 4d: Design 5 frame tiers (checkpoint /
   full), unblocked by 4a-4c.
 - HELD: explicit unchecked region (needs his call).
