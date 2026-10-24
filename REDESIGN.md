@@ -109,7 +109,8 @@ its data chunk. So general views ride on Design 1
 (escape analysis), which will either prove views
 transient or reject escaping ones. UPDATE 2026-10-24:
 Design 1 is done (see below); general views are now
-actionable. The ASCII fast path was assessed and
+actionable. UPDATE 2026-10-24 (later): views are
+done too (see the Design 3 views section below). The ASCII fast path was assessed and
 parked: the tokenizer is byte-based, so char-level
 O(1) indexing buys it nothing measurable; it may
 still help char-heavy code later.
@@ -228,12 +229,90 @@ walk is null-checked.
 
 ## Remaining (in order)
 
+- Design 3: general string views + byte view
+  (DONE 2026-10-24, except the NUL-scanner audit
+  below)
+
+New methods `.view(start, end)` (character indices,
+like substr) and `.byte_view(start, end)` (byte
+indices): zero-allocation headers over the parent's
+block (count = bytes, cap = 0, ctx = parent's ctx).
+Soundness is by promotion, not by tracking: a
+compiler flag (`g_view_promote`, reset at every
+statement boundary) is set at every storing
+position - declaration initializers, assignments
+(including container keys), returns, container and
+field stores, call arguments, spawn arguments, and
+printf arguments (%s reads to NUL, which a view
+lacks) - so a view there compiles to a copy
+(substr / byte_range) instead. No view variable
+ever exists; a view that survives to codegen is a
+temporary consumed within its statement, where its
+parent is in scope and therefore alive. Views
+compose (a view of a view is a subrange of the
+original block), and the view walk is bounded by
+the input's byte count (not by NUL, which a view
+need not contain at its end).
+
+- Runtime: come_string_view (count-bounded char
+  walk, substr's clamping), come_string_byte_view,
+  come_string_byte_range (promotion fallback).
+- Codegen: view/byte_view added to the string
+  method list, the .length() plain-string list,
+  expr_come_type (view -> string, byte_view ->
+  byte[]), both printf string lists, the mayfail
+  pure list, and the clean/frameless walker
+  allowlists (views allocate nothing).
+- Companion fixes the testing forced (not assumed):
+  a struct temporary passed to fprintf %s crashes
+  (variadic ABI), so printf arguments promote
+  views to copies; come_string_len/cmp/casecmp
+  walked by NUL and gave parent-suffix answers for
+  non-suffix views - now count-bounded, which is
+  identical for owned strings (NUL-terminated, no
+  embedded NUL) and correct for views.
+
+- Test: tests/run_view_test.sh +
+  tests/view_project/ (17 checks: temporary views,
+  promotions (stored, returned, map/array stored,
+  call argument, printf), UTF-8 views, nested
+  views, byte views). Generated C is pinned to
+  contain BOTH forms (view/byte_view for
+  temporaries, substr/byte_range for promotions),
+  and the run is ASan-clean (a missed promotion
+  would read freed parent data).
+- Suites green from clean, 0 warnings: Come
+  67 passed, 0 failed (plus the new view e2e);
+  co_SQLite 7 passed, 0 failed. Tokenizer bench
+  unchanged (~0.62 s, checksums identical): the
+  tokenizer does not use views, so this step moves
+  no bench number by design. Micro-benchmark
+  (2M-iteration compare loop, same compiler):
+  view 0.12 s vs substr 0.29 s (~2.4x), both
+  correct.
+
+Known limitation, stated plainly: other
+NUL-scanning string operations (find, split, chr,
+regex, numeric parse, and friends) still read to
+the parent's NUL for non-suffix views, so they
+return parent-suffix results, not view results.
+Views are correct for ==, !=, length, byte
+indexing, nesting, and every promotion path. The
+count-bounded audit of the remaining string
+functions is the follow-up (story-sized, not done
+here). Second precision loss: call arguments
+always promote, even transient ones (a per-arg
+escape-registry lookup would recover transient-arg
+views).
+
+## Remaining (in order)
+
 - Design 2: arena scopes (runtime change: bump
   allocator, promotion on adopt, checkpoints).
   The analysis it needs is done.
-- Design 3: general string views + byte view
-  (implementation; the analysis it needs is done).
-  ASCII fast path stays parked (low value).
+- Design 3 follow-up: count-bounded audit of the
+  remaining NUL-scanning string functions (find,
+  split, chr, regex, numeric parse).
 - Design 5 (remainder): checkpoint / full-frame
   tiers driven by escape analysis. Needs arenas.
 - Design 6: cross-module inlining / single-TU codegen.

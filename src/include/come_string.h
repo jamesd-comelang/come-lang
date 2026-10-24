@@ -80,6 +80,12 @@ come_string_list_t come_string_list_from_argv(TALLOC_CTX* ctx, int argc, char* a
 
 // Substring
 come_string_t come_string_substr(come_string_t a, size_t start, size_t end);
+// Design 3 (redesign): views borrow the parent's block
+// (no allocation); byte_range is the owned copy of a
+// byte range, used when a byte view must promote.
+come_string_t come_string_view(come_string_t a, size_t start, size_t end);
+come_byte_array_t come_string_byte_view(come_string_t a, size_t start, size_t end);
+come_byte_array_t come_string_byte_range(come_string_t a, size_t start, size_t end);
 
 // Regex
 bool come_string_regex(come_string_t a, const char* pattern);

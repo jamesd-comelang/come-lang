@@ -1,0 +1,17 @@
+view eq hello
+view eq world
+view ne
+view len suffix
+view len prefix
+view utf8 eq
+view utf8 len
+view nested
+view byte len
+view byte idx
+view byte stored
+view call arg
+view stored
+view returned
+view map store
+view array store
+view printf hello

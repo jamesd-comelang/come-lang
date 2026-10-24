@@ -105,6 +105,18 @@ static char current_function_name[128] = "";
 static int g_in_fn_body = 0;
 static int g_fn_instance_form = 0; // COIL-140: body being generated is instance-form
 static int g_cur_fn_frameless = 0; // A5: body being generated needs no marker frame
+// Design 3 (redesign): a .view()/.byte_view() call
+// emits a true view only when this flag is clear.
+// Storing positions (declaration initializers,
+// assignments, returns, spawn arguments, and call
+// arguments) set it, so a view there promotes to a
+// copy (substr / byte_range) instead. A view that
+// survives to codegen is therefore a temporary
+// consumed within its statement, where its parent is
+// in scope and alive. Reset at every statement
+// boundary (generate_node entry), so a set flag can
+// never leak into an unrelated statement.
+static int g_view_promote = 0;
 static int g_module_level = 0;     // COIL-140: generating a top-level node   // arming ERR source sites (COIL-139)
 static int g_raw_aggregate = 0;    // COIL-145: emit an array literal's raw braces (the declaration path's own C array) instead of materializing the header value
 static char current_module[256] = "main"; // Default to main if unspecified
@@ -1260,7 +1272,8 @@ static int frame_walk_clean(ASTNode* n) {
                 return 1;
             }
             if (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0 ||
-                strcmp(n->text, "owner") == 0) {
+                strcmp(n->text, "owner") == 0 || strcmp(n->text, "view") == 0 ||
+                strcmp(n->text, "byte_view") == 0) {
                 for (int i = 0; i < n->child_count; i++)
                     if (!frame_walk_clean(n->children[i])) return 0;
                 return 1;
@@ -1487,6 +1500,7 @@ static int mayfail_method_pure(const char* m) {
         "lower", "upper", "substr", "find", "split", "split_n",
         "replace", "repeat", "trim", "ltrim", "rtrim", "join",
         "byte_array", "append", "clear", "resize", "free", "slice",
+        "view", "byte_view",
         "put", "str", NULL };
     for (int i = 0; pure[i]; i++)
         if (strcmp(m, pure[i]) == 0) return 1;
@@ -2909,7 +2923,8 @@ static int clean_walk(ASTNode* n) {
                 return 1;
             }
             if (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0 ||
-                strcmp(n->text, "owner") == 0) {
+                strcmp(n->text, "owner") == 0 || strcmp(n->text, "view") == 0 ||
+                strcmp(n->text, "byte_view") == 0) {
                 for (int i = 0; i < n->child_count; i++)
                     if (!clean_walk(n->children[i])) return 0;
                 return 1;
@@ -3723,6 +3738,14 @@ static const char* expr_come_type(ASTNode* e, char* buf, size_t n) {
             strcmp(m, "regex_split") == 0 || strcmp(m, "regex_groups") == 0 ||
             strcmp(m, "keys") == 0) {
             snprintf(buf, n, "string[]");
+            return buf;
+        }
+        if (strcmp(m, "view") == 0) {
+            snprintf(buf, n, "string");
+            return buf;
+        }
+        if (strcmp(m, "byte_view") == 0) {
+            snprintf(buf, n, "byte[]");
             return buf;
         }
         if (strcmp(m, "slice") == 0 || strcmp(m, "dup") == 0)
@@ -4628,6 +4651,13 @@ static void generate_expression(FILE* f, ASTNode* node) {
                      *dst = '\0';
                  }
 
+                 // Design 3 (redesign): printf %s reads to
+                 // NUL, which a view lacks at its end, so
+                 // view arguments promote to copies here
+                 // (the generic call-argument rule does not
+                 // reach this dedicated loop).
+                 int saved_view_promote_printf = g_view_promote;
+                 g_view_promote = 1;
                  for (int i = 1; i < node->child_count; i++) {
                      if (i > 1) fprintf(f, ", ");
                      
@@ -4676,6 +4706,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                                strcmp(name, "repeat") == 0 || strcmp(name, "replace") == 0 ||
                                strcmp(name, "trim") == 0 || strcmp(name, "ltrim") == 0 ||
                                strcmp(name, "rtrim") == 0 || strcmp(name, "substr") == 0 ||
+                               strcmp(name, "view") == 0 ||
                                strcmp(name, "join") == 0 || strcmp(name, "new") == 0 ||
                                strcmp(name, "str") == 0 || strcmp(name, "gets") == 0 ||
                                strcmp(name, "where") == 0) {
@@ -4730,6 +4761,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                      }
 
                  }
+                 g_view_promote = saved_view_promote_printf;
                  fprintf(f, ")");
                  return;
              }
@@ -5067,7 +5099,8 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  strcmp(method, "upper") == 0 || strcmp(method, "lower") == 0 ||
                  strcmp(method, "trim") == 0 || strcmp(method, "ltrim") == 0 || strcmp(method, "rtrim") == 0 ||
                  strcmp(method, "replace") == 0 || strcmp(method, "split") == 0 ||
-                 strcmp(method, "join") == 0 || strcmp(method, "substr") == 0 || 
+                 strcmp(method, "join") == 0 || strcmp(method, "substr") == 0 ||
+                 strcmp(method, "view") == 0 || strcmp(method, "byte_view") == 0 ||
                  strcmp(method, "find") == 0 || strcmp(method, "rfind") == 0 || strcmp(method, "count") == 0 ||
                  strcmp(method, "chr") == 0 || strcmp(method, "rchr") == 0 || strcmp(method, "memchr") == 0 ||
                  strcmp(method, "isdigit") == 0 || strcmp(method, "isalpha") == 0 || 
@@ -5079,6 +5112,33 @@ static void generate_expression(FILE* f, ASTNode* node) {
                  strcmp(method, "toi") == 0 || strcmp(method, "tof") == 0 ||
                  strcmp(method, "utf8") == 0 ||
                  strcmp(method, "byte_array") == 0) {
+            // Design 3 (redesign): views. In a storing
+            // position (g_view_promote set by the
+            // statement or call-argument site) a view
+            // promotes to a copy, so no view variable
+            // can ever dangle; elsewhere it is a true
+            // zero-allocation view over the parent's
+            // block. A literal receiver materializes
+            // first, as for other string producers.
+            if (strcmp(method, "view") == 0 || strcmp(method, "byte_view") == 0) {
+                int is_byte = strcmp(method, "byte_view") == 0;
+                fprintf(f, "%s(", g_view_promote ?
+                    (is_byte ? "come_string_byte_range" : "come_string_substr") :
+                    (is_byte ? "come_string_byte_view" : "come_string_view"));
+                if (receiver->type == AST_STRING_LITERAL) {
+                    fprintf(f, "come_string_new(NULL, ");
+                    generate_expression(f, receiver);
+                    fprintf(f, ")");
+                } else {
+                    generate_expression(f, receiver);
+                }
+                for (int i = 1; i < node->child_count; i++) {
+                    fprintf(f, ", ");
+                    generate_expression(f, node->children[i]);
+                }
+                fprintf(f, ")");
+                return;
+            }
             
             // Check if receiver is a map for len() - maps also have len()
             if (strcmp(method, "len") == 0 && receiver->type == AST_IDENTIFIER) {
@@ -5156,6 +5216,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                         strcmp(mn, "repeat") == 0 || strcmp(mn, "replace") == 0 ||
                         strcmp(mn, "trim") == 0 || strcmp(mn, "ltrim") == 0 ||
                         strcmp(mn, "rtrim") == 0 || strcmp(mn, "substr") == 0 ||
+                        strcmp(mn, "view") == 0 ||
                         strcmp(mn, "join") == 0 || strcmp(mn, "gets") == 0 ||
                         strcmp(mn, "fname") == 0 || strcmp(mn, "str") == 0 ||
                         strcmp(mn, "where") == 0) {
@@ -5390,7 +5451,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
              }
         }
         
-        // Arguments
+        // Arguments: a callee may retain its arguments,
+        // so views here promote to copies (the receiver,
+        // emitted above, is borrowed and keeps its views).
+        int saved_view_promote = g_view_promote;
+        g_view_promote = 1;
         for (int i = 1; i < node->child_count; i++) {
              if (strcmp(method, "join") == 0 && i == 1) continue; // Handled
              
@@ -5440,6 +5505,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
              }
              first_arg = 0;
         }
+        g_view_promote = saved_view_promote;
         
         // Optional args for string methods
         if ((strcmp(method, "cmp") == 0 || strcmp(method, "casecmp") == 0) && node->child_count == 2) {
@@ -5609,6 +5675,8 @@ static void generate_expression(FILE* f, ASTNode* node) {
             // crash the caller (COIL-133).
             char cparts[32][160];
             int cnp = call_param_types(node, cparts, 32);
+            int saved_view_promote2 = g_view_promote;
+            g_view_promote = 1; // Design 3 (redesign): call arguments may be retained
             for (int i = 0; i < node->child_count; i++) {
                 if (i > 0 || inst_call) fprintf(f, ", ");
                 if (i < cnp && strcmp(cparts[i], "string") == 0 &&
@@ -5619,6 +5687,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 else
                     generate_expression(f, node->children[i]);
             }
+            g_view_promote = saved_view_promote2;
         }
         fprintf(f, ")");
     } else if (node->type == AST_AGGREGATE_INIT) {
@@ -5839,10 +5908,13 @@ static void generate_expression(FILE* f, ASTNode* node) {
              }
         } else {
             fprintf(f, "%s(", node->text);
+            int saved_view_promote3 = g_view_promote;
+            g_view_promote = 1; // Design 3 (redesign): call arguments may be retained
             for (int i=0; i < node->child_count; i++) {
                  generate_expression(f, node->children[i]);
                  if (i < node->child_count - 1) fprintf(f, ", ");
             }
+            g_view_promote = saved_view_promote3;
             fprintf(f, ")");
         }
     }
@@ -5924,6 +5996,13 @@ static void generate_program(FILE* f, ASTNode* node) {
 
 static void generate_node(FILE* f, ASTNode* node, int indent) {
     if (!node) return;
+
+    // Design 3 (redesign): views promote at storing
+    // positions; a statement starts unpromoted, so a
+    // flag set by one statement never leaks into the
+    // next (nested statements reset on entry too, and
+    // call arguments save/restore around themselves).
+    g_view_promote = 0;
 
     // COIL-139: arm the ERR pending location with this
     // statement's source site (function bodies only).
@@ -6228,6 +6307,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 
     
     case AST_VAR_DECL: {
+        // Design 3 (redesign): a declaration initializer
+        // stores its value, so a view there promotes to
+        // a copy (no view variable ever exists).
+        g_view_promote = 1;
         emit_line_directive(f, node);  // Emit #line for variable declaration
         ASTNode* type_node = node->children[1];
         register_local_type(node->text, type_node);
@@ -6585,6 +6668,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             emit_indent(f, indent);
             fputs("printf(", f);
             emit_c_string_literal(f, node->text);
+            // Design 3 (redesign): printf %s reads to NUL,
+            // which a view lacks at its end, so view
+            // arguments promote to copies here.
+            int saved_view_promote_stmt_printf = g_view_promote;
+            g_view_promote = 1;
             
             for (int i = 0; i < node->child_count; i++) {
                 fputs(", ", f);
@@ -6606,6 +6694,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     if (strcmp(m, "upper")==0 || strcmp(m, "lower")==0 || strcmp(m, "repeat")==0 ||
                         strcmp(m, "replace")==0 || strcmp(m, "trim")==0 || strcmp(m, "ltrim")==0 ||
                         strcmp(m, "rtrim")==0 || strcmp(m, "join")==0 || strcmp(m, "substr")==0 ||
+                        strcmp(m, "view")==0 ||
                         strcmp(m, "regex_replace")==0 || strcmp(m, "str")==0 || strcmp(m, "where")==0 ||
                         (mret && strcmp(mret, "string") == 0)) {
                          fprintf(f, "(");
@@ -6648,6 +6737,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     generate_expression(f, arg);
                 }
             }
+            g_view_promote = saved_view_promote_stmt_printf;
             fputs(");\n", f);
             break;
         }
@@ -6707,6 +6797,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
 
         case AST_SPAWN: {
+            // Design 3 (redesign): spawn arguments cross
+            // into the new coroutine, which may retain
+            // them, so views there promote to copies.
+            g_view_promote = 1;
             // spawn name(args) (COIL-120, spec 9.1): build the
             // args block in the new coroutine's own context and
             // make it runnable. It runs when someone yields,
@@ -6855,6 +6949,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
 
         case AST_RETURN: {
+            // Design 3 (redesign): a return value leaves
+            // the function, so views in it promote to
+            // copies. (Call arguments inside it are
+            // re-decided per argument by the call sites,
+            // which save/restore around themselves.)
+            g_view_promote = 1;
             emit_line_directive(f, node);
             emit_indent(f, indent);
             if (g_in_coroutine && node->child_count > 0) {
@@ -7065,6 +7165,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         }
 
         case AST_ASSIGN: {
+            // Design 3 (redesign): an assignment stores
+            // its value (and, for a container element,
+            // its key), so views anywhere in it promote
+            // to copies.
+            g_view_promote = 1;
             emit_line_directive(f, node);  // Emit #line for assignment
             // Assigning to a constant (COIL-129): a module
             // constant is not a variable, and the first-

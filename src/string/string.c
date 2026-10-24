@@ -70,49 +70,63 @@ uint32_t come_string_size(come_string_t a) {
 
 // Character count: scan the UTF-8 content.
 uint32_t come_string_len(come_string_t a) {
+    // Design 3 (redesign): bounded by the byte count,
+    // not by NUL, so a view (which need not contain a
+    // NUL at its end) counts only its own characters.
+    // For owned strings this is identical: they are
+    // NUL-terminated with no embedded NUL, so the count
+    // bytes are exactly the bytes to the terminator.
     uint32_t count = 0;
     const char* p = sdata(a);
-    while (*p) {
-        if ((*p & 0xC0) != 0x80) count++;
-        p++;
+    for (uint32_t i = 0; i < a.count; i++) {
+        if ((p[i] & 0xC0) != 0x80) count++;
     }
     return count;
 }
 
 int come_string_cmp(come_string_t a, come_string_t b, size_t n) {
-    if (n == 0) return strcmp(sdata(a), sdata(b));
-
+    // Design 3 (redesign): count-bounded, like len.
     const char* p1 = sdata(a);
     const char* p2 = sdata(b);
-    size_t chars = 0;
-
-    while (*p1 && *p2 && chars < n) {
-        if (*p1 != *p2) return *p1 - *p2;
-        do { p1++; } while ((*p1 & 0xC0) == 0x80);
-        do { p2++; } while ((*p2 & 0xC0) == 0x80);
+    if (n == 0) {
+        size_t m = a.count < b.count ? a.count : b.count;
+        int c = m ? memcmp(p1, p2, m) : 0;
+        if (c != 0) return c;
+        if (a.count < b.count) return -1;
+        if (a.count > b.count) return 1;
+        return 0;
+    }
+    size_t i1 = 0, i2 = 0, chars = 0;
+    while (chars < n && i1 < a.count && i2 < b.count) {
+        if (p1[i1] != p2[i2]) return (unsigned char)p1[i1] - (unsigned char)p2[i2];
+        do { i1++; } while (i1 < a.count && ((p1[i1] & 0xC0) == 0x80));
+        do { i2++; } while (i2 < b.count && ((p2[i2] & 0xC0) == 0x80));
         chars++;
     }
-
     if (chars == n) return 0;
-    return *p1 - *p2;
+    if (i1 >= a.count && i2 >= b.count) return 0;
+    if (i1 >= a.count) return -1;
+    if (i2 >= b.count) return 1;
+    return (unsigned char)p1[i1] - (unsigned char)p2[i2];
 }
 
 int come_string_casecmp(come_string_t a, come_string_t b, size_t n) {
-
+    // Design 3 (redesign): count-bounded, like cmp.
     const char* p1 = sdata(a);
     const char* p2 = sdata(b);
-    size_t chars = 0;
-
-    while (*p1 && *p2 && (n == 0 || chars < n)) {
-        if (tolower((unsigned char)*p1) != tolower((unsigned char)*p2))
-            return tolower((unsigned char)*p1) - tolower((unsigned char)*p2);
-        do { p1++; } while ((*p1 & 0xC0) == 0x80);
-        do { p2++; } while ((*p2 & 0xC0) == 0x80);
+    size_t i1 = 0, i2 = 0, chars = 0;
+    while ((n == 0 || chars < n) && i1 < a.count && i2 < b.count) {
+        if (tolower((unsigned char)p1[i1]) != tolower((unsigned char)p2[i2]))
+            return tolower((unsigned char)p1[i1]) - tolower((unsigned char)p2[i2]);
+        do { i1++; } while (i1 < a.count && ((p1[i1] & 0xC0) == 0x80));
+        do { i2++; } while (i2 < b.count && ((p2[i2] & 0xC0) == 0x80));
         chars++;
     }
-
     if (n != 0 && chars == n) return 0;
-    return tolower((unsigned char)*p1) - tolower((unsigned char)*p2);
+    if (i1 >= a.count && i2 >= b.count) return 0;
+    if (i1 >= a.count) return -1;
+    if (i2 >= b.count) return 1;
+    return tolower((unsigned char)p1[i1]) - tolower((unsigned char)p2[i2]);
 }
 
 long come_string_chr(come_string_t a, int c) {
@@ -398,6 +412,86 @@ come_string_t come_string_substr(come_string_t a, size_t start, size_t end) {
     if (start_p > end_p) start_p = end_p;
 
     return come_string_new_len(a.ctx, start_p, (size_t)(end_p - start_p));
+}
+
+// Design 3 (redesign): a string view. Same character
+// indices and clamping as substr, but no allocation:
+// the header points into the parent's byte block
+// (count is bytes, cap is 0 - a view never grows in
+// place; growing forks a fresh owned block, COIL-135).
+// The view borrows the parent: it must not outlive
+// the parent's scope. The compiler guarantees that by
+// promoting a view to a copy (substr) at every storing
+// position (assignment, return, container/field store,
+// escaping call argument); a view that survives to
+// codegen is a temporary consumed within its statement,
+// where the parent is in scope and therefore alive.
+// Views compose: a view of a view is a subrange of the
+// original parent's block, so the walk below is bounded
+// by the input's byte count (not by NUL, which a view
+// need not contain at its end).
+come_string_t come_string_view(come_string_t a, size_t start, size_t end) {
+    const char* base = sdata(a);
+    size_t total = a.count;
+    size_t byte_idx = 0;
+    size_t char_idx = 0;
+    const char* start_p = NULL;
+    const char* end_p = NULL;
+
+    while (byte_idx < total) {
+        if (char_idx == start) start_p = base + byte_idx;
+        if (char_idx == end) { end_p = base + byte_idx; break; }
+        do { byte_idx++; } while (byte_idx < total && ((base[byte_idx] & 0xC0) == 0x80));
+        char_idx++;
+    }
+
+    if (char_idx == start) start_p = base + total; // Start at end of string
+    if (!end_p) end_p = base + total; // End beyond string
+
+    if (!start_p) start_p = end_p; // Out of bounds
+    if (start_p > end_p) start_p = end_p;
+
+    come_string_t v;
+    v.data = (char*)start_p;
+    v.count = (uint32_t)(end_p - start_p);
+    v.cap = 0;
+    v.ctx = a.ctx;
+    return v;
+}
+
+// Design 3 (redesign): a byte view. Same as a string
+// view but over byte indices (no character walk), for
+// byte-level work. Same borrowing rule as above.
+come_byte_array_t come_string_byte_view(come_string_t a, size_t start, size_t end) {
+    const char* base = sdata(a);
+    size_t total = a.count;
+    if (start > total) start = total;
+    if (end > total) end = total;
+    if (start > end) start = end;
+    come_byte_array_t v = COME_HDR_INIT(a.ctx);
+    v.data = (uint8_t*)(base + start);
+    v.count = (uint32_t)(end - start);
+    v.cap = 0;
+    return v;
+}
+
+// Design 3 (redesign): the owned copy of a byte range,
+// used when a byte view reaches a storing position and
+// must promote (same clamping as byte_view).
+come_byte_array_t come_string_byte_range(come_string_t a, size_t start, size_t end) {
+    const char* base = sdata(a);
+    size_t total = a.count;
+    if (start > total) start = total;
+    if (end > total) end = total;
+    if (start > end) start = end;
+    come_byte_array_t ba = COME_HDR_INIT(a.ctx);
+    size_t len = end - start;
+    ba.data = (uint8_t*)mem_talloc_alloc(a.ctx, len ? len : 1);
+    if (!ba.data) return ba;
+    if (len) memcpy(ba.data, base + start, len);
+    ba.count = (uint32_t)len;
+    ba.cap = (uint32_t)len;
+    return ba;
 }
 
 // Regex
