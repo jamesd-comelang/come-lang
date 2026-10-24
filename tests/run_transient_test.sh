@@ -10,7 +10,10 @@
 # straight-line ctl once held a loop-body control (c4)
 # and a printf control (c6); step 4a made both
 # transient, so they moved to transient_loop (positives
-# there) and are no longer controls here.
+# there) and are no longer controls here. It once
+# held a reassigned control (c1); step 4b made
+# reassigned inits transient, so it moved to
+# transient_multi (positive there).
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd)

@@ -1,0 +1,38 @@
+module main
+import std
+
+string show(string x) {
+    return x
+}
+
+int multi_bad() {
+    string a = "a"
+    string b = "b"
+    string s = a + b
+    s = show(s)
+    if (s == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int multi_store() {
+    string a = "a"
+    string b = "b"
+    string[] arr
+    string s = a + b
+    arr.append(s)
+    if (arr[0] == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    if (multi_bad() == 1 && multi_store() == 1) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

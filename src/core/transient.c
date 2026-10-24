@@ -8,7 +8,14 @@
 //   - the name is not a parameter name and is not
 //     re-declared (shadowed) anywhere in the function;
 //   - the initializer does not reference the name itself;
-//   - the name is never assigned again anywhere in the body;
+//   - every identifier use of the name is a whitelisted
+//     borrow, EXCEPT reassignment targets (step 4b):
+//     overwriting the local orphans its arena init
+//     string, which the frame pop frees anyway, so a
+//     reassignment does not by itself disqualify --
+//     what matters is that no use stores, returns, or
+//     captures the arena value, and reassignment RHS
+//     uses are themselves classified as borrows or not;
 //   - every other identifier use of the name is a whitelisted
 //     borrow: a concat operand, an operand of == / !=, the
 //     receiver of a pure string method (length,
@@ -27,7 +34,10 @@
 // std printf), store, map/array/field value,
 // dup/chown receiver, spawn/yield capture --
 // disqualifies the local, and the local keeps the
-// ordinary talloc path. The default is
+// ordinary talloc path. A reassignment TARGET is
+// not a disqualifier (step 4b, see above); a
+// reassignment whose RHS uses the name in a bad way
+// still disqualifies via that RHS use. The default is
 // "not transient": an unrecognized construct can only
 // miss an optimization, never dangle a value.
 //
@@ -234,6 +244,7 @@ static int trans_use_bad(ASTNode* node, const char* name) {
                 (strcmp(node->text, "+") == 0 ||
                  strcmp(node->text, "==") == 0 ||
                  strcmp(node->text, "!=") == 0)) ok = 1;
+            else if (node->type == AST_ASSIGN && i == 0) ok = 1;
             else if (node->type == AST_METHOD_CALL && i == 0 &&
                      trans_is_pure_receiver_method(node->text)) ok = 1;
             else if (node->type == AST_METHOD_CALL && i >= 1 &&

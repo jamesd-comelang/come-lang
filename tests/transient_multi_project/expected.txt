@@ -1,0 +1,4 @@
+ok multi
+ok multi_self
+ok multi_bad
+ok multi_store

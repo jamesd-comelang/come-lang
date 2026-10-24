@@ -16,13 +16,6 @@ int check(string t) {
 int main() {
     string a = "hello"
     string b = " world"
-    string r1 = a + b
-    r1 = a + "!"
-    if (r1 == "hello!") {
-        std.out.printf("ok c1\n")
-    } else {
-        std.out.printf("FAIL c1\n")
-    }
     if (ret_t(a, b) == "hello world") {
         std.out.printf("ok c2\n")
     } else {

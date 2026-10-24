@@ -18,9 +18,10 @@ merged, or reverted independently later. Branch:
   (DONE, see below).
 - Step 4: Design 1+2 remainder, then Design 5
   frame tiers. Sliced like step 3: 4a (loop-body
-  locals + printf borrows, DONE, see below) first,
-  then 4b (multi-assignment + first-assignment),
-  4c (array/map promotion), 4d (frame tiers).
+  locals + printf borrows, DONE) and 4b
+  (multi-assignment init, DONE, see below) first,
+  then first-assignment locals, 4c (array/map
+  promotion), 4d (frame tiers).
 - HELD OUT (needs an explicit call, not covered by
   "do them"): an explicit unchecked/unsafe region.
   It is the only design that guarantees 1x, and it
@@ -58,6 +59,36 @@ inlined at default flags) plus the guard's
 what step 3 (intrinsics) targets; step 1 still pays
 where checks dominate (and it removes a check per
 byte that no longer needs proving).
+
+## Step 4b DONE (2026-10-24): transient multi-assignment init (reassignment targets allowed)
+
+trans_use_bad no longer disqualifies a reassignment
+TARGET (ASSIGN child 0): overwriting the local
+orphans its arena init string, which the frame pop
+frees anyway, so only escaping uses (return, call
+arg other than std printf, store, dup/chown,
+spawn/yield) disqualify. A reassignment whose RHS
+uses the name badly still disqualifies via that RHS
+use. Reassignments themselves stay talloc (they go
+through a _come_v temp + adoption); only the
+declaration's init is arena. Test:
+`tests/transient_multi_project/` +
+`tests/run_transient_multi_test.sh` (multi and
+multi-self positives: declaration line arena,
+reassignment temp talloc; bad-RHS and store
+controls: no arena at all; ASan). The old
+straight-line ctl lost its reassigned control (c1)
+to this step -- it moved to transient_multi as a
+positive, and the old ctl + expected output were
+updated. Suites green from clean (Come exit 0,
+"all green"; co_SQLite 7/7). Tokenizer bench:
+~0.60 s, essentially unchanged (no multi-assigned
+string locals in its hot path). First-assignment
+locals (a local whose FIRST assignment, not its
+init, is a concat) are NOT in this cutoff: they
+need codegen ASSIGN-time transient handling, not
+just an analysis relaxation, so they are the next
+slice, not folded in here.
 
 ## Step 4a DONE (2026-10-24): transient loop-body locals + std printf borrows
 
@@ -286,9 +317,10 @@ per byte; report it, do not assume it).
 
 ## Remaining (in order)
 
-- Step 4b: Design 1+2 remainder, part 2 --
-  multi-assignment fixpoint + first-assignment
-  locals.
+- First-assignment locals (step 4b remainder):
+  a local whose FIRST assignment, not its init, is
+  a concat -- needs codegen ASSIGN-time transient
+  handling (registry + first-assignment tracking).
 - Step 4c: Design 1+2 remainder, part 3 --
   array/map promotion (escape-aware; header AND
   arena elements must promote together).
