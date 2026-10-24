@@ -353,11 +353,87 @@ check), ASan, full suites, bench (expect a
 measurable tokenizer move from removing one check
 per byte; report it, do not assume it).
 
+## Step 4c design (2026-10-24, not yet implemented)
+
+Verified first, because it changes the shape of
+the step: container adoption ALREADY recurses
+into elements. emit_adopt_value for a dynamic
+array adopts the data block and then each buffer
+element (codegen.c, array branch), and map puts
+promote arena keys/values eagerly (emit_map_put).
+Array append/insert/set adopt elements eagerly
+(codegen.c, adopt_elem), and array index stores
+adopt via _come_v + emit_adopt_value. So the
+REDESIGN.md worry -- "a container that escapes
+must promote its header AND any arena elements,
+or the elements dangle" -- is already closed by
+the net: an escaping container's elements are
+promoted with it, and a stored element is
+promoted at store time. 4c is therefore NOT a
+safety fix; it is the performance side:
+transient containers.
+
+Rule (strict never-escapes, mirroring the string
+rule but stricter, because a callee could retain
+a container): a container local is transient iff
+every use is a built-in method receiver
+(append/insert/set/index/length/contains -- the
+built-ins do not retain the receiver) or an
+index read (arr[i]; the ELEMENT's own net still
+catches element escapes at their use sites), and
+NO use is a return, a store (to outer/module/
+field/map/array), a call argument (any function
+could retain it), an assignment RHS (aliasing),
+a dup(0)/dup, or a spawn/yield capture.
+Assignment TARGETS are allowed (rebinding
+orphans the old container, like string
+reassignment; the container still never escapes
+regardless of whether its current value is arena
+or talloc). Loop rule: like strings, an outer
+container assigned in a loop is excluded (the
+loop-accumulation argument applies to its arena
+elements too); a loop-body container is allowed
+(per-iteration frame).
+
+Codegen: suppress eager element promotion at
+the store sites when the receiver is transient:
+(1) array append/insert/set (adopt_elem in the
+method-call emission), (2) array index stores
+(the _come_v + adopt blocks for fixed and
+dynamic arrays in the statement ASSIGN case),
+(3) map puts (emit_map_put key/value promote)
+-- but only when the map is a named transient
+local, NOT for map-literal construction (whose
+pairs go into a temporary that is then adopted).
+The container's own header stays as-is (it is
+already a local header; no arena container
+allocation is needed for this slice -- the win
+is skipping per-element talloc copies, not
+moving the header). Element escapes via reads
+(arr[i] then stored/returned) are still promoted
+by the net at those sites, so a missed container
+classification degrades to a copy at the element
+level, never to a dangle -- except the suppressed
+eager promotion itself, which is why the
+never-escapes rule must be complete (no call
+args at all, unlike strings, where printf args
+are whitelisted).
+
+Split: 4c-arrays first (append/insert/set +
+index stores, string[] and T[]), then 4c-maps
+(emit_map_put suppression). Tokenizer impact is
+expected to be nil (it does not build string
+containers in its hot path) -- measure with a
+local-scratch-container micro, not the tokenizer.
+
 ## Remaining (in order)
 
-- Step 4c: Design 1+2 remainder, part 3 --
-  array/map promotion (escape-aware; header AND
-  arena elements must promote together).
+- Step 4c-arrays: transient containers, arrays
+  (design above; suppress eager element
+  promotion for never-escaping array locals).
+- Step 4c-maps: transient containers, maps
+  (emit_map_put suppression for named transient
+  locals only).
 - Step 4d: Design 5 frame tiers (checkpoint /
   full), unblocked by 4a-4c.
 - HELD: explicit unchecked region (needs his call).
