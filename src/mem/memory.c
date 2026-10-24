@@ -192,11 +192,13 @@ void come_err_activate(ComeErrRecord *rec) {
 void come_err_arm(const char *module, const char *func,
                   const char *file, int line) {
     ComeErrRecord *r = g_err_active;
-    r->armed = 1;
+    // Pointers first, armed last: the record is only read
+    // once armed, and every arming site passes literals.
+    r->arm_module = module ? module : "";
+    r->arm_func = func ? func : "";
+    r->arm_file = file ? file : "";
     r->arm_line = line;
-    snprintf(r->arm_module, sizeof(r->arm_module), "%s", module ? module : "");
-    snprintf(r->arm_func, sizeof(r->arm_func), "%s", func ? func : "");
-    snprintf(r->arm_file, sizeof(r->arm_file), "%s", file ? file : "");
+    r->armed = 1;
 }
 
 // Append one entry. When the chain is full the newest entry

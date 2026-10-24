@@ -40,12 +40,18 @@ typedef struct {
     // errno belonging to this record, swapped with it.
     int saved_errno;
     // Pending source location, armed by generated code
-    // before a call/index that may set an error.
+    // before a call/index that may set an error. The
+    // strings are pointers, not copies: every arming
+    // site passes string literals (codegen emits them),
+    // so storing the pointer records the same location
+    // without three snprintfs per executed statement.
+    // (COIL-158: the copies were the tokenizer's biggest
+    // single cost - an arm fires before every statement.)
     int armed;
     int arm_line;
-    char arm_module[48];
-    char arm_func[64];
-    char arm_file[224];
+    const char *arm_module;
+    const char *arm_func;
+    const char *arm_file;
 } ComeErrRecord;
 
 // The record for the current execution context.

@@ -682,7 +682,12 @@ static const char* struct_receiver_name(ASTNode* receiver) {
     if (rt && strncmp(rt, "struct ", 7) == 0 && struct_field_count(rt + 7) >= 0 &&
         rt[7] != 0) {
         for (int i = 0; i < g_struct_count; i++) {
-            if (strcmp(g_struct_names[i], rt + 7) == 0) return rt + 7;
+            // Return the table entry, not rt + 7: rt may
+            // point into the caller's stack buffer (ref
+            // types), so returning it would hand back a
+            // dead stack address. The strings are equal
+            // by the strcmp above, so this is identical.
+            if (strcmp(g_struct_names[i], rt + 7) == 0) return g_struct_names[i];
         }
     }
     return NULL;
