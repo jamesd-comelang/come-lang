@@ -5,11 +5,11 @@ import std
 // purpose: the group's init/exit chain (emitted by the primary
 // file) must still find and run them.
 
-void init() {
+void create() {
     std.out.printf("greeter init\n")
 }
 
-void exit() {
+void destroy() {
     std.out.printf("greeter exit\n")
 }
 

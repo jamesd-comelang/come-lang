@@ -2441,20 +2441,20 @@ int parse_file(const char* filename, ASTNode** out_ast) {
                 advance(); // module
                 if (current()->type == TOKEN_DOT) {
                     advance(); // .
-                    if (strcmp(current()->text, "init") == 0) {
-                        advance(); // init
+                    if (strcmp(current()->text, "create") == 0) {
+                        advance(); // create
                         expect(TOKEN_LPAREN);
                         expect(TOKEN_RPAREN);
-                        
+
                         ASTNode* init_func = ast_new(AST_FUNCTION);
-                        strcpy(init_func->text, "module_init");
+                        strcpy(init_func->text, "module_create");
                         
                         // Return type: void
                         ASTNode* ret = ast_new(AST_IDENTIFIER);
                         strcpy(ret->text, "void");
                         AST_ADD(init_func, ret);
                         
-                        // No args for now in module.init()
+                        // No args for now in module.create()
                         
                         if (current()->type == TOKEN_LBRACE) {
                             ASTNode* body = parse_block();

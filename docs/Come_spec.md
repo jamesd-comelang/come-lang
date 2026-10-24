@@ -57,8 +57,8 @@ Decisions walked through with the founder (2026-10-19), all applied here:
 - **`null` removed** from the language (no `.co` example uses it; the
   design has no nulls). The C backend may still emit `NULL` internally.
 - **`export`:** the two duplicate sections merged into one.
-- **Lifecycle hooks:** `module_init()` / `module_exit()` (matches the
-  implementation, which already synthesizes `module_init`).
+- **Lifecycle hooks:** `module_create()` / `module_destroy()` (matches the
+  implementation, which already synthesizes `module_create`).
 - **Method syntax:** `Type.name()` with implicit `self` (the `method`
   keyword is dropped).
 - **String length:** `.length()` everywhere (string docs' `.len()` renamed,
@@ -227,7 +227,7 @@ of the same name anywhere in the module is an error), and other
 modules use an exported constant qualified — `limits.MAXV`. An
 unqualified name never crosses a module boundary.
 
-## 3.5 Module lifecycle: `module_init()` and `module_exit()`
+## 3.5 Module lifecycle: `module_create()` and `module_destroy()`
 
 Every local module follows a deterministic lifecycle so memory contexts are
 established and dependencies resolved before execution begins.
@@ -235,44 +235,48 @@ established and dependencies resolved before execution begins.
 ```come
 module net
 
-void module_init() {
+void module_create() {
     // runs once, before main(); establish a known safe state
 }
 
-void module_exit() {
+void module_destroy() {
     // runs once, after main(); release module-context resources
 }
 ```
 
 Rules:
 
-- **Automatic invocation:** the compiler calls `module_init()` for every
+- **Automatic invocation:** the compiler calls `module_create()` for every
   imported local module; the programmer never calls it directly.
+  The hooks may also be spelled plainly - `create()` and
+  `destroy()`; the two spellings name the same hooks
+  (renamed from `init()`/`exit()` in COIL-155, so the
+  lifecycle pair matches the create/destroy operations).
 - **Import ordering:** initialization follows the exact sequence of the
   `import (...)` block.
 - **Dependency guarantee:** a module's dependencies are fully initialized
-  before its own `module_init()` runs.
-- **Finalization is reverse:** `module_exit()` runs in the exact reverse
+  before its own `module_create()` runs.
+- **Finalization is reverse:** `module_destroy()` runs in the exact reverse
   order of initialization, so no module outlives its dependencies.
 
 | Stage | Order | Purpose |
 | :--- | :--- | :--- |
-| `module_init()` | Top-to-bottom (import order) | Set up memory contexts, known safe state |
+| `module_create()` | Top-to-bottom (import order) | Set up memory contexts, known safe state |
 | `main()` | Entry point | Application logic |
-| `module_exit()` | Bottom-to-top | Release module-context resources |
+| `module_destroy()` | Bottom-to-top | Release module-context resources |
 
-Design pattern: because `module_init()` is automatic, use it to establish a
+Design pattern: because `module_create()` is automatic, use it to establish a
 **known safe state** and defer heavy resource allocation to explicit calls.
 
 Module-level variables may have any type, including `map{K, V}` (COIL-142).
 A variable of a header type — `string`, an array, a map — starts as a live
 empty value (an empty map reads as absent, an empty array has length 0), so
 a lookup table is declared bare at module level and filled once in
-`module_init()`/`init()`, then read by every function; it is never rebuilt
+`module_create()`/`create()`, then read by every function; it is never rebuilt
 per call. In a singleton module (one that defines `main()`, §3.6) such a
 variable is declared bare: an initializer is a compile error, because the
 value is built by the runtime and cannot be constructed before the
-module's context exists — assign it in `module_init()` or `main()` instead.
+module's context exists — assign it in `module_create()` or `main()` instead.
 In an instance module the variables are instance fields and keep their
 initializers (§3.6).
 
@@ -349,11 +353,11 @@ module are stateful by definition). Then:
 
 **Lifecycle.** `create()` allocates the instance, runs
 the module variables' initializers into it, then runs the
-module's `init()` hook bound to the instance (the §3.5
+module's `create()` hook bound to the instance (the §3.5
 hooks of a stateful module run per instance, not at
 import). Allocations made by stateful functions belong to
 the instance's root, not the module context. `destroy()`
-runs the `exit()` hook, frees the instance's root -
+runs the `destroy()` hook, frees the instance's root -
 reclaiming everything the instance owns - and marks the
 instance destroyed. `destroy()` is idempotent, and the
 handle stays a valid (dead) value afterwards; it is owned
@@ -363,11 +367,11 @@ at program end.
 Destruction does not cascade: an instance held as state
 (COIL-154) is its own instance, with its own root, and
 `destroy()` on the holder does not destroy it. Releasing
-it is the holding module's own job - its `exit()` hook
+it is the holding module's own job - its `destroy()` hook
 calls the field's `destroy()`:
 
 ```come
-void exit() {
+void destroy() {
     h.destroy()
 }
 ```
@@ -408,7 +412,7 @@ Rules and limits of this version:
   Functions cannot return instances, and instances cannot
   be struct fields yet.
 - Module variable initializers are expressions; build
-  buffers in `init()` (append, resize) rather than with
+  buffers in `create()` (append, resize) rather than with
   literal initializers.
 
 # 4. Constants and Enumerations

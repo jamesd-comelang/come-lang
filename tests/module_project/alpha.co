@@ -3,11 +3,11 @@ import std
 import greeter
 
 // Spec 3.5 spelling of the lifecycle hooks.
-void module_init() {
+void module_create() {
     std.out.printf("alpha init\n")
 }
 
-void module_exit() {
+void module_destroy() {
     std.out.printf("alpha exit\n")
 }
 

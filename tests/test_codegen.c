@@ -449,7 +449,7 @@ int main() {
     // COIL-108: directory-module codegen. A non-primary file must
     // not define the module singletons; the primary's chain must
     // call the group hook even when its own file defines none; the
-    // spec's module_init/module_exit spellings mangle to the hooks.
+    // spec's module_create/module_destroy spellings mangle to the hooks.
     {
         const char* p108 = "build/tests/coil108_secondary.co";
         FILE* sf = fopen(p108, "w");
@@ -490,7 +490,7 @@ int main() {
 
         const char* p108h = "build/tests/coil108_hook.co";
         FILE* hf = fopen(p108h, "w");
-        fputs("module hook\nimport std\n\nvoid module_init() {\n}\n\nvoid module_exit() {\n}\n", hf);
+        fputs("module hook\nimport std\n\nvoid module_create() {\n}\n\nvoid module_destroy() {\n}\n", hf);
         fclose(hf);
         ASTNode* a108h = NULL;
         if (parse_file(p108h, &a108h) != 0 || !a108h ||
@@ -504,7 +504,7 @@ int main() {
         buf108[blh] = 0;
         if (!strstr(buf108, "come_hook__init_local") || !strstr(buf108, "come_hook__exit_local") ||
             !strstr(buf108, "come_hook__init_local();")) {
-            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: module_init/module_exit must mangle to the local hooks\033[0m\n");
+            printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: module_create/module_destroy must mangle to the local hooks\033[0m\n");
             return 1;
         }
         ast_free(a108h);

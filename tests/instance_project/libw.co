@@ -15,7 +15,7 @@ var base = 100
 // Releasing the sub-instances is this module's own job:
 // destroy() never cascades on its own, so the exit hook
 // destroys them explicitly.
-void exit() {
+void destroy() {
     h.destroy()
     h2.destroy()
 }

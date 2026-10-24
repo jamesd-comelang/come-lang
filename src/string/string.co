@@ -4,12 +4,12 @@ const WHITESPACE = " \t\r\n\u00A0\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u200
 
 alias len = length
 
-void init()
-void exit()
+void create()
+void destroy()
 
 export (
-    void init(),
-    void exit(),
+    void create(),
+    void destroy(),
 
     // Core Methods
     uint size(),

@@ -276,15 +276,15 @@ section numbers below refer to `docs/Come_spec.md`.
   under `modules/`, then under the project `src/` tree, then
   the system depot next to the compiler. `import X as ...`
   forces depot resolution.
-- Modules may define `init()`/`exit()` hooks (also spelled
-  `module_init`/`module_exit`). Initialization runs at most
-  once, dependencies first; exits run in exact reverse
-  order, via a registry in the memory runtime.
-- Export visibility is enforced for function calls across
-  modules (§3.4): calling a non-exported function is an
-  error. Constants and types are **not** yet namespaced in
-  generated C — `geom.PI` / `geom.Point` do not resolve;
-  that gap is tracked in §8.
+- Modules may define `create()`/`destroy()` hooks (also
+  spelled `module_create`/`module_destroy`; the pair was
+  `init`/`exit` before COIL-155). Initialization runs at
+  most once, dependencies first; exits run in exact
+  reverse order, via a registry in the memory runtime.
+- Export visibility is enforced across modules (§3.4):
+  calling a non-exported function is an error, and
+  exported constants and types resolve qualified -
+  `geom.PI`, `geom.Point` (COIL-146, COIL-148).
 - **Two surfaces (§3.6, COIL-140).** The driver analyzes
   every user module at parse time (variables, call graph,
   a statefulness fixpoint with witness chains) and

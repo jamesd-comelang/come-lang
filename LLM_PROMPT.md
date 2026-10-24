@@ -331,9 +331,9 @@ int answer() {          // plain functions are exported
   importing file (`helpers.co` or a `helpers/` directory
   whose files form one module), then `modules/`, then
   `src/`, then system modules. No paths, no build files.
-- A module may define `void init()` (runs once before main,
-  after its imports' inits) and `void exit()` (reverse
-  order at program end).
+- A module may define `void create()` (runs once before
+  main, after its imports' create hooks) and
+  `void destroy()` (reverse order at program end).
 - `import std` is the standard library: `std.out.printf`,
   `std.file` (file objects), `std.proc` (environment and
   processes), `std.srand`/`std.rand`, time helpers.
@@ -350,10 +350,10 @@ int answer() {          // plain functions are exported
   module level, including `map{string, int}`. Header-typed
   module variables (string, arrays, maps) start as live
   empty values: declare the table bare, fill it once in
-  `init()`, and read it in functions - never rebuild a
+  `create()`, and read it in functions - never rebuild a
   lookup map inside the function that reads it. In the
   module that defines `main()` such a variable takes NO
-  initializer (compile error); assign it in `init()` or
+  initializer (compile error); assign it in `create()` or
   `main()`. In an instance module it is an instance field
   and may keep an initializer.
 - **Instances.** A module with module-level variables has
@@ -364,8 +364,8 @@ int answer() {          // plain functions are exported
   the namespace (`window_module.set_title("x")`) is a
   compile error - the namespace never implies a singleton.
   Stateless functions work both ways (`mod.f()` and
-  `w.f()`). `w.destroy()` runs the module's `exit()`,
-  frees the instance's memory, and is safe to repeat; any
+  `w.f()`). `w.destroy()` runs the module's `destroy()`
+  hook, frees the instance's memory, and is safe to repeat; any
   later call on `w` sets ERR ("module instance has been
   destroyed") and returns the zero value - it never
   crashes. `create()` on a module with no variables is a
@@ -374,8 +374,9 @@ int answer() {          // plain functions are exported
   Instances live in locals and parameters; functions
   cannot return them. A module defining `main()` is a
   program: its variables are plain globals, no instance
-  needed. In a stateful module, `init()`/`exit()` run per
-  instance (at create/destroy), not at import/program end.
+  needed. In a stateful module, the `create()`/`destroy()`
+  hooks run per instance (at create/destroy), not at
+  import/program end.
 
 ## Coroutines and links
 

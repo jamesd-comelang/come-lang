@@ -616,26 +616,26 @@ A module can run setup and teardown code:
 ```come
 module cache
 
-void init() {
+void create() {
     // runs once, before main, after the modules
     // this one imports have initialized
 }
 
-void exit() {
+void destroy() {
     // runs at program end, in reverse order
 }
 ```
 
 **Build-once tables.** A module-level variable may be a map,
 which makes the classic lookup table a one-liner to declare
-and a fill-once in `init()`:
+and a fill-once in `create()`:
 
 ```come
 module kwlib
 
 map{string, int} codes
 
-void init() {
+void create() {
     codes["SELECT"] = 139
     codes["FROM"] = 141
 }
@@ -648,7 +648,7 @@ int code(string word) {
 Header-typed module variables (`string`, arrays, maps) start
 as live empty values. In the program's own module (the one
 with `main`) declare them bare — an initializer there is a
-compile error; assign in `init()` or `main()` instead. In an
+compile error; assign in `create()` or `main()` instead. In an
 instance module they are instance fields (§12 below) and
 keep their initializers.
 
@@ -712,10 +712,11 @@ The rules:
   ways: `window_module.twice(21)` and `w.twice(21)` are
   the same function.
 - `create()` runs the variables' initializers and the
-  module's `init()`, per instance; each instance allocates
-  in its own root. `destroy()` runs `exit()` and frees
-  everything the instance owns. Two instances never see
-  each other's state.
+  module's `create()` hook, per instance; each instance
+  allocates in its own root. `destroy()` runs the
+  module's `destroy()` hook and frees everything the
+  instance owns. Two instances never see each other's
+  state.
 - Calling anything on a destroyed instance is safe: it
   sets `ERR` ("module instance has been destroyed") and
   returns the zero value. `destroy()` itself is safe to

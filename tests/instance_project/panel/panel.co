@@ -4,6 +4,6 @@ import std
 string name = "panel"
 int level = 0
 
-void exit() {
+void destroy() {
     std.out.printf("panel exit level=%d\n", level)
 }

@@ -81,8 +81,8 @@ byte-for-byte. Formatting a formatted file changes nothing.
 
 - **Modules are the only compilation unit.** Each file declares one
   `module`; a module is one file or a directory of files. Modules
-  have private memory contexts and optional `module_init` /
-  `module_exit` hooks that run in dependency order.
+  have private memory contexts and optional `module_create` /
+  `module_destroy` hooks that run in dependency order.
 - **Visibility is explicit.** A module with an `export (...)` list
   exposes exactly those names; calling anything else from outside
   is a compile error. A module with no export list is open.

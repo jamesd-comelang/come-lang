@@ -743,8 +743,8 @@ static void analyze_module(const char *module_name, ASTNode **asts,
         for (int i = 0; i < fn_count; i++) {
             AnaFn *fn = &fns[i];
             if (fn->is_coro) continue;
-            if (strcmp(fn->name, "init") == 0 || strcmp(fn->name, "module_init") == 0 ||
-                strcmp(fn->name, "exit") == 0 || strcmp(fn->name, "module_exit") == 0) {
+            if (strcmp(fn->name, "create") == 0 || strcmp(fn->name, "module_create") == 0 ||
+                strcmp(fn->name, "destroy") == 0 || strcmp(fn->name, "module_destroy") == 0) {
                 if (!fn->stateful) {
                     fn->stateful = 1;
                     char nm[128];
@@ -770,8 +770,8 @@ static void analyze_module(const char *module_name, ASTNode **asts,
         AnaFn *fn = &fns[i];
         if (fn->is_coro || fn->is_method || fn->is_extern) continue;
         if (strcmp(fn->name, "main") == 0) continue;
-        if (strcmp(fn->name, "init") == 0 || strcmp(fn->name, "module_init") == 0 ||
-            strcmp(fn->name, "exit") == 0 || strcmp(fn->name, "module_exit") == 0) continue;
+        if (strcmp(fn->name, "create") == 0 || strcmp(fn->name, "module_create") == 0 ||
+            strcmp(fn->name, "destroy") == 0 || strcmp(fn->name, "module_destroy") == 0) continue;
         fnn[fnn_count] = fn->name; fnr[fnn_count] = fn->ret; fnp[fnn_count] = fn->params;
         fnn_count++;
     }
@@ -845,11 +845,11 @@ static void compile_group(char paths[][PATH_MAX], int count, const char *module_
                 for (int k = 0; k < ch->child_count; k++)
                     if (ch->children[k] && ch->children[k]->type == AST_BLOCK)
                         has_body = 1;
-                if (has_body && (strcmp(ch->text, "init") == 0 ||
-                                 strcmp(ch->text, "module_init") == 0))
+                if (has_body && (strcmp(ch->text, "create") == 0 ||
+                                 strcmp(ch->text, "module_create") == 0))
                     has_init = 1;
-                if (has_body && (strcmp(ch->text, "exit") == 0 ||
-                                 strcmp(ch->text, "module_exit") == 0))
+                if (has_body && (strcmp(ch->text, "destroy") == 0 ||
+                                 strcmp(ch->text, "module_destroy") == 0))
                     has_exit = 1;
             }
         }

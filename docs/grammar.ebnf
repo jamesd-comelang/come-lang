@@ -113,7 +113,7 @@ param          = type identifier [ array_dim ]
                /* a function passed as an argument is written
                 * in declaration shape (spec 8.3) */
 
-lifecycle_decl = "void" ( "module_init" | "module_exit" ) "(" ")" block ;
+lifecycle_decl = "void" ( "module_create" | "module_destroy" ) "(" ")" block ;
 
 /* 8. Coroutines (spec 9) */
 

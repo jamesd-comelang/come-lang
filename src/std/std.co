@@ -10,8 +10,8 @@ struct ERR_t {
     string str
 }
 
-void init()
-void exit()
+void create()
+void destroy()
 
 export (
     // object types
@@ -84,6 +84,6 @@ export (
     struct ERR_t ERR,
 
     // Module lifecycle
-    void init(),
-    void exit(),
+    void create(),
+    void destroy(),
 )

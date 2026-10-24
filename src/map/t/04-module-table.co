@@ -13,7 +13,7 @@ map{string, string} names
 string greeting
 int[] seed_copy
 
-void init() {
+void create() {
     codes["SELECT"] = 139
     codes["FROM"] = 141
     names["kw"] = "keyword"

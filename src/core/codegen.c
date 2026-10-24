@@ -4109,9 +4109,16 @@ static int cur_module_has_state(void) {
     return codegen_module_has_state(current_module);
 }
 
+// The lifecycle hooks are named after the operations
+// that run them (COIL-155): a module's create hook runs
+// when it is set up - at program start for a singleton,
+// per instance for a stateful module - and its destroy
+// hook when it is torn down. The pre-COIL-155 names were
+// init/exit. The generated C wrappers keep their
+// historical names (__init_local/__exit_local).
 static int fn_is_hook(const char* n) {
-    return strcmp(n, "init") == 0 || strcmp(n, "module_init") == 0 ||
-           strcmp(n, "exit") == 0 || strcmp(n, "module_exit") == 0;
+    return strcmp(n, "create") == 0 || strcmp(n, "module_create") == 0 ||
+           strcmp(n, "destroy") == 0 || strcmp(n, "module_destroy") == 0;
 }
 
 // A function takes the instance form when its module has
@@ -4264,9 +4271,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         // If node->text is "Rect_area", we want "come_MMM__Rect__area".
         // Let's see if we can detect it.
         char* underscore = strchr(node->text, '_');
-        if (strcmp(node->text, "init") == 0 || strcmp(node->text, "module_init") == 0) {
+        if (strcmp(node->text, "create") == 0 || strcmp(node->text, "module_create") == 0) {
              snprintf(func_name, sizeof(func_name), "come_%s__init_local", current_module);
-        } else if (strcmp(node->text, "exit") == 0 || strcmp(node->text, "module_exit") == 0) {
+        } else if (strcmp(node->text, "destroy") == 0 || strcmp(node->text, "module_destroy") == 0) {
              snprintf(func_name, sizeof(func_name), "come_%s__exit_local", current_module);
         } else if (underscore && !is_main && isupper(node->text[0])) {
 
@@ -4469,7 +4476,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (is_header_type(et)) {
                 if (init_expr && !(init_expr->type == AST_NUMBER &&
                                     strcmp(init_expr->text, "0") == 0)) {
-                    codegen_error("module-level %s '%s' cannot have an initializer in a singleton module: its value is built by the runtime, which cannot run at file scope - declare it bare and assign it in init() or main()", et, node->text);
+                    codegen_error("module-level %s '%s' cannot have an initializer in a singleton module: its value is built by the runtime, which cannot run at file scope - declare it bare and assign it in create() or main()", et, node->text);
                 }
                 char ct[160];
                 header_c_type(et, ct, sizeof(ct));
@@ -5944,8 +5951,8 @@ static void emit_instance_runtime(FILE* f, ASTNode* ast) {
         for (int i = 0; i < ast->child_count; i++) {
             ASTNode* ch = ast->children[i];
             if (!ch || ch->type != AST_FUNCTION) continue;
-            if (strcmp(ch->text, "init") == 0 || strcmp(ch->text, "module_init") == 0) hi = 1;
-            if (strcmp(ch->text, "exit") == 0 || strcmp(ch->text, "module_exit") == 0) he = 1;
+            if (strcmp(ch->text, "create") == 0 || strcmp(ch->text, "module_create") == 0) hi = 1;
+            if (strcmp(ch->text, "destroy") == 0 || strcmp(ch->text, "module_destroy") == 0) he = 1;
         }
         if (has_init < 0) has_init = hi;
         if (has_exit < 0) has_exit = he;
@@ -6342,8 +6349,8 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         has_local_init = 0;
         for (int i = 0; i < ast->child_count; i++) {
             if (ast->children[i]->type == AST_FUNCTION &&
-                (strcmp(ast->children[i]->text, "init") == 0 ||
-                 strcmp(ast->children[i]->text, "module_init") == 0)) {
+                (strcmp(ast->children[i]->text, "create") == 0 ||
+                 strcmp(ast->children[i]->text, "module_create") == 0)) {
                 has_local_init = 1;
                 break;
             }
@@ -6368,8 +6375,8 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         has_local_exit = 0;
         for (int i = 0; i < ast->child_count; i++) {
             if (ast->children[i]->type == AST_FUNCTION &&
-                (strcmp(ast->children[i]->text, "exit") == 0 ||
-                 strcmp(ast->children[i]->text, "module_exit") == 0)) {
+                (strcmp(ast->children[i]->text, "destroy") == 0 ||
+                 strcmp(ast->children[i]->text, "module_destroy") == 0)) {
                 has_local_exit = 1;
                 break;
             }
@@ -6498,9 +6505,9 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                       // Struct method: first char is uppercase
                       long prefix_len = underscore - child->text;
                       snprintf(func_name, sizeof(func_name), "come_%s__%.*s__%s", current_module, (int)prefix_len, child->text, underscore + 1);
-                  } else if (strcmp(child->text, "init") == 0 || strcmp(child->text, "module_init") == 0) {
+                  } else if (strcmp(child->text, "create") == 0 || strcmp(child->text, "module_create") == 0) {
                       snprintf(func_name, sizeof(func_name), "come_%s__init_local", current_module);
-                  } else if (strcmp(child->text, "exit") == 0 || strcmp(child->text, "module_exit") == 0) {
+                  } else if (strcmp(child->text, "destroy") == 0 || strcmp(child->text, "module_destroy") == 0) {
                       snprintf(func_name, sizeof(func_name), "come_%s__exit_local", current_module);
                   } else {
                       // Regular function

@@ -5,11 +5,11 @@ int count = 5
 string label = "ctr"
 string log[]
 
-void init() {
+void create() {
     log.append("init")
 }
 
-void exit() {
+void destroy() {
     std.out.printf("counter exit label=%s count=%d log=%d\n", label, count, log.length())
 }
 
