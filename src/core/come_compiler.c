@@ -43,6 +43,13 @@ typedef struct StringList {
 
 static StringList *g_object_files = NULL;
 static StringList *g_visited_files = NULL;
+// Design 6 (redesign): --single-tu concatenates every
+// user .c file into one translation unit, in link order
+// (so global initialization order matches a separate
+// build), so the C compiler can inline across module
+// and file boundaries without LTO.
+static StringList *g_c_files = NULL;
+static int g_single_tu = 0;
 
 static void list_add(StringList **head, const char *val) {
     StringList *node = malloc(sizeof(StringList));
@@ -396,7 +403,11 @@ static void compile_file(const char *source_path, const char *forced_o_path,
     ast_free(ast);
 
     // 6. Compiler (C -> O)
-    if (need_compile && !forced_o_path) {
+    // Design 6 (redesign): in single-TU mode the
+    // per-file objects are never linked, so skip
+    // compiling them (the single TU is compiled at
+    // link time); the .c files are still generated.
+    if (need_compile && !forced_o_path && !g_single_tu) {
         if (g_verbose) printf("Compiling C %s -> %s\n", c_file, o_file);
         
         char exe_path[PATH_MAX];
@@ -445,7 +456,10 @@ static void compile_file(const char *source_path, const char *forced_o_path,
         }
     }
     
-    if (!forced_o_path) list_add(&g_object_files, o_file);
+    if (!forced_o_path) {
+        if (!g_single_tu) list_add(&g_object_files, o_file);
+        list_add(&g_c_files, c_file);
+    }
 }
 
 // Collect the .co files of a directory, sorted by file name so the
@@ -1855,6 +1869,8 @@ static void print_usage(void) {
     fprintf(stderr,
         "Usage:\n"
         "  come build <file.co|dir> [-o output]   compile and link\n"
+        "    [--single-tu]                        compile all user code as one TU\n"
+        "                                          (cross-module inlining without LTO)\n"
         "  come genc <file.co> -o <out.c>          emit C only\n"
         "  come check <file.co|dir>                compile, no link or run\n"
         "  come run <file.co> [--] [args...]       build to a temp binary and run it\n"
@@ -1946,6 +1962,241 @@ static int cmd_escapes(int argc, char *argv[]) {
     return 0;
 }
 
+// Design 6 (redesign): concatenate every user .c file
+// into one translation unit, in link order (so global
+// initialization order matches a separate build).
+// Two constructs cannot simply be repeated in one TU:
+//  - come_strerror, a static helper codegen emits in
+//    every file (one line, identical everywhere):
+//    later copies are skipped.
+//  - struct definitions, which the exported surface
+//    repeats for every importer: an identical
+//    definition (same tag, fields, attributes,
+//    compared whitespace-insensitively) is skipped; a
+//    DIFFERENT definition of the same tag is refused
+//    loudly, because struct tags are plain C names,
+//    not module-mangled, so two modules defining e.g.
+//    struct Point with different layouts cannot share
+//    a TU. Prototypes and typedefs may repeat
+//    (identical declarations are legal C) and pass
+//    through untouched.
+static void build_single_tu(char *out_path, size_t out_size) {
+    snprintf(out_path, out_size, "%s/single_tu.c", g_build_dir);
+    FILE *out = fopen(out_path, "w");
+    if (!out) die("Cannot write single-TU file: %s", out_path);
+
+    // Seen struct definitions, keyed by tag (named
+    // structs) or typedef name (anonymous structs).
+    char *seen_key[1024];
+    char *seen_norm[1024];
+    char *seen_file[1024];
+    int nseen = 0;
+    int seen_strerror = 0;
+
+    StringList *node = g_c_files;
+    while (node) {
+        FILE *in = fopen(node->value, "r");
+        if (!in) die("Single-TU: cannot read %s", node->value);
+        char *line = NULL;
+        size_t cap = 0;
+        ssize_t n;
+        while ((n = getline(&line, &cap, in)) != -1) {
+            const char *p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            // come_strerror: skip later identical copies.
+            // (Codegen emits it as one line; if that ever
+            // changes, the build fails loudly below, not
+            // silently.)
+            if (strncmp(p, "static", 6) == 0 && strstr(line, "come_strerror") && strchr(line, '{')) {
+                if (!seen_strerror) {
+                    seen_strerror = 1;
+                    fwrite(line, 1, (size_t)n, out);
+                }
+                continue;
+            }
+            // Struct definition opening, precisely: after
+            // "struct" or "typedef struct", optional
+            // __attribute__s, the next token is either
+            // '{' (anonymous) or a tag followed by '{'.
+            // This excludes functions returning structs
+            // (tag followed by a name, then '(') and
+            // variables of struct type (tag followed by
+            // a name, then '='), and it covers
+            // single-line definitions (tuple returns are
+            // "typedef struct { ... } Name;" on one line)
+            // as well as multi-line ones.
+            int is_struct = 0;
+            {
+                const char *q = p;
+                if (strncmp(q, "typedef struct", 14) == 0 && (q[14] == ' ' || q[14] == '\t')) q += 14;
+                else if (strncmp(q, "struct", 6) == 0 && (q[6] == ' ' || q[6] == '\t')) q += 6;
+                else q = NULL;
+                if (q) {
+                    while (*q == ' ' || *q == '\t') q++;
+                    while (strncmp(q, "__attribute__", 13) == 0) {
+                        q += 13;
+                        while (*q == ' ' || *q == '\t') q++;
+                        if (*q == '(') {
+                            int ad = 0;
+                            while (*q) {
+                                if (*q == '(') ad++;
+                                else if (*q == ')') { ad--; if (ad == 0) { q++; break; } }
+                                q++;
+                            }
+                        }
+                        while (*q == ' ' || *q == '\t') q++;
+                    }
+                    if (*q == '{') {
+                        is_struct = 1;
+                    } else if ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z') || *q == '_') {
+                        while ((*q >= 'A' && *q <= 'Z') || (*q >= 'a' && *q <= 'z') || (*q >= '0' && *q <= '9') || *q == '_') q++;
+                        while (*q == ' ' || *q == '\t') q++;
+                        if (*q == '{') is_struct = 1;
+                    }
+                }
+            }
+            if (is_struct) {
+                    // Capture the whole block (brace count;
+                    // struct fields never contain braces).
+                    char *block = NULL;
+                    size_t blen = 0, bcap = 0;
+                    int depth = 0;
+                    for (ssize_t k = 0; k < n; k++) {
+                        if (line[k] == '{') depth++;
+                        else if (line[k] == '}') depth--;
+                    }
+                    if (blen + (size_t)n + 1 > bcap) {
+                        bcap = (blen + (size_t)n + 1) * 2;
+                        block = realloc(block, bcap);
+                    }
+                    memcpy(block + blen, line, (size_t)n);
+                    blen += (size_t)n;
+                    block[blen] = 0;
+                    while (depth > 0) {
+                        n = getline(&line, &cap, in);
+                        if (n == -1) die("Single-TU: unterminated struct in %s", node->value);
+                        for (ssize_t k = 0; k < n; k++) {
+                            if (line[k] == '{') depth++;
+                            else if (line[k] == '}') depth--;
+                        }
+                        if (blen + (size_t)n + 1 > bcap) {
+                            bcap = (blen + (size_t)n + 1) * 2;
+                            block = realloc(block, bcap);
+                        }
+                        memcpy(block + blen, line, (size_t)n);
+                        blen += (size_t)n;
+                        block[blen] = 0;
+                    }
+                    // Tag: last token before the first '{'
+                    // in the first line. If it is "struct"
+                    // itself, this is an anonymous struct.
+                    char *first_nl = strchr(block, '\n');
+                    size_t flen = first_nl ? (size_t)(first_nl - block) : blen;
+                    ssize_t brace = -1;
+                    for (size_t k = 0; k < flen; k++) {
+                        if (block[k] == '{') { brace = (ssize_t)k; break; }
+                    }
+                    ssize_t te = brace;
+                    while (te > 0 && (block[te-1] == ' ' || block[te-1] == '\t')) te--;
+                    ssize_t ts = te;
+                    while (ts > 0 && block[ts-1] != ' ' && block[ts-1] != '\t') ts--;
+                    int anonymous = (te - ts == 6 && strncmp(block + ts, "struct", 6) == 0);
+                    char tagbuf[256];
+                    if (!anonymous) {
+                        size_t tl = (size_t)(te - ts);
+                        if (tl >= sizeof(tagbuf)) die("Single-TU: struct tag too long in %s", node->value);
+                        memcpy(tagbuf, block + ts, tl);
+                        tagbuf[tl] = 0;
+                    }
+                    // Typedef name: token after the last
+                    // '}' in the block (closing line), if
+                    // any; NULL for plain structs.
+                    ssize_t last_brace = -1;
+                    for (size_t k = 0; k < blen; k++) {
+                        if (block[k] == '}') last_brace = (ssize_t)k;
+                    }
+                    char tdbuf[256];
+                    char *tdname = NULL;
+                    if (last_brace >= 0) {
+                        ssize_t q = last_brace + 1;
+                        while (q < (ssize_t)blen && (block[q] == ' ' || block[q] == '\t')) q++;
+                        ssize_t qs = q;
+                        while (q < (ssize_t)blen && block[q] != ';' && block[q] != ' ' && block[q] != '\t' && block[q] != '\n' && block[q] != '\r') q++;
+                        if (q > qs) {
+                            size_t tl = (size_t)(q - qs);
+                            if (tl >= sizeof(tdbuf)) die("Single-TU: typedef name too long in %s", node->value);
+                            memcpy(tdbuf, block + qs, tl);
+                            tdbuf[tl] = 0;
+                            tdname = tdbuf;
+                        }
+                    }
+                    // Key: tag for named structs, typedef
+                    // name for anonymous ones.
+                    const char *key;
+                    if (anonymous) {
+                        if (!tdname) die("Single-TU: anonymous struct without typedef in %s", node->value);
+                        key = tdname;
+                    } else {
+                        key = tagbuf;
+                    }
+                    // Body for comparison: block through
+                    // the closing '}', excluding any
+                    // typedef name, whitespace-stripped.
+                    // (So the same struct body typedef'd
+                    // under two names still dedups.)
+                    size_t body_len = (size_t)(last_brace + 1);
+                    char *norm = malloc(body_len + 1);
+                    size_t nl = 0;
+                    for (size_t k = 0; k < body_len; k++) {
+                        char c = block[k];
+                        if (c != ' ' && c != '\t' && c != '\n' && c != '\r' && c != '\v' && c != '\f') norm[nl++] = c;
+                    }
+                    norm[nl] = 0;
+                    int found = -1;
+                    for (int i = 0; i < nseen; i++) {
+                        if (strcmp(seen_key[i], key) == 0) { found = i; break; }
+                    }
+                    if (found >= 0) {
+                        if (strcmp(seen_norm[found], norm) == 0) {
+                            // Identical body: skip, but a
+                            // named typedef-struct still
+                            // needs its typedef name
+                            // defined (forward typedef
+                            // to the already-defined tag).
+                            if (!anonymous && tdname) {
+                                fprintf(out, "typedef struct %s %s;\n", tagbuf, tdname);
+                            }
+                            free(block);
+                            free(norm);
+                        } else {
+                            die("Single-TU refused: struct/typedef '%s' is defined differently in %s and %s (plain struct tags collide across modules; use distinct struct names, or build without --single-tu)",
+                                key, seen_file[found], node->value);
+                        }
+                    } else {
+                        if (nseen >= 1024) die("Single-TU: too many struct definitions");
+                        seen_key[nseen] = strdup(key);
+                        seen_norm[nseen] = norm;
+                        seen_file[nseen] = strdup(node->value);
+                        nseen++;
+                        fwrite(block, 1, blen, out);
+                        free(block);
+                    }
+                    continue;
+            }
+            fwrite(line, 1, (size_t)n, out);
+        }
+        free(line);
+        fclose(in);
+        node = node->next;
+    }
+    for (int i = 0; i < nseen; i++) {
+        free(seen_key[i]);
+        free(seen_norm[i]);
+        free(seen_file[i]);
+    }
+    fclose(out);
+}
+
 int main(int argc, char *argv[]) {
     setbuf(stdout, NULL);
 
@@ -1984,6 +2235,8 @@ int main(int argc, char *argv[]) {
             if (i + 1 < argc) output = argv[++i];
         } else if (strcmp(argv[i], "-v") == 0) {
             g_verbose = 1;
+        } else if (strcmp(argv[i], "--single-tu") == 0) {
+            g_single_tu = 1;
         } else {
             input = argv[i];
         }
@@ -2091,13 +2344,42 @@ int main(int argc, char *argv[]) {
     int use_lib = file_exists(libcome);
 
     char link_cmd[65536];
-    int pos = snprintf(link_cmd, sizeof(link_cmd), "gcc -o \"%s\"", out_bin);
+    int pos;
+    if (g_single_tu) {
+        // Design 6 (redesign): compile all user code as
+        // one translation unit, then link that object
+        // with the runtime (which stays separate).
+        char single_c[PATH_MAX];
+        build_single_tu(single_c, sizeof(single_c));
+        char single_o[PATH_MAX];
+        snprintf(single_o, sizeof(single_o), "%s/single_tu.o", g_build_dir);
+        char include_dir[PATH_MAX];
+        snprintf(include_dir, sizeof(include_dir), "%s/../include", exe_dir);
+        char check_file[PATH_MAX];
+        snprintf(check_file, sizeof(check_file), "%s/come_string.h", include_dir);
+        char cmd[65536];
+        if (file_exists(check_file)) {
+            snprintf(cmd, sizeof(cmd),
+                "gcc -c -Wall -Wno-cpp -Wno-implicit-function-declaration -D__STDC_WANT_LIB_EXT1__=1 "
+                "-I\"%s\" \"%s\" -o \"%s\"%s",
+                include_dir, single_c, single_o, cc_extra_flags());
+        } else {
+            snprintf(cmd, sizeof(cmd),
+                "gcc -c -Wall -Wno-cpp -Wno-implicit-function-declaration -D__STDC_WANT_LIB_EXT1__=1 "
+                "-I%s/src/include -I%s/src/core/include \"%s\" -o \"%s\"%s",
+                project_base, project_base, single_c, single_o, cc_extra_flags());
+        }
+        if (run_cmd(cmd) != 0) die("Single-TU compilation failed: %s", single_c);
+        pos = snprintf(link_cmd, sizeof(link_cmd), "gcc -o \"%s\" \"%s\"", out_bin, single_o);
+    } else {
+        pos = snprintf(link_cmd, sizeof(link_cmd), "gcc -o \"%s\"", out_bin);
 
-    // Add user objects
-    StringList *node = g_object_files;
-    while (node) {
-        pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, " \"%s\"", node->value);
-        node = node->next;
+        // Add user objects
+        StringList *node = g_object_files;
+        while (node) {
+            pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, " \"%s\"", node->value);
+            node = node->next;
+        }
     }
 
     // Add std libs
@@ -2120,6 +2402,7 @@ int main(int argc, char *argv[]) {
     printf("Built: %s\n", out_bin);
     
     list_free(g_object_files);
+    list_free(g_c_files);
     list_free(g_visited_files);
     
     return 0;

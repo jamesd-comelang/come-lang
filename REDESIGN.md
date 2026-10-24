@@ -453,6 +453,55 @@ change) - a follow-up story, not done here. The
 common case (view receivers, literal or owned
 patterns) is now correct.
 
+## Design 6 (DONE 2026-10-24, verdict: correct but no tokenizer win)
+
+`come build --single-tu` concatenates every user
+.c file into one translation unit (build/
+single_tu.c, in link order so global init order
+matches a separate build), compiles it once, and
+links it with the runtime (which stays separate).
+Per-file compiles are skipped in this mode (their
+objects would be unused). Two constructs cannot
+simply repeat in one TU, and are handled in the
+driver's build_single_tu (src/core/come_compiler.c):
+come_strerror (a static helper codegen emits in
+every file - later identical copies skipped), and
+struct definitions (the exported surface repeats
+them per importer - identical bodies, compared
+whitespace-insensitively and excluding the typedef
+name, are skipped; a named typedef-struct still
+emits a forward typedef so its typedef name stays
+defined). A DIFFERENT definition of the same tag
+is refused loudly (die, naming the struct) -
+struct tags are plain C names, not
+module-mangled, so two modules defining e.g.
+struct Point with different layouts cannot share
+a TU. (Cosmetic limit: the refusal names the
+struct but not the modules, since both surfaces
+live in the importer's file.) Single-line
+definitions are handled too (tuple returns are
+"typedef struct { ... } Name;" on one line);
+functions returning structs and variables of
+struct type are excluded by requiring the tag to
+be followed by '{'.
+
+Measured on the tokenizer (checksums identical):
+separate -O2 0.54 s, single-TU -O2 0.57-0.59 s,
+separate -O2 -flto (gen-only) 0.56-0.59 s. Verdict:
+user-only single-TU does NOT beat separate -O2,
+and neither does gen-only LTO - the remaining
+bottleneck is runtime calls, not user-to-user
+inlining. The next lever, if inlining is to help
+at all, is runtime inlining (full LTO with the
+runtime built -flto, or single-TU including
+runtime sources) - a follow-up measurement, not
+assumed. Correctness: types + consts projects
+(structs, tuples, consts, stateful vault,
+cross-module calls) produce identical output
+under --single-tu; the Point-collision case
+refuses loudly; full suites green from clean
+with the flag off (normal builds untouched).
+
 ## Remaining (in order)
 
 - Design 2 (remainder): general transient-value
@@ -464,5 +513,6 @@ patterns) is now correct.
   tiers driven by escape analysis. Needs general
   arenas (the frame-checkpoint mechanism now
   exists, but the tiers need arena values to skip).
-- Design 6: cross-module inlining / single-TU codegen.
-  LTO already covers most of this; lowest priority.
+- Design 6 follow-up: runtime inlining (full LTO
+  or single-TU including runtime) - measure
+  before assuming it helps.
