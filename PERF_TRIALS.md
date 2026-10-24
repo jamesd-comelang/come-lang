@@ -61,6 +61,42 @@ Baseline on this branch (main @ 69fdf49, COIL-160): ~3.76 s (~115x).
   key interaction the ranked plan missed — the three costs are
   not independent.
 
+## A3 trial (co_SQLite branch `perf-experiments`, commit 08d5c97)
+
+A single-function scanner, `fast_scan()` (new file
+`src/tokenizer/fastscan.co`, same module so it reuses the
+constants, keyword table, and cursor state), mirroring `tk_scan`
+branch-for-branch with byte reads, class dispatch, and
+predicates inlined. `fast_next()` on the shared cursor state,
+`tools/bench/bench_fast.co` driver, differential test
+`src/tokenizer/t/07_fastscan_test.co` (556 cases: all 04+06
+corpus inputs plus edge cases incl. BOM, VT, high bytes, blobs,
+malformed numbers, unterminated quotes/comments; a mutation
+check proves the test bites). All 7 suites green.
+
+| Trial | Time | vs base |
+|---|---|---|
+| A3a fast scanner, current compiler | 2.67–2.89 s | ~26% |
+| A3b fast_scan frames stripped in generated C | 2.60–2.69 s | ~30% |
+| Fast scanner + no-arm + full LTO | 1.42–1.45 s | ~62% |
+
+Readings:
+
+- A3a's win (~1.0 s) is exactly the removed per-byte helper
+  calls — the same magnitude as the A5 leaf trial, because it
+  is the same cost removed a different way.
+- A3b barely moves over A3a: the fast scanner's remaining
+  frames are per-token and per loop iteration, ~0.1 s total.
+  (Loop iterations are ~10M here, not the 79M pairs of the old
+  profile — that figure was dominated by per-call frames.)
+- Fast-combo is slightly SLOWER than old-combo (1.44 s vs
+  1.29 s). The C compiler, given inlinable frameless leaves,
+  reconstructs the tight loop itself and beats the hand
+  structure (giant if-chain dispatch, redundant bound checks).
+- **Verdict: do NOT rewrite the faithful port.** A3 is
+  subsumed by the compiler-side fixes. The fast scanner stays
+  on the co_SQLite branch as the trial record only.
+
 ## What is still open
 
 - ~1.3 s remains after the combo (~39x from C). What is left:
