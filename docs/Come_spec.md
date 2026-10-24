@@ -360,6 +360,22 @@ handle stays a valid (dead) value afterwards; it is owned
 by the creating module's context and is reclaimed with it
 at program end.
 
+Destruction does not cascade: an instance held as state
+(COIL-154) is its own instance, with its own root, and
+`destroy()` on the holder does not destroy it. Releasing
+it is the holding module's own job - its `exit()` hook
+calls the field's `destroy()`:
+
+```come
+void exit() {
+    h.destroy()
+}
+```
+
+A sub-instance never released this way is reclaimed with
+its creating module's context at program end, like any
+undestroyed instance.
+
 **Using a destroyed instance is safe.** Any call on a
 destroyed (or never assigned) instance sets `ERR`
 (`EBADF`, "module instance has been destroyed") and

@@ -12,6 +12,14 @@ var h = counter.create()
 var h2 = counter.create()
 var base = 100
 
+// Releasing the sub-instances is this module's own job:
+// destroy() never cascades on its own, so the exit hook
+// destroys them explicitly.
+void exit() {
+    h.destroy()
+    h2.destroy()
+}
+
 void poke() {
     h.bump()
     h2.bump()

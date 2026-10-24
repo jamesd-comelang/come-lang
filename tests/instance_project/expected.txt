@@ -7,3 +7,7 @@ dead get=0 name-len=0 twice=0 set=1 msg=module instance has been destroyed
 double destroy ok
 ns stateless=20 plain=81
 w1=6 7 w2=5 5 base=100
+counter exit label=ctr count=6 log=1
+counter exit label=ctr count=7 log=1
+counter exit label=ctr count=5 log=1
+counter exit label=ctr count=5 log=1
