@@ -1,11 +1,16 @@
 greeter init
 alpha init
+delta create
 main start
 hello from greeter
 hello from greeter
 extra done
 hello from greeter
 alpha poke
+legacy before=0
+legacy after=1 exit=9
+delta zing
 main end
+delta destroy
 alpha exit
 greeter exit

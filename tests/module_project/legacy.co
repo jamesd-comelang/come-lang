@@ -1,0 +1,19 @@
+module legacy
+
+// Since COIL-155 the lifecycle hooks are create/destroy,
+// so init and exit are ordinary function names again:
+// nothing here runs automatically, and both functions
+// are called from the program like any other.
+bool ready = false
+
+void init() {
+    ready = true
+}
+
+int exit() {
+    return 9
+}
+
+bool is_ready() {
+    return ready
+}

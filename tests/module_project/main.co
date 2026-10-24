@@ -2,6 +2,8 @@ module main
 import std
 import alpha
 import greeter
+import legacy
+import delta
 
 // COIL-108 acceptance program: alpha is a single-file module that
 // depends on greeter; greeter is a directory module (two files).
@@ -13,6 +15,10 @@ int main() {
     greeter.hello()
     greeter.extra()
     alpha.poke()
+    std.out.printf("legacy before=%d\n", legacy.is_ready())
+    legacy.init()
+    std.out.printf("legacy after=%d exit=%d\n", legacy.is_ready(), legacy.exit())
+    delta.zing()
     std.out.printf("main end\n")
     return 0
 }

@@ -74,6 +74,17 @@ if ! grep -q "module 'hoard' cannot be instantiated: it does not define the crea
     exit 1
 fi
 
+cp tests/instance_project/bad_pair.co tests/instance_project/halflib.co "$WORK/"
+if ( cd "$WORK" && "$COME" build bad_pair.co -o badapp5 > bad_pair.log 2>&1 ); then
+    echo "FAIL: a module with half a lifecycle pair was accepted"
+    exit 1
+fi
+if ! grep -q "module 'halflib' defines create() but no destroy(): the lifecycle hooks come in a pair" "$WORK/bad_pair.log"; then
+    echo "FAIL: the half-pair error does not name the missing half"
+    cat "$WORK/bad_pair.log"
+    exit 1
+fi
+
 cp tests/instance_project/bad_global.co "$WORK/"
 if ( cd "$WORK" && "$COME" build bad_global.co -o badapp3 > bad_global.log 2>&1 ); then
     echo "FAIL: an instance created at module scope was accepted"

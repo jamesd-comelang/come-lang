@@ -11,8 +11,9 @@ COME="$REPO/build/come"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-cp tests/module_project/main.co tests/module_project/alpha.co "$WORK/"
-cp -r tests/module_project/greeter "$WORK/"
+cp tests/module_project/main.co tests/module_project/alpha.co \
+   tests/module_project/legacy.co "$WORK/"
+cp -r tests/module_project/greeter tests/module_project/delta "$WORK/"
 if ! ( cd "$WORK" && "$COME" build main.co -o app > build.log 2>&1 ); then
     echo "FAIL: module project did not build"
     cat "$WORK/build.log"

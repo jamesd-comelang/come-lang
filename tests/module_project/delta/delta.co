@@ -1,0 +1,15 @@
+module delta
+import std
+
+// The destroy half of the pair lives here; the create
+// half is written in the module.create() block form in
+// hooks.co - the pair is assembled across the group's
+// files (COIL-156), and the block form is the parser's
+// own spelling of the hook (COIL-155).
+void destroy() {
+    std.out.printf("delta destroy\n")
+}
+
+void zing() {
+    std.out.printf("delta zing\n")
+}

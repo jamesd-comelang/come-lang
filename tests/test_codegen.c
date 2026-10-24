@@ -470,7 +470,7 @@ int main() {
         buf108[bl108] = 0;
         if (rc108 != 0 || !strstr(buf108, "extern TALLOC_CTX* come_greeter__ctx;") ||
             strstr(buf108, "come_greeter__ctx = NULL") ||
-            strstr(buf108, "void come_greeter__init(void) {")) {
+            strstr(buf108, "void come_greeter__init_chain(void) {")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: secondary file must not define singletons\033[0m\n");
             return 1;
         }
@@ -482,7 +482,7 @@ int main() {
         fclose(of108);
         buf108[bl108] = 0;
         if (rc108 != 0 || !strstr(buf108, "come_greeter__init_local();") ||
-            !strstr(buf108, "come_register_exit(come_greeter__exit);")) {
+            !strstr(buf108, "come_register_exit(come_greeter__exit_chain);")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-108: primary chain must call the group hook and register the exit\033[0m\n");
             return 1;
         }

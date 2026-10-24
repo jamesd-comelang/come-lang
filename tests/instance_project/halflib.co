@@ -1,0 +1,13 @@
+module halflib
+
+// Half a lifecycle pair (COIL-156): create without
+// destroy. The module must not compile at all - the
+// driver rejects the half-pair before any use.
+int n = 0
+
+void create() {
+}
+
+void bump() {
+    n = n + 1
+}

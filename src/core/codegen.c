@@ -6311,15 +6311,15 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         }
 
         // Forward declare module init/exit
-        fprintf(f, "void come_%s__init(void);\n", current_module);
-        fprintf(f, "void come_%s__exit(void);\n", current_module);
+        fprintf(f, "void come_%s__init_chain(void);\n", current_module);
+        fprintf(f, "void come_%s__exit_chain(void);\n", current_module);
 
         fprintf(f, "\nint main(int argc, char* argv[]) {\n");
         fprintf(f, "    COME_CTX = mem_talloc_new_ctx(NULL);\n");
         fprintf(f, "    if (!COME_CTX) { fprintf(stderr, \"OOM\\n\"); return 1; }\n");
         
         fprintf(f, "    come_coro_init();\n");
-        fprintf(f, "    come_%s__init();\n", current_module);
+        fprintf(f, "    come_%s__init_chain();\n", current_module);
         fprintf(f, "    \n");
         
         if (main_is_void) {
@@ -6363,15 +6363,15 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
 
     // Forward declare imported init/exit
     for (int i = 0; i < chain_count; i++) {
-        fprintf(f, "extern void come_%s__init(void);\n", chain_imports[i]);
-        fprintf(f, "extern void come_%s__exit(void);\n", chain_imports[i]);
+        fprintf(f, "extern void come_%s__init_chain(void);\n", chain_imports[i]);
+        fprintf(f, "extern void come_%s__exit_chain(void);\n", chain_imports[i]);
     }
 
     if (!g_codegen_suppress_singletons) {
-    fprintf(f, "void come_%s__init(void);\n", current_module);
-    fprintf(f, "void come_%s__exit(void);\n", current_module);
+    fprintf(f, "void come_%s__init_chain(void);\n", current_module);
+    fprintf(f, "void come_%s__exit_chain(void);\n", current_module);
     // Module Init
-    fprintf(f, "void come_%s__init(void) {\n", current_module);
+    fprintf(f, "void come_%s__init_chain(void) {\n", current_module);
     fprintf(f, "    static bool initialized = false;\n");
     fprintf(f, "    if (initialized) return;\n");
     fprintf(f, "    initialized = true;\n");
@@ -6379,7 +6379,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     // scheduler (COIL-120): context switches swap it per coroutine.
     fprintf(f, "    come_coro_register_ctx(&come_%s__ctx);\n", current_module);
     for (int i = 0; i < chain_count; i++) {
-        fprintf(f, "    come_%s__init();\n", chain_imports[i]);
+        fprintf(f, "    come_%s__init_chain();\n", chain_imports[i]);
     }
     // Call the module's init hook if one is defined (init() or the
     // spec 3.5 spelling module_init(); mangled to __init_local).
@@ -6401,11 +6401,11 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     }
     // Register this module's exit: run_exits replays registrations
     // in reverse, giving exact reverse-of-init exit order (3.5).
-    fprintf(f, "    come_register_exit(come_%s__exit);\n", current_module);
+    fprintf(f, "    come_register_exit(come_%s__exit_chain);\n", current_module);
     fprintf(f, "}\n\n");
 
     // Module Exit
-    fprintf(f, "void come_%s__exit(void) {\n", current_module);
+    fprintf(f, "void come_%s__exit_chain(void) {\n", current_module);
     fprintf(f, "    static bool exited = false;\n");
     fprintf(f, "    if (exited) return;\n");
     fprintf(f, "    exited = true;\n");

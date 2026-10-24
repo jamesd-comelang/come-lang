@@ -161,6 +161,7 @@ typedef struct {
     const char** imports;  // union of the group's imports
     int import_count;
     int is_state_home;     // this file declares the module's variables (COIL-140)
+    const char* name;      // the group's module name (COIL-156 coverage)
 } ModuleGroup;
 
 static void compile_file(const char *source_path, const char *forced_o_path,
@@ -219,6 +220,25 @@ static void compile_file(const char *source_path, const char *forced_o_path,
     ASTNode *ast = NULL;
     if (parse_file(abs_path, &ast) != 0 || !ast) {
         die("Parsing failed: %s", abs_path);
+    }
+    // A file written in the module.create() block form
+    // names no module in its text - the hook implies the
+    // file's own module. Attribute it: the group's name
+    // for a group file, the file's stem for a lone file.
+    // (Codegen otherwise defaults an unnamed AST to the
+    // entry module, attributing the hook to "main".)
+    if (ast->type == AST_PROGRAM && ast->text[0] == 0) {
+        if (group && group->is_group && group->name) {
+            strncpy(ast->text, group->name, 255);
+        } else {
+            char stem[PATH_MAX];
+            snprintf(stem, sizeof(stem), "%s", abs_path);
+            char *bn = basename(stem);
+            char *dot = strrchr(bn, '.');
+            if (dot) *dot = 0;
+            strncpy(ast->text, bn, 255);
+        }
+        ast->text[255] = 0;
     }
 
     // 1b. Export registry (spec 3.4, COIL-127): record this
@@ -896,6 +916,7 @@ static void compile_group(char paths[][PATH_MAX], int count, const char *module_
         g.has_exit = has_exit;
         g.imports = imports;
         g.import_count = import_count;
+        g.name = module_name;
         compile_file(paths[i], NULL, &g);
     }
 }

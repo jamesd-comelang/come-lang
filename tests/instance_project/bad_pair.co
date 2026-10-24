@@ -1,0 +1,8 @@
+module main
+import std
+import halflib
+
+int main() {
+    halflib.bump()
+    return 0
+}
