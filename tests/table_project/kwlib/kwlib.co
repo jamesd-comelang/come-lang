@@ -11,6 +11,11 @@ void create() {
     codes["WHERE"] = 150
 }
 
+// The other half of the pair (COIL-156): nothing to
+// release - the table dies with the instance's root.
+void destroy() {
+}
+
 int code(string word) {
     return codes[word]
 }

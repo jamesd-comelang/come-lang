@@ -2,6 +2,14 @@ module vault
 
 export (open)
 
+// The lifecycle pair (COIL-156): both hooks, so the
+// module can be instantiated. Empty - fields only.
+void create() {
+}
+
+void destroy() {
+}
+
 // Stateful, with an uninitialized module variable directly
 // before a tuple-returning function: the parser used to
 // read the tuple type as the variable's parameter list,

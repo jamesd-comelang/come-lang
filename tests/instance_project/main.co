@@ -4,6 +4,8 @@ import counter
 import panel
 import plain
 import libw
+import hoard
+import beacon
 
 void use_it(panel p) {
     p.raise(5)
@@ -38,5 +40,13 @@ int main() {
     std.out.printf("w1=%d %d w2=%d %d base=%d\n", w1.get(), w1.get2(), w2.get(), w2.get2(), w1.base_val())
     w1.destroy()
     w2.destroy()
+    hoard.bump()
+    hoard.bump()
+    std.out.printf("hoard=%d\n", hoard.get())
+    var bc1 = beacon.create()
+    var bc2 = beacon.create()
+    std.out.printf("beacon=%d\n", bc1.ping() + bc2.ping())
+    bc1.destroy()
+    bc2.destroy()
     return 0
 }

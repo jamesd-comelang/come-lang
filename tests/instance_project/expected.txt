@@ -1,3 +1,4 @@
+beacon create
 a=7 A b=6 ctr log=1 twice=42
 panel=7 panel 42
 counter exit label=A count=7 log=1
@@ -11,3 +12,10 @@ counter exit label=ctr count=6 log=1
 counter exit label=ctr count=7 log=1
 counter exit label=ctr count=5 log=1
 counter exit label=ctr count=5 log=1
+hoard=12
+beacon create
+beacon create
+beacon=14
+beacon destroy
+beacon destroy
+beacon destroy

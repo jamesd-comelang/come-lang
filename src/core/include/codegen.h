@@ -51,9 +51,10 @@ void codegen_register_module_state(const char* module,
                                    const char** var_types, int var_count,
                                    const char** stateful,
                                    const char** chains, int stateful_count,
-                                   int has_main,
+                                   int has_main, int can_instance,
                                    const char** fn_names, const char** fn_rets,
                                    const char** fn_params, int fn_count);
+int codegen_module_can_instance(const char* module);
 const char* codegen_module_fn_ret(const char* module, const char* fn);
 int codegen_module_fn_count(const char* module);
 int codegen_module_fn_at(const char* module, int i, const char** name,

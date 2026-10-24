@@ -12,6 +12,12 @@ var h = counter.create()
 var h2 = counter.create()
 var base = 100
 
+// The lifecycle pair (COIL-156): create is empty (the
+// fields' initializers do the work); destroy below is
+// where the sub-instances are released.
+void create() {
+}
+
 // Releasing the sub-instances is this module's own job:
 // destroy() never cascades on its own, so the exit hook
 // destroys them explicitly.

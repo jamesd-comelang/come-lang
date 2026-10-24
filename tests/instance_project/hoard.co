@@ -1,0 +1,17 @@
+module hoard
+
+export (bump, get)
+
+// Module state with NO lifecycle pair (COIL-156): this
+// module is namespace-only. Its variables are its own
+// singleton state, its functions are called on the
+// namespace, and hoard.create() is a compile error.
+int total = 10
+
+void bump() {
+    total = total + 1
+}
+
+int get() {
+    return total
+}

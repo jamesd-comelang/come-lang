@@ -288,7 +288,14 @@ section numbers below refer to `docs/Come_spec.md`.
 - **Two surfaces (§3.6, COIL-140).** The driver analyzes
   every user module at parse time (variables, call graph,
   a statefulness fixpoint with witness chains) and
-  registers it with codegen. In a module with variables,
+  registers it with codegen. Which modules have an
+  instance surface at all is decided by the lifecycle
+  pair (COIL-156): the driver records `can_instance`
+  (both create and destroy hooks defined; a half-pair is
+  a compile error there), and codegen's capability
+  predicate gates the instance struct, the create/destroy
+  runtime, instance-form generation, and instance typing.
+  In an instantiable module with variables,
   stateful functions are generated in *instance form*
   (hidden `__inst` parameter; module variables become
   instance fields; the body opens with a destroyed-instance

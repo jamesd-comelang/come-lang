@@ -368,8 +368,13 @@ int answer() {          // plain functions are exported
   hook, frees the instance's memory, and is safe to repeat; any
   later call on `w` sets ERR ("module instance has been
   destroyed") and returns the zero value - it never
-  crashes. `create()` on a module with no variables is a
-  compile error. An instance's type is written as the
+  crashes. `create()` on a module is a compile error
+  unless the module defines BOTH lifecycle hooks,
+  `create()` and `destroy()` - the pair is what makes a
+  module instantiable (variables or not); without it a
+  module is namespace-only and its variables are
+  singleton state. One hook alone is a compile error.
+  An instance's type is written as the
   module's name (`void use(window_module w) {...}`).
   Instances live in locals and parameters; functions
   cannot return them. A module defining `main()` is a

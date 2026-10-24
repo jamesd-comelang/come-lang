@@ -724,8 +724,14 @@ The rules:
 - An instance's type is the module's name, so instances
   can be passed to functions:
   `void use_it(window_module w) { ... }`.
-- `create()` on a module with no variables is a compile
-  error - there is nothing to instantiate.
+- `create()` on a module is a compile error unless the
+  module defines the lifecycle pair - both a `create()`
+  and a `destroy()` hook (§12). The pair is the whole
+  criterion: a module with the pair can be instantiated
+  (variables or not); a module without it is
+  namespace-only, and its variables are its own
+  singleton state. One hook without the other is a
+  compile error too.
 - Your entry module (the one with `main`) is a program,
   not a library: its module variables work as plain
   globals, exactly as in §12's examples.

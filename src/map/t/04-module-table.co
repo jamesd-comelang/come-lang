@@ -1,7 +1,7 @@
 // COIL-142: a map declared at module level is a build-once
 // table. The declaration parses at top level (the parser used
 // to die on the map type's '{'), the global is a bare header
-// (a zeroed header is a live empty map), init() fills it
+// (a zeroed header is a live empty map), create() fills it
 // once, and every function reads the same table - the shape
 // a keyword lookup needs, instead of rebuilding a 147-entry
 // map inside the lookup function on every call.
@@ -17,6 +17,10 @@ void create() {
     codes["SELECT"] = 139
     codes["FROM"] = 141
     names["kw"] = "keyword"
+}
+
+// The other half of the lifecycle pair (COIL-156).
+void destroy() {
 }
 
 int lookup(string word) {

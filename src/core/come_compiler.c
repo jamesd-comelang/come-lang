@@ -692,6 +692,29 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     int has_main = 0;
     for (int i = 0; i < fn_count; i++)
         if (strcmp(fns[i].name, "main") == 0 && !fns[i].is_coro) has_main = 1;
+    // The lifecycle pair (COIL-156): a module is
+    // instantiable only when it defines BOTH hooks -
+    // create (either spelling) and destroy (either
+    // spelling). One without the other is an error: the
+    // pair is the module's declaration that it has a
+    // lifecycle and can be an instance; a module with
+    // neither is namespace-only.
+    int hook_create = 0, hook_destroy = 0;
+    for (int i = 0; i < fn_count; i++) {
+        if (strcmp(fns[i].name, "create") == 0 || strcmp(fns[i].name, "module_create") == 0) hook_create = 1;
+        if (strcmp(fns[i].name, "destroy") == 0 || strcmp(fns[i].name, "module_destroy") == 0) hook_destroy = 1;
+    }
+    if (hook_create != hook_destroy)
+        die("module '%s' defines %s() but no %s(): the lifecycle hooks come in a pair - "
+            "define both create() and destroy() to make the module instantiable, or "
+            "neither (a module without the pair is namespace-only)",
+            module_name, hook_create ? "create" : "destroy", hook_create ? "destroy" : "create");
+    int can_instance = hook_create && hook_destroy;
+    // A variable-less instantiable module still needs a
+    // state home: its first file emits the instance
+    // runtime (create/destroy with an empty field set).
+    if (var_count == 0 && can_instance && nast > 0)
+        snprintf(g_ana_home_file, sizeof(g_ana_home_file), "%s", files[0]);
     // One state home: initializers become instance fields,
     // and exactly one file can emit them. (A module with
     // main() is a program and keeps singleton state, so the
@@ -752,7 +775,7 @@ static void analyze_module(const char *module_name, ASTNode **asts,
                     snprintf(fn->chain, sizeof(fn->chain), "%s (module lifecycle)", nm);
                 }
             }
-            if (fn->stateful && fn->is_method && !has_main)
+            if (fn->stateful && fn->is_method && !has_main && can_instance)
                 die("module '%s': method '%s' uses module state (%s) - methods cannot "
                     "use module state in this version; move the state access into a "
                     "plain function of the module", module_name, fn->name, fn->chain);
@@ -764,6 +787,12 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     int sn = 0;
     for (int i = 0; i < fn_count; i++)
         if (fns[i].stateful && !fns[i].is_coro) { sf[sn] = fns[i].name; sc[sn] = fns[i].chain; sn++; }
+    // A namespace-only module has no instance surface:
+    // its functions are plain namespace functions even
+    // when they use module variables (those variables
+    // are the module's own singleton state), so the
+    // registry records no stateful functions for it.
+    if (!can_instance) sn = 0;
     const char *fnn[192], *fnr[192], *fnp[192];
     int fnn_count = 0;
     for (int i = 0; i < fn_count; i++) {
@@ -776,7 +805,7 @@ static void analyze_module(const char *module_name, ASTNode **asts,
         fnn_count++;
     }
     codegen_register_module_state(module_name, vnames, vtypes, var_count, sf, sc, sn, has_main,
-                                  fnn, fnr, fnp, fnn_count);
+                                  can_instance, fnn, fnr, fnp, fnn_count);
     const char *stn[64], *std_[64];
     int stpk[64], stal[64];
     for (int i = 0; i < struct_count; i++) {

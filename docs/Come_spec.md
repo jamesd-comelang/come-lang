@@ -248,6 +248,11 @@ Rules:
 
 - **Automatic invocation:** the compiler calls `module_create()` for every
   imported local module; the programmer never calls it directly.
+- **The hooks come in a pair:** a module defines both
+  `create()` and `destroy()`, or neither - one without
+  the other is a compile error. The pair is also the
+  criterion for §3.6: a module with both hooks can be
+  instantiated; a module with neither is namespace-only.
   The hooks may also be spelled plainly - `create()` and
   `destroy()`; the two spellings name the same hooks
   (renamed from `init()`/`exit()` in COIL-155, so the
@@ -308,12 +313,23 @@ with its own mutable state, its own allocation-tree root,
 and its own lifecycle. Instances share the module's code
 and nothing else.
 
-The split is decided by **state**: a module-level variable
-is module state. A function is **stateful** when its body
-uses a module variable, or calls a stateful function of
-its own module - statefulness is a static property,
-computed once at compile time as a fixpoint over the
-module's call graph (the `init`/`exit` hooks of a stateful
+The split is decided by the **lifecycle pair**: a module
+that defines both hooks of §3.5 - `create()` and
+`destroy()`, in either spelling - can be instantiated;
+a module that defines neither is namespace-only. The
+pair is the module's declaration that it has a
+lifecycle, and it is the whole criterion: defining one
+hook without the other is a compile error (COIL-156).
+
+Within an instantiable module, a module-level variable
+is per-instance state. In a namespace-only module the
+same declaration is the module's own singleton state,
+and its functions are plain namespace functions. A
+function is **stateful** when its body uses a module
+variable, or calls a stateful function of its own
+module - statefulness is a static property, computed
+once at compile time as a fixpoint over the module's
+call graph (the create/destroy hooks of an instantiable
 module are stateful by definition). Then:
 
 - A **stateless** function can be called both ways. On the
@@ -329,8 +345,11 @@ module are stateful by definition). Then:
   'counter.bump' cannot be called on the namespace: it uses module state (bump -> count) - create an instance first: var x = counter.create(), then x.bump(...)
   ```
 
-- A module with no module-level variables has no state to
-  instantiate: `create()` on it is a compile error.
+- A module without the lifecycle pair has nothing to
+  instantiate: `create()` on it is a compile error that
+  names the pair. A module with the pair but no variables
+  instantiates with an empty field set - its hooks still
+  run, per instance.
 - An instance is created inside a function only
   (COIL-149). A module-level declaration cannot hold
   one - there is no moment at module scope to run

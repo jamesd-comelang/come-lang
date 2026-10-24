@@ -2,6 +2,15 @@ module stateful
 
 export (build, count_of, seed)
 
+// The lifecycle pair: what makes this module instantiable
+// (COIL-156). These two are empty - the state below is
+// plain fields - but both must be defined.
+void create() {
+}
+
+void destroy() {
+}
+
 int cache = 0
 
 void seed(int v) {

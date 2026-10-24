@@ -1323,7 +1323,7 @@ int main() {
         const char* fnn[] = {"bump", "get", "twice"};
         const char* fnr[] = {"void", "int", "int"};
         const char* fnp[] = {"", "", "int"};
-        codegen_register_module_state("w140", vn, vt, 1, sf, sc, 2, 0,
+        codegen_register_module_state("w140", vn, vt, 1, sf, sc, 2, 0, 1,
                                       fnn, fnr, fnp, 3);
         const char* src140 =
             "module w140\n\n"

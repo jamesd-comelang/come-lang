@@ -4,6 +4,11 @@ import std
 string name = "panel"
 int level = 0
 
+// The lifecycle pair (COIL-156): create is empty (the
+// fields carry initializers); destroy below reports.
+void create() {
+}
+
 void destroy() {
     std.out.printf("panel exit level=%d\n", level)
 }

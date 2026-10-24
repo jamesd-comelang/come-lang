@@ -1,0 +1,21 @@
+module beacon
+import std
+
+export (ping)
+
+// No variables at all - but the lifecycle pair is
+// defined, so this module CAN be instantiated
+// (COIL-156): the pair, not state, is the criterion.
+// With no per-instance state the hooks are plain
+// functions: they also run in the program-level chain.
+void create() {
+    std.out.printf("beacon create\n")
+}
+
+void destroy() {
+    std.out.printf("beacon destroy\n")
+}
+
+int ping() {
+    return 7
+}

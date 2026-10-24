@@ -8,11 +8,17 @@
 # in one file and functions in another, destroyed-instance
 # calls returning zero values with ERR set, an idempotent
 # destroy, and the stateless namespace still working in a
-# stateful module. Then three negative projects: a namespace
-# call to a stateful function (the error names the witness
-# chain), create() on a stateless module, and create() at
-# module scope (COIL-149: an instance is created inside a
-# function only).
+# stateful module. COIL-156 coverage: the lifecycle pair
+# is the criterion - a variable-less module with the pair
+# (beacon) instantiates and its hooks also run in the
+# program chain, and a module with state but no pair
+# (hoard) is namespace-only singleton state. Then the
+# negative projects: a namespace call to a stateful
+# function (the error names the witness chain), create()
+# on a module without the pair (stateless plain, and
+# stateful hoard), and create() at module scope
+# (COIL-149: an instance is created inside a function
+# only).
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd)
@@ -21,7 +27,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 cp tests/instance_project/main.co tests/instance_project/counter.co \
-   tests/instance_project/plain.co tests/instance_project/libw.co "$WORK/"
+   tests/instance_project/plain.co tests/instance_project/libw.co \
+   tests/instance_project/hoard.co tests/instance_project/beacon.co "$WORK/"
 cp -r tests/instance_project/panel "$WORK/"
 if ! ( cd "$WORK" && "$COME" build main.co -o app > build.log 2>&1 ); then
     echo "FAIL: instance project did not build"
@@ -50,9 +57,20 @@ if ( cd "$WORK" && "$COME" build bad_create.co -o badapp2 > bad_create.log 2>&1 
     echo "FAIL: create() on a stateless module was accepted"
     exit 1
 fi
-if ! grep -q "module 'plain' has no state to instantiate" "$WORK/bad_create.log"; then
+if ! grep -q "module 'plain' cannot be instantiated: it does not define the create/destroy lifecycle pair" "$WORK/bad_create.log"; then
     echo "FAIL: the create() error is unclear"
     cat "$WORK/bad_create.log"
+    exit 1
+fi
+
+cp tests/instance_project/bad_create2.co tests/instance_project/hoard.co "$WORK/"
+if ( cd "$WORK" && "$COME" build bad_create2.co -o badapp4 > bad_create2.log 2>&1 ); then
+    echo "FAIL: create() on a stateful module without the pair was accepted"
+    exit 1
+fi
+if ! grep -q "module 'hoard' cannot be instantiated: it does not define the create/destroy lifecycle pair" "$WORK/bad_create2.log"; then
+    echo "FAIL: the create() error for a pair-less stateful module is unclear"
+    cat "$WORK/bad_create2.log"
     exit 1
 fi
 

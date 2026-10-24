@@ -1,0 +1,8 @@
+module main
+import std
+import hoard
+
+int main() {
+    var h = hoard.create()
+    return 0
+}
