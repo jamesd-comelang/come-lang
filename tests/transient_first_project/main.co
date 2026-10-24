@@ -1,0 +1,95 @@
+module main
+import std
+
+int first() {
+    string a = "a"
+    string b = "b"
+    string s = ""
+    s = a + b
+    if (s == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int first_lit() {
+    string a = "a"
+    string b = "b"
+    string s = "x"
+    s = a + b
+    if (s == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int first_multi() {
+    string a = "a"
+    string b = "b"
+    string c = "c"
+    string d = "d"
+    string s = ""
+    s = a + b
+    s = c + d
+    if (s == "cd") {
+        return 1
+    }
+    return 0
+}
+
+int first_nonconcat() {
+    string a = "a"
+    string b = "b"
+    string other = "o"
+    string s = ""
+    s = other
+    s = a + b
+    if (s == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int first_loop_outer() {
+    string a = "a"
+    string b = "b"
+    string s = ""
+    int i = 0
+    while (i < 2) {
+        s = a + b
+        i = i + 1
+    }
+    if (s == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    if (first() == 1) {
+        std.out.printf("ok first\n")
+    } else {
+        std.out.printf("FAIL first\n")
+    }
+    if (first_lit() == 1) {
+        std.out.printf("ok first_lit\n")
+    } else {
+        std.out.printf("FAIL first_lit\n")
+    }
+    if (first_multi() == 1) {
+        std.out.printf("ok first_multi\n")
+    } else {
+        std.out.printf("FAIL first_multi\n")
+    }
+    if (first_nonconcat() == 1) {
+        std.out.printf("ok first_nonconcat\n")
+    } else {
+        std.out.printf("FAIL first_nonconcat\n")
+    }
+    if (first_loop_outer() == 1) {
+        std.out.printf("ok first_loop_outer\n")
+    } else {
+        std.out.printf("FAIL first_loop_outer\n")
+    }
+    return 0
+}

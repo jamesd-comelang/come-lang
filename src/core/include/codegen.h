@@ -121,4 +121,5 @@ void codegen_dump_escapes(FILE* out);
 // VAR_DECL time.
 void codegen_analyze_transient(const char* module, ASTNode** asts, int nast);
 int codegen_transient_local(const char* module, const char* fn, const char* name);
+int codegen_transient_first_assign(const char* module, const char* fn, const char* name);
 #endif

@@ -18,10 +18,10 @@ merged, or reverted independently later. Branch:
   (DONE, see below).
 - Step 4: Design 1+2 remainder, then Design 5
   frame tiers. Sliced like step 3: 4a (loop-body
-  locals + printf borrows, DONE) and 4b
-  (multi-assignment init, DONE, see below) first,
-  then first-assignment locals, 4c (array/map
-  promotion), 4d (frame tiers).
+  locals + printf borrows, DONE), 4b
+  (multi-assignment init, DONE), first-assignment
+  locals (DONE, see below) first, then 4c
+  (array/map promotion), 4d (frame tiers).
 - HELD OUT (needs an explicit call, not covered by
   "do them"): an explicit unchecked/unsafe region.
   It is the only design that guarantees 1x, and it
@@ -59,6 +59,44 @@ inlined at default flags) plus the guard's
 what step 3 (intrinsics) targets; step 1 still pays
 where checks dominate (and it removes a check per
 byte that no longer needs proving).
+
+## First-assignment DONE (2026-10-24): transient first-assignment locals (step 4b remainder)
+
+A local whose declaration has NO concat init, but
+whose FIRST assignment is a string concat, with all
+uses borrows and every assignment sharing the
+declaration's loop depth, gets its concat
+assignments as direct arena assignments. Analysis
+in transient.c (a separate first-assignment
+registry; trans_collect restored loop-depth
+tracking for declaration and assignment depths,
+and records first-assignment concat-ness per name;
+shadowed names and params excluded; the rule is
+disjoint from init-transient, so a concat-init
+local keeps talloc reassignments). Codegen in
+codegen.c: the bypass sits in BOTH assignment
+paths, because statement assignments (generate_node
+AST_ASSIGN) and nested assignments
+(generate_expression) have separate _come_v +
+adopt emission -- the first run caught only the
+expression path, and the statement test failed
+until the statement bypass was added. The bypass
+clears g_view_promote for the RHS (so the concat
+is arena) and emits a plain `s = <arena concat>`
+with no temp and no adopt, like a declaration
+init; later escaping uses are still caught by the
+net at those sites. Test:
+`tests/transient_first_project/` +
+`tests/run_transient_first_test.sh` (positives:
+no-init-literal and literal-init first assignments
+plus a multi-assignment case, all direct arena,
+NO talloc concat in positives; controls: a
+non-concat first assignment and an outer local
+assigned in a loop, both talloc via _come_v, NO
+direct arena; ASan). Suites green from clean
+(Come exit 0, "all green"; co_SQLite 7/7).
+Tokenizer bench: ~0.61 s, essentially unchanged
+(no first-assignment string locals in its hot path).
 
 ## Step 4b DONE (2026-10-24): transient multi-assignment init (reassignment targets allowed)
 
@@ -317,10 +355,6 @@ per byte; report it, do not assume it).
 
 ## Remaining (in order)
 
-- First-assignment locals (step 4b remainder):
-  a local whose FIRST assignment, not its init, is
-  a concat -- needs codegen ASSIGN-time transient
-  handling (registry + first-assignment tracking).
 - Step 4c: Design 1+2 remainder, part 3 --
   array/map promotion (escape-aware; header AND
   arena elements must promote together).

@@ -1,0 +1,39 @@
+module main
+import std
+
+int first_nonconcat() {
+    string a = "a"
+    string b = "b"
+    string other = "o"
+    string s = ""
+    s = other
+    s = a + b
+    if (s == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int first_loop_outer() {
+    string a = "a"
+    string b = "b"
+    string s = ""
+    int i = 0
+    while (i < 2) {
+        s = a + b
+        i = i + 1
+    }
+    if (s == "ab") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    if (first_nonconcat() == 1 && first_loop_outer() == 1) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

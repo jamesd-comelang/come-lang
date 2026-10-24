@@ -16,6 +16,18 @@
 //     what matters is that no use stores, returns, or
 //     captures the arena value, and reassignment RHS
 //     uses are themselves classified as borrows or not;
+//   - FIRST-ASSIGNMENT locals (step 4b remainder, a
+//     separate registry): a local whose declaration
+//     has NO concat init, but whose FIRST assignment
+//     is a string concat, with all uses borrows and
+//     every assignment sharing the declaration's loop
+//     depth (so no outer-local loop accumulation).
+//     Once qualified, ANY concat assignment to it
+//     emits a direct arena assignment (bypassing
+//     adoption, like a declaration init, in both the
+//     statement and expression assignment paths); a
+//     non-concat first assignment, or a loop-unsafe
+//     assignment, disqualifies it.
 //   - every other identifier use of the name is a whitelisted
 //     borrow: a concat operand, an operand of == / !=, the
 //     receiver of a pure string method (length,
@@ -99,6 +111,38 @@ int codegen_transient_local(const char* module, const char* fn, const char* name
     return 0;
 }
 
+// First-assignment registry (step 4b remainder): a
+// local whose declaration has NO concat init, but
+// whose FIRST assignment (in body order) is a string
+// concat, with all uses borrows and every assignment
+// loop-safe. Codegen consults it at ASSIGN time: any
+// concat assignment to such a local emits arena (not
+// just the first -- once qualified, every concat
+// assignment to it is safe for the same reason).
+static TransReg g_trans_first_reg[TRANS_REG_MAX];
+static int g_trans_first_reg_count = 0;
+
+static void trans_first_reg_add(const char* module, const char* fn, const char* name) {
+    for (int i = 0; i < g_trans_first_reg_count; i++)
+        if (strcmp(g_trans_first_reg[i].module, module) == 0 &&
+            strcmp(g_trans_first_reg[i].fn, fn) == 0 &&
+            strcmp(g_trans_first_reg[i].name, name) == 0) return;
+    if (g_trans_first_reg_count >= TRANS_REG_MAX) return;
+    TransReg* r = &g_trans_first_reg[g_trans_first_reg_count++];
+    snprintf(r->module, sizeof(r->module), "%s", module);
+    snprintf(r->fn, sizeof(r->fn), "%s", fn);
+    snprintf(r->name, sizeof(r->name), "%s", name);
+}
+
+int codegen_transient_first_assign(const char* module, const char* fn, const char* name) {
+    if (!module || !fn || !name) return 0;
+    for (int i = 0; i < g_trans_first_reg_count; i++)
+        if (strcmp(g_trans_first_reg[i].module, module) == 0 &&
+            strcmp(g_trans_first_reg[i].fn, fn) == 0 &&
+            strcmp(g_trans_first_reg[i].name, name) == 0) return 1;
+    return 0;
+}
+
 // Per-function collection state: the names declared so
 // far (params first, then body VAR_DECLs in order), each
 // with whether it is provably a string, plus the names
@@ -106,6 +150,7 @@ int codegen_transient_local(const char* module, const char* fn, const char* name
 typedef struct {
     char names[TRANS_MAX_NAMES][128];
     int is_string[TRANS_MAX_NAMES];
+    int decl_depth[TRANS_MAX_NAMES];
     int count;
     char shadowed[TRANS_MAX_NAMES][128];
     int shadowed_count;
@@ -113,6 +158,14 @@ typedef struct {
     int param_count;
     char cands[TRANS_MAX_CANDS][128];
     int cand_count;
+    // First-assignment tracking, parallel to names[]:
+    // assigned once seen, first_is_concat for the first
+    // ASSIGN's RHS, loop_unsafe if any assignment sits
+    // in a loop the declaration does not share.
+    int fa_assigned[TRANS_MAX_NAMES];
+    int fa_first_concat[TRANS_MAX_NAMES];
+    int fa_loop_unsafe[TRANS_MAX_NAMES];
+    int init_is_concat[TRANS_MAX_NAMES];
 } TransCtx;
 
 static int trans_map_find(TransCtx* ctx, const char* name) {
@@ -133,7 +186,7 @@ static int trans_is_shadowed(TransCtx* ctx, const char* name) {
     return 0;
 }
 
-static void trans_map_add(TransCtx* ctx, const char* name, int is_string) {
+static void trans_map_add(TransCtx* ctx, const char* name, int is_string, int decl_depth) {
     if (trans_map_find(ctx, name) >= 0) {
         // Re-declaration: the name is shadowed from here
         // on, so no candidate may use it.
@@ -144,6 +197,7 @@ static void trans_map_add(TransCtx* ctx, const char* name, int is_string) {
     if (ctx->count >= TRANS_MAX_NAMES) return;
     snprintf(ctx->names[ctx->count], 128, "%s", name);
     ctx->is_string[ctx->count] = is_string;
+    ctx->decl_depth[ctx->count] = decl_depth;
     ctx->count++;
 }
 
@@ -193,16 +247,37 @@ static int trans_is_pure_receiver_method(const char* m) {
 }
 
 // Collect candidates: walk the body in order, tracking
-// the declaration map. A VAR_DECL is a candidate with
-// a concat init, a provably string type, no
-// self-reference, no param collision, and no shadowing
-// (checked at the end, since a later re-declaration
-// shadows an earlier candidate). Loop-body locals are
-// candidates (step 4a, see the header note); the loop
-// rule is enforced by the never-reassigned check, not
-// by where the declaration sits.
-static void trans_collect(ASTNode* node, TransCtx* ctx) {
+// the declaration map and first assignments. A
+// VAR_DECL is a candidate with a concat init, a
+// provably string type, no self-reference, no param
+// collision, and no shadowing (checked at the end,
+// since a later re-declaration shadows an earlier
+// candidate). Loop-body locals are candidates (step
+// 4a, see the header note); the loop rule is enforced
+// by the never-reassigned check, not by where the
+// declaration sits. First assignments (step 4b
+// remainder) are tracked here too: for each name, the
+// first ASSIGN's RHS concat-ness and whether every
+// assignment shares the declaration's loop depth.
+static void trans_collect(ASTNode* node, TransCtx* ctx, int loop_depth) {
     if (!node) return;
+    if (node->type == AST_ASSIGN && strcmp(node->text, "=") == 0 &&
+        node->child_count >= 2 &&
+        node->children[0]->type == AST_IDENTIFIER) {
+        int idx = trans_map_find(ctx, node->children[0]->text);
+        if (idx >= 0) {
+            ASTNode* rhs = node->children[1];
+            if (!ctx->fa_assigned[idx]) {
+                ctx->fa_assigned[idx] = 1;
+                ctx->fa_first_concat[idx] = (rhs &&
+                    rhs->type == AST_BINARY_OP &&
+                    strcmp(rhs->text, "+") == 0 &&
+                    trans_expr_is_string(rhs, ctx));
+            }
+            if (loop_depth != ctx->decl_depth[idx])
+                ctx->fa_loop_unsafe[idx] = 1;
+        }
+    }
     if (node->type == AST_VAR_DECL) {
         const char* type = (node->child_count >= 2 && node->children[1])
             ? node->children[1]->text : "var";
@@ -223,10 +298,19 @@ static void trans_collect(ASTNode* node, TransCtx* ctx) {
         if (!as_string && strcmp(type, "var") == 0 && init &&
             init->type == AST_BINARY_OP && strcmp(init->text, "+") == 0 &&
             trans_expr_is_string(init, ctx)) as_string = 1;
-        trans_map_add(ctx, node->text, as_string);
+        trans_map_add(ctx, node->text, as_string, loop_depth);
+        int didx = trans_map_find(ctx, node->text);
+        if (didx >= 0)
+            ctx->init_is_concat[didx] = (init &&
+                init->type == AST_BINARY_OP &&
+                strcmp(init->text, "+") == 0 &&
+                trans_expr_is_string(init, ctx));
     }
+    int child_loop = loop_depth;
+    if (node->type == AST_WHILE || node->type == AST_FOR ||
+        node->type == AST_DO_WHILE) child_loop = loop_depth + 1;
     for (int i = 0; i < node->child_count; i++)
-        trans_collect(node->children[i], ctx);
+        trans_collect(node->children[i], ctx, child_loop);
 }
 
 // Disqualifier scan: 1 if the body uses `name` anywhere
@@ -283,19 +367,30 @@ void codegen_analyze_transient(const char* module, ASTNode** asts, int nast) {
                         ? fch->children[1]->text : "var";
                     if (ctx.param_count < TRANS_MAX_NAMES)
                         snprintf(ctx.params[ctx.param_count++], 128, "%.127s", fch->text);
-                    trans_map_add(&ctx, fch->text, strcmp(t, "string") == 0);
+                    trans_map_add(&ctx, fch->text, strcmp(t, "string") == 0, 0);
                 } else if (fch->type == AST_BLOCK) {
                     body = fch;
                 }
             }
             if (!body) continue;
-            trans_collect(body, &ctx);
+            trans_collect(body, &ctx, 0);
             for (int c = 0; c < ctx.cand_count; c++) {
                 const char* name = ctx.cands[c];
                 if (trans_is_shadowed(&ctx, name)) continue;
                 if (trans_is_param(&ctx, name)) continue;
                 if (trans_use_bad(body, name)) continue;
                 trans_reg_add(module, ch->text, name);
+            }
+            for (int i = 0; i < ctx.count; i++) {
+                const char* name = ctx.names[i];
+                if (ctx.init_is_concat[i]) continue;
+                if (!ctx.fa_assigned[i]) continue;
+                if (!ctx.fa_first_concat[i]) continue;
+                if (ctx.fa_loop_unsafe[i]) continue;
+                if (trans_is_shadowed(&ctx, name)) continue;
+                if (trans_is_param(&ctx, name)) continue;
+                if (trans_use_bad(body, name)) continue;
+                trans_first_reg_add(module, ch->text, name);
             }
         }
     }

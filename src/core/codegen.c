@@ -4464,6 +4464,28 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 // reference = reference: a plain rebind, below.
             }
         }
+        // Step 4b remainder: a concat assignment to a
+        // first-assignment-transient local bypasses
+        // adoption entirely, like a declaration init
+        // (which gets no adoption): the arena value is
+        // created in the local's own frame, so it needs
+        // no move, and later escaping uses are still
+        // caught by the net at those sites. Clearing
+        // g_view_promote makes the RHS concat arena.
+        if (strcmp(node->text, "=") == 0 && node->child_count >= 2 &&
+            node->children[0]->type == AST_IDENTIFIER &&
+            node->children[1]->type == AST_BINARY_OP &&
+            strcmp(node->children[1]->text, "+") == 0 &&
+            codegen_transient_first_assign(current_module, current_function_name,
+                                           node->children[0]->text)) {
+            int saved_promote = g_view_promote;
+            g_view_promote = 0;
+            generate_expression(f, node->children[0]);
+            fprintf(f, " = ");
+            generate_expression(f, node->children[1]);
+            g_view_promote = saved_promote;
+            return;
+        }
         // COIL-157: an assignment used as a value still
         // moves scopes when it stores a buffer: temp the
         // value, adopt it to the destination's scope,
@@ -7604,6 +7626,30 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     // reference = reference: falls through to
                     // the plain assignment below (a rebind).
                 }
+            }
+            // Step 4b remainder (statement form): a concat
+            // assignment to a first-assignment-transient
+            // local bypasses adoption, like a declaration
+            // init -- direct arena assignment, no _come_v
+            // temp, no promote. The expression-form
+            // bypass (in generate_expression) covers
+            // nested assignments; this covers statements.
+            if (strcmp(node->text, "=") == 0 && node->child_count >= 2 &&
+                node->children[0]->type == AST_IDENTIFIER &&
+                node->children[1]->type == AST_BINARY_OP &&
+                strcmp(node->children[1]->text, "+") == 0 &&
+                get_local_variable_type(node->children[0]->text) &&
+                codegen_transient_first_assign(current_module, current_function_name,
+                                               node->children[0]->text)) {
+                int saved_promote_stmt = g_view_promote;
+                g_view_promote = 0;
+                emit_indent(f, indent);
+                generate_expression(f, node->children[0]);
+                fprintf(f, " = ");
+                generate_expression(f, node->children[1]);
+                fprintf(f, ";\n");
+                g_view_promote = saved_promote_stmt;
+                break;
             }
             // Typed map index write: m[key] = value (COIL-102)
             int map_write = 0;
