@@ -1,0 +1,9 @@
+ok loop_while
+ok loop_for
+hi
+ok printf
+jk
+jk
+ok printf_loop
+ok outer_assign
+ok call_arg

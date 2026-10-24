@@ -5,21 +5,29 @@
 //   - declared with explicit type `string`, or `var` with a
 //     string-concat initializer (so the type is provably string);
 //   - the initializer is a string concat (BINARY_OP "+");
-//   - the declaration is NOT lexically inside a loop
-//     (WHILE / FOR / DO_WHILE) -- a loop-body local is a
-//     follow-up, not this slice;
 //   - the name is not a parameter name and is not
 //     re-declared (shadowed) anywhere in the function;
 //   - the initializer does not reference the name itself;
 //   - the name is never assigned again anywhere in the body;
 //   - every other identifier use of the name is a whitelisted
-//     borrow: a concat operand, an operand of == / !=, or
-//     the receiver of a pure string method (length,
-//     bytesize, owner, substr, view, byte_view).
-// Anything else -- return, call argument, store, map/array/
-// field value, dup/chown receiver, spawn/yield capture,
-// printf argument -- disqualifies the local, and the
-// local keeps the ordinary talloc path. The default is
+//     borrow: a concat operand, an operand of == / !=, the
+//     receiver of a pure string method (length,
+//     bytesize, owner, substr, view, byte_view), or an
+//     argument of a std printf (out/err/std.printf --
+//     printf only reads its arguments).
+// Loop-body locals (step 4a): a local DECLARED inside a
+// loop body is a candidate -- its frame pops per
+// iteration, freeing its arena string, and each
+// iteration re-declares it fresh, so no value can
+// survive into a later iteration. An OUTER local
+// assigned inside a loop stays talloc, but that falls
+// out of the never-reassigned rule (the assignment is
+// a disqualifying use), not out of a loop exclusion.
+// Anything else -- return, call argument (other than
+// std printf), store, map/array/field value,
+// dup/chown receiver, spawn/yield capture --
+// disqualifies the local, and the local keeps the
+// ordinary talloc path. The default is
 // "not transient": an unrecognized construct can only
 // miss an optimization, never dangle a value.
 //
@@ -175,19 +183,22 @@ static int trans_is_pure_receiver_method(const char* m) {
 }
 
 // Collect candidates: walk the body in order, tracking
-// loop nesting and the declaration map. A VAR_DECL is a
-// candidate only outside loops, with a concat init, a
-// provably string type, no self-reference, no param
-// collision, and no shadowing (checked at the end, since
-// a later re-declaration shadows an earlier candidate).
-static void trans_collect(ASTNode* node, TransCtx* ctx, int loop_depth) {
+// the declaration map. A VAR_DECL is a candidate with
+// a concat init, a provably string type, no
+// self-reference, no param collision, and no shadowing
+// (checked at the end, since a later re-declaration
+// shadows an earlier candidate). Loop-body locals are
+// candidates (step 4a, see the header note); the loop
+// rule is enforced by the never-reassigned check, not
+// by where the declaration sits.
+static void trans_collect(ASTNode* node, TransCtx* ctx) {
     if (!node) return;
     if (node->type == AST_VAR_DECL) {
         const char* type = (node->child_count >= 2 && node->children[1])
             ? node->children[1]->text : "var";
         ASTNode* init = (node->child_count >= 1) ? node->children[0] : NULL;
         int is_string = strcmp(type, "string") == 0;
-        if (loop_depth == 0 && init && init->type == AST_BINARY_OP &&
+        if (init && init->type == AST_BINARY_OP &&
             strcmp(init->text, "+") == 0 &&
             (is_string || strcmp(type, "var") == 0) &&
             trans_expr_is_string(init, ctx) &&
@@ -204,11 +215,8 @@ static void trans_collect(ASTNode* node, TransCtx* ctx, int loop_depth) {
             trans_expr_is_string(init, ctx)) as_string = 1;
         trans_map_add(ctx, node->text, as_string);
     }
-    int child_loop = loop_depth;
-    if (node->type == AST_WHILE || node->type == AST_FOR ||
-        node->type == AST_DO_WHILE) child_loop = loop_depth + 1;
     for (int i = 0; i < node->child_count; i++)
-        trans_collect(node->children[i], ctx, child_loop);
+        trans_collect(node->children[i], ctx);
 }
 
 // Disqualifier scan: 1 if the body uses `name` anywhere
@@ -228,6 +236,16 @@ static int trans_use_bad(ASTNode* node, const char* name) {
                  strcmp(node->text, "!=") == 0)) ok = 1;
             else if (node->type == AST_METHOD_CALL && i == 0 &&
                      trans_is_pure_receiver_method(node->text)) ok = 1;
+            else if (node->type == AST_METHOD_CALL && i >= 1 &&
+                     strcmp(node->text, "printf") == 0 &&
+                     node->child_count >= 1 &&
+                     // Receiver text only, like codegen's own
+                     // printf branch: std.out parses as a
+                     // field node, not an identifier, so a
+                     // type check here would miss it.
+                     (strcmp(node->children[0]->text, "out") == 0 ||
+                      strcmp(node->children[0]->text, "err") == 0 ||
+                      strcmp(node->children[0]->text, "std") == 0)) ok = 1;
             if (!ok) return 1;
         }
         if (trans_use_bad(ch, name)) return 1;
@@ -260,7 +278,7 @@ void codegen_analyze_transient(const char* module, ASTNode** asts, int nast) {
                 }
             }
             if (!body) continue;
-            trans_collect(body, &ctx, 0);
+            trans_collect(body, &ctx);
             for (int c = 0; c < ctx.cand_count; c++) {
                 const char* name = ctx.cands[c];
                 if (trans_is_shadowed(&ctx, name)) continue;

@@ -1,0 +1,30 @@
+module main
+import std
+
+string outer_assign() {
+    string t = "a" + "b"
+    int i = 0
+    while (i < 2) {
+        t = "c" + "d"
+        i = i + 1
+    }
+    return t
+}
+
+int showlen(string s) {
+    return s.length()
+}
+
+int call_arg() {
+    string c = "e" + "f"
+    return showlen(c)
+}
+
+int main() {
+    if (outer_assign() == "cd" && call_arg() == 2) {
+        std.out.printf("ok ctl\n")
+    } else {
+        std.out.printf("FAIL ctl\n")
+    }
+    return 0
+}

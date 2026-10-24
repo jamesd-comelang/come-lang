@@ -34,20 +34,6 @@ int main() {
     } else {
         std.out.printf("FAIL c3\n")
     }
-    int i = 0
-    int c4ok = 0
-    while (i < 3) {
-        string r4 = a + b
-        if (r4 == "hello world") {
-            c4ok = c4ok + 1
-        }
-        i = i + 1
-    }
-    if (c4ok == 3) {
-        std.out.printf("ok c4\n")
-    } else {
-        std.out.printf("FAIL c4\n")
-    }
     map{string, string} m
     string r5 = a + b
     m["k"] = r5
@@ -56,10 +42,6 @@ int main() {
     } else {
         std.out.printf("FAIL c5\n")
     }
-    string r6 = a + b
-    std.out.printf(r6)
-    std.out.printf("\n")
-    std.out.printf("ok c6\n")
     string r7 = a + b
     string r7e = r7.dup(0)
     if (r7e == "hello world") {

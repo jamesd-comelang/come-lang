@@ -6,7 +6,11 @@
 # arena concats and NO talloc concat); ctl.co is controls
 # only (generated C must have talloc concats and NO arena
 # concat). A positive that fails to register, or a control
-# that wrongly registers, breaks its pin.
+# that wrongly registers, breaks its pin. Note: the
+# straight-line ctl once held a loop-body control (c4)
+# and a printf control (c6); step 4a made both
+# transient, so they moved to transient_loop (positives
+# there) and are no longer controls here.
 set -u
 cd "$(dirname "$0")/.."
 REPO=$(pwd)

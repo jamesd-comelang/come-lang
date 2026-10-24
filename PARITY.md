@@ -16,9 +16,11 @@ merged, or reverted independently later. Branch:
   counted for (DONE, see below).
 - Step 3: runtime intrinsics + whole-program TU
   (DONE, see below).
-- Step 4: Design 1+2 remainder (loop-body locals,
-  multi-assignment fixpoint, array/map promotion)
-  then Design 5 frame tiers.
+- Step 4: Design 1+2 remainder, then Design 5
+  frame tiers. Sliced like step 3: 4a (loop-body
+  locals + printf borrows, DONE, see below) first,
+  then 4b (multi-assignment + first-assignment),
+  4c (array/map promotion), 4d (frame tiers).
 - HELD OUT (needs an explicit call, not covered by
   "do them"): an explicit unchecked/unsafe region.
   It is the only design that guarantees 1x, and it
@@ -56,6 +58,48 @@ inlined at default flags) plus the guard's
 what step 3 (intrinsics) targets; step 1 still pays
 where checks dominate (and it removes a check per
 byte that no longer needs proving).
+
+## Step 4a DONE (2026-10-24): transient loop-body locals + std printf borrows
+
+transient.c no longer excludes loop declarations:
+a local DECLARED inside a loop body is a candidate
+(its frame pops per iteration, freeing its arena
+string, and each iteration re-declares it fresh).
+An OUTER local assigned inside a loop stays talloc,
+but that falls out of the never-reassigned rule
+(the assignment is a disqualifying use), not out of
+a loop exclusion -- so the old loop gate was pure
+conservatism, and removing it is sound (plus the
+adoption net promotes any arena value that does
+escape, so a miss degrades to a copy, never to
+corruption). Std printf arguments (out/err/std.
+printf, any argument position) are whitelisted
+borrows: printf only reads its arguments. The
+receiver check is text-only, like codegen's own
+printf branch -- std.out parses as a field node,
+not an identifier, so a type check missed it (found
+by the first failing run, fixed same turn). A
+user-defined printf on another receiver is NOT
+whitelisted (still a disqualifying call arg).
+Test: `tests/transient_loop_project/` +
+`tests/run_transient_loop_test.sh` (while/for loop
+locals, printf, loop+printf positives with arena
+pins; outer-reassign and general-call-arg controls
+with talloc pins; ASan). The old straight-line
+ctl lost two controls to this step (its loop-body
+c4 and printf c6 are now transient by design);
+they moved to transient_loop as positives, and the
+old ctl + expected output were updated accordingly
+(including c6's printf(r6) "hello world" line).
+Suites green from clean (Come exit 0, "all green";
+co_SQLite 7/7). Micro (1M loop iterations, one
+string local per iteration, == borrow): old
+compiler (talloc per iteration) ~139 ms, step 4a
+(arena per iteration) ~114 ms, 1.22x -- modest,
+because the loop body is not alloc-dominated.
+Tokenizer bench: ~0.62 s, essentially unchanged
+(as predicted -- its hot path is byte reads, not
+loop string locals).
 
 ## Step 3 DONE (TU part, 2026-10-24): opt-in `come build --lto` (user-code-only LTO)
 
@@ -242,8 +286,14 @@ per byte; report it, do not assume it).
 
 ## Remaining (in order)
 
-- Step 4: Design 1+2 remainder, then Design 5
-  frame tiers.
+- Step 4b: Design 1+2 remainder, part 2 --
+  multi-assignment fixpoint + first-assignment
+  locals.
+- Step 4c: Design 1+2 remainder, part 3 --
+  array/map promotion (escape-aware; header AND
+  arena elements must promote together).
+- Step 4d: Design 5 frame tiers (checkpoint /
+  full), unblocked by 4a-4c.
 - HELD: explicit unchecked region (needs his call).
 - Future (not in the current step list): general
   interval analysis -- arbitrary index arithmetic,
