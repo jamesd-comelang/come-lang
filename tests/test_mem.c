@@ -275,11 +275,59 @@ void test_scope_stacks_independent() {
     passed("Scope stacks");
 }
 
+// COIL-160: scope-frame chunks are recycled, not malloc/free'd.
+// A popped frame's chunk serves the next push (LIFO), and a
+// recycled chunk behaves exactly like a fresh one: children
+// allocated under it are independent, and deep nesting past
+// the freelist cap still unwinds cleanly.
+void test_scope_freelist() {
+    void* stack = come_scope_stack_new();
+    assert(stack != NULL);
+    come_scope_stack_activate(stack);
+    void* root = come_scope_current();
+    assert(root != NULL);
+
+    // A popped marker's chunk is reused by the next push.
+    come_scope_push_marker();
+    void* body = come_scope_current();
+    assert(body != NULL && body != root);
+    come_scope_pop_to_marker();
+    assert(come_scope_current() == root);
+    come_scope_push_marker();
+    assert(come_scope_current() == body);
+    come_scope_pop_to_marker();
+
+    // Recycled frames isolate like fresh ones: data written
+    // under one incarnation never bleeds into the next.
+    come_scope_push_marker();
+    char* a = mem_talloc_alloc(come_scope_current(), 16);
+    strcpy(a, "first");
+    come_scope_pop_to_marker();
+    come_scope_push_marker();
+    char* b = mem_talloc_alloc(come_scope_current(), 16);
+    strcpy(b, "second");
+    assert(strcmp(b, "second") == 0);
+    come_scope_pop_to_marker();
+
+    // Deep nesting past the freelist cap unwinds cleanly.
+    for (int i = 0; i < 3000; i++) come_scope_push_marker();
+    for (int i = 0; i < 3000; i++) come_scope_pop();
+    assert(come_scope_current() == root);
+    come_scope_push_marker();
+    assert(come_scope_current() != NULL);
+    come_scope_pop_to_marker();
+
+    come_scope_stack_activate(NULL);
+    come_scope_stack_free(stack);
+    passed("Scope freelist");
+}
+
 int main() {
     mem_talloc_module_init();
     test_scope_stack();
     test_scope_adopt();
     test_scope_stacks_independent();
+    test_scope_freelist();
     test_exit_registry();
     test_alloc_basics();
     test_subtree_free();

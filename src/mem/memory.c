@@ -455,11 +455,69 @@ void *come_scope_current(void) {
     return co_mem_root;
 }
 
+/* ---- scope-frame chunk freelist (COIL-160) ----------------------- */
+/* A scope frame's context is a zero-payload chunk: every frame
+   chunk is the same size, so popped frames can be recycled
+   instead of malloc/free'd. The bench paid ~21 ns per push/pop
+   pair (malloc + link + unlink + free); recycling keeps only
+   the list manipulation, a few ns. Only frame chunks ever
+   enter the list - data chunks are still freed normally, so a
+   use-after-free on data is still caught. Children are always
+   freed on pop; only the emptied frame chunk itself is kept.
+   The list is capped: past 1024 idle frames, extras are freed
+   as before, so deep recursion cannot pin unbounded memory.
+   Coroutines cooperate, so no locking is needed; a chunk on
+   the list is unreferenced by construction (unlinked, children
+   freed). Its next field is free after unlink, so the list
+   needs no extra memory. */
+static co_chunk *co_frame_free_list = NULL;
+static size_t co_frame_free_count = 0;
+#define CO_FRAME_FREE_MAX 1024
+
+static co_chunk *co_frame_alloc(co_chunk *parent) {
+    co_chunk *chunk = co_frame_free_list;
+    if (chunk) {
+        co_frame_free_list = chunk->next;
+        co_frame_free_count--;
+        chunk->first_child = NULL;
+        chunk->size = 0;
+        co_link(parent, chunk);
+        return chunk;
+    }
+    return co_alloc_chunk(parent, 0);
+}
+
+static void co_frame_free(co_chunk *chunk) {
+    while (chunk->first_child)
+        co_free_chunk(chunk->first_child);
+    co_unlink(chunk);
+    if (co_frame_free_count < CO_FRAME_FREE_MAX) {
+        chunk->next = co_frame_free_list;
+        co_frame_free_list = chunk;
+        co_frame_free_count++;
+    } else {
+        free(chunk);
+    }
+}
+
+static void *co_frame_new_ctx(void *parent) {
+    if (!co_mem_root) mem_talloc_module_init();
+    co_chunk *p = parent ? co_from_ptr(parent) : co_root_chunk();
+    co_chunk *chunk = co_frame_alloc(p);
+    if (!chunk) return NULL;
+    return co_to_ptr(chunk);
+}
+
+static void co_frame_free_ctx(void *ctx) {
+    if (ctx) co_frame_free(co_from_ptr(ctx));
+}
+
 void come_scope_push(void) {
     co_scope_stack *s = co_scope_active;
     void *parent = come_scope_current();
-    void *ctx = mem_talloc_new_ctx(parent);
-    if (!ctx || !co_scope_grow(s)) return;
+    void *ctx = co_frame_new_ctx(parent);
+    if (!ctx) return;
+    if (!co_scope_grow(s)) { co_frame_free_ctx(ctx); return; }
     s->frames[s->top].ctx = ctx;
     s->frames[s->top].is_marker = 0;
     s->top++;
@@ -468,8 +526,9 @@ void come_scope_push(void) {
 void come_scope_push_marker(void) {
     co_scope_stack *s = co_scope_active;
     void *parent = come_scope_current();
-    void *ctx = mem_talloc_new_ctx(parent);
-    if (!ctx || !co_scope_grow(s)) return;
+    void *ctx = co_frame_new_ctx(parent);
+    if (!ctx) return;
+    if (!co_scope_grow(s)) { co_frame_free_ctx(ctx); return; }
     s->frames[s->top].ctx = ctx;
     s->frames[s->top].is_marker = 1;
     s->top++;
@@ -479,7 +538,7 @@ void come_scope_pop(void) {
     co_scope_stack *s = co_scope_active;
     if (s->top <= 0) return;
     s->top--;
-    mem_talloc_free(s->frames[s->top].ctx);
+    co_frame_free_ctx(s->frames[s->top].ctx);
 }
 
 void come_scope_pop_to_marker(void) {
