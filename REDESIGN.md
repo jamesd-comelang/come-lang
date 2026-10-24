@@ -551,6 +551,90 @@ an opt-in ~33% win at no measured default cost.
 Suites green from clean with the -flto runtime
 (Come 67/67, co_SQLite 7/7).
 
+## Design 2 remainder - general transient-value arenas (DESIGN 2026-10-24, not implemented)
+
+Phase 1 covers temporary string concats only (the
+storing-position flag routes temporaries to the
+bump arena, storing positions to talloc). Named
+locals, arrays/maps, and non-concat values still
+use talloc. This is the design the implementation
+turn starts from; it is deliberately not code yet,
+because the soundness questions below decide
+whether a value may be arena at all, and a wrong
+answer there is a dangling pointer, not a slowdown.
+
+A buffer-typed local is transient when it never
+escapes its scope: not returned, not stored in a
+module variable, instance field, or container,
+not passed to an escaping callee parameter, not
+captured by spawn/yield, not flowed (via plain =
+or dup(0)) into an escaping local. Same escape
+rules as Design 1 params, extended to locals,
+OR-ed over all uses: reassignment means if ANY
+use escapes, the local escapes. Unknown callees
+and unanalyzed constructs default to escaping.
+
+dup(0) aliasing (COIL-135: dup(0) shares the
+block, dup() deep-copies, assignment shares and
+forks on growth): an alias edge runs both ways.
+If any alias of a value escapes, the value must
+be owning (talloc), not arena - freeing an arena
+block while an alias still lives dangles the
+alias. V1 rule: a transient local with an
+escaping dup(0) alias is treated as escaping
+(stays talloc). Promotion-at-escape for dup(0)
+aliases is v2, not v1.
+
+Loop accumulation, the sharp edge: arena values
+live until their scope frame pops. A transient
+local declared in a loop body is freed per
+iteration (frames pop per iteration - good). A
+transient local declared OUTSIDE a loop but
+assigned inside accumulates one arena value per
+iteration until the outer scope pops -
+catastrophic for hot loops at tokenizer scale.
+V1 rule: outer locals assigned inside a loop
+stay talloc (conservative exclusion). This
+costs little for the tokenizer (its hot temps
+are loop-body locals or phase-1 temporaries),
+but that must be measured, not assumed.
+
+V1 scope is string locals only, extending phase
+1s string handling: transient string locals
+allocate via the bump arena, and the existing
+adoption net (arena -> talloc promotion on
+adopt/store/return) extends to locals, so a
+missed classification degrades to a copy, never
+to corruption. Array/map buffer promotion is v2:
+a container that escapes must promote its header
+AND any arena elements, or the elements dangle,
+and that header/element split needs its own
+design.
+
+Soundness invariants (non-negotiable for the
+implementation): (1) no arena value is ever
+adopted/re-parented - adoption promotes to
+talloc; (2) no arena value outlives its scope
+frame - transient = never escapes + frame-pop
+frees arena; (3) dup(0): any escaping alias
+makes the value owning; (4) the loop rule
+above; (5) any analysis uncertainty defaults to
+escaping (talloc), never to arena.
+
+Verification plan for the implementation turn:
+fixture with transient-local cases (straight-
+line, loop-body, outer-loop exclusion pinned via
+generated C as no arena alloc for that local,
+dup(0) non-escape vs escape, return-escape
+promotion, assignment chains), ASan, full suites,
+bench. Expect the tokenizer to move little (its
+temps are already covered) - measure with a
+named-transient-local micro-benchmark, not just
+the tokenizer. Design 5 checkpoint/full tiers
+still wait on this (they need arena values to
+skip); the frame-checkpoint mechanism already
+exists from phase 1.
+
 ## Remaining (in order)
 
 - Design 2 (remainder): general transient-value
