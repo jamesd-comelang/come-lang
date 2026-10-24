@@ -403,14 +403,63 @@ handling (below). Bare literals holding arena or
 view elements: the map-put net covers map puts;
 array-literal element adoption is untested.
 
+## Design 3 follow-up (DONE 2026-10-24)
+
+Count-bounded audit of the NUL-scanning string
+functions, so operations on non-suffix views stay
+within the view instead of reading into the
+parent (which gave parent-suffix answers: find
+found substrings past the view, rchr returned
+parent offsets, count counted parent occurrences,
+substr ran past the view, regex matched to the
+parent's end, tol parsed parent digits).
+
+Fixed in src/string/string.c (receiver side):
+chr (memchr), rchr (backward scan), find and
+count (shared bounded memcmp search), isascii
+(count loop), substr / at / wchar_at (char walks
+bounded by the byte count), replace and split
+(bounded search, bounded segments; the empty-
+pattern no-op copies are bounded too), and the
+regex family plus tol/tod (copy-then-scan: a
+NUL-terminated copy of exactly the receiver's
+bytes, owned by the current scope so loop
+iterations don't accumulate it, then the existing
+NUL-based logic runs on the copy - match offsets
+relative to it match offsets within the view).
+Already bounded, no change: memchr, rfind,
+isdigit/isalpha/isalnum/isspace, upper/lower,
+repeat, join, dup, trim/ltrim/rtrim (receiver
+side), byte_array, utf8.
+
+Test: tests/run_view_ops_test.sh +
+tests/view_ops_project/ (17 checks, all on view
+temporaries - storing a view would promote it to
+a copy and miss the bug - plus owned-string
+regression controls), and a C-level pin in
+tests/test_string.c for view indexing (Come []
+needs a named variable, so a view temporary
+cannot be indexed in Come at all). ASan-clean;
+suites green from clean, 0 warnings; co_SQLite
+7/7, bench unchanged (~0.68 s).
+
+Known limit, stated plainly: pattern arguments
+(sub/sep/old/new/cutset/pattern) are bare C
+strings (->data), so a VIEW passed as a pattern
+over-reads into its parent (memory-safe, wrong
+pattern). Fixing that needs bounded (data, len)
+pattern arguments (a codegen + runtime signature
+change) - a follow-up story, not done here. The
+common case (view receivers, literal or owned
+patterns) is now correct.
+
 ## Remaining (in order)
 
 - Design 2 (remainder): general transient-value
   arenas (value-level escape analysis, dup(0)
   aliasing, promotion for arrays/maps).
-- Design 3 follow-up: count-bounded audit of the
-  remaining NUL-scanning string functions (find,
-  split, chr, regex, numeric parse).
+- Design 3 follow-up (remainder): bounded pattern
+  arguments for string methods (see above).
 - Design 5 (remainder): checkpoint / full-frame
   tiers driven by escape analysis. Needs general
   arenas (the frame-checkpoint mechanism now

@@ -1,0 +1,17 @@
+ok find
+ok chr
+ok rchr
+ok count
+ok substr
+ok replace
+ok split
+ok regex
+ok regex_split
+ok regex_groups
+ok regex_replace
+ok tol
+ok isascii
+ok utf8 substr
+ok owned find
+ok owned count
+ok owned replace

@@ -253,6 +253,42 @@ void test_coil117() {
     printf("\033[1;38;2;255;255;255;48;2;0;150;0mCOIL-117 string toolbox (C) tests passed\033[0m\n");
 }
 
+void test_view_ops() {
+    // Design 3 follow-up (redesign): operations on a
+    // non-suffix view stay within the view; the old
+    // NUL-based implementations read into the parent.
+    // Indexing a view temporary is not expressible in
+    // Come ([] needs a named variable), so the index
+    // cases are pinned here at the C level.
+    TALLOC_CTX* ctx = mem_talloc_new_ctx(NULL);
+    come_string_t s = come_string_new(ctx, "hello world");
+    come_string_t v = come_string_view(s, 0, 5); // "hello"
+    assert(come_string_find(v, "world") == -1);
+    assert(come_string_chr(v, 'w') == -1);
+    assert(come_string_rchr(v, 'o') == 4);
+    assert(come_string_count(v, "l") == 2);
+    come_string_t sub = come_string_substr(v, 0, 10);
+    assert(sub.count == 5 && memcmp(sub.data, "hello", 5) == 0);
+    assert(come_string_wchar_at_e(v, 10) == 0);
+    come_string_t ch = come_string_at(v, 10);
+    assert(ch.count == 0);
+    come_string_t rep = come_string_replace(v, "l", "L", 0);
+    assert(rep.count == 5 && memcmp(rep.data, "heLLo", 5) == 0);
+    come_string_list_t parts = come_string_split(v, "l");
+    assert(parts.count == 3);
+    assert(come_string_regex(v, "hello$") != 0);
+    come_string_list_t groups = come_string_regex_groups(v, "(o.*)");
+    assert(groups.count >= 1);
+    come_string_t* items = (come_string_t*)groups.data;
+    assert(items[0].count == 1 && items[0].data[0] == 'o');
+    come_string_t num = come_string_new(ctx, "1234");
+    come_string_t nv = come_string_view(num, 0, 2);
+    assert(come_string_tol(nv) == 12);
+    mem_talloc_free(ctx);
+    printf("\033[1;38;2;255;255;255;48;2;0;150;0mView-ops tests passed\033[0m\n");
+}
+
+
 int main() {
     test_basic();
     test_search();
@@ -263,5 +299,6 @@ int main() {
     test_regex();
     test_wchar_at();
     test_coil117();
+    test_view_ops();
     return 0;
 }

@@ -1,0 +1,97 @@
+module main
+import std
+
+int main() {
+    string s = "hello world"
+    string w = "héllo world"
+    string num = "1234"
+    if (s.view(0, 5).find("world") == -1) {
+        std.out.printf("ok find\n")
+    } else {
+        std.out.printf("FAIL find\n")
+    }
+    if (s.view(0, 5).chr(119) == -1) {
+        std.out.printf("ok chr\n")
+    } else {
+        std.out.printf("FAIL chr\n")
+    }
+    if (s.view(0, 5).rchr(111) == 4) {
+        std.out.printf("ok rchr\n")
+    } else {
+        std.out.printf("FAIL rchr\n")
+    }
+    if (s.view(0, 5).count("l") == 2) {
+        std.out.printf("ok count\n")
+    } else {
+        std.out.printf("FAIL count\n")
+    }
+    if (s.view(0, 5).substr(0, 10) == "hello") {
+        std.out.printf("ok substr\n")
+    } else {
+        std.out.printf("FAIL substr\n")
+    }
+    if (s.view(0, 5).replace("l", "L") == "heLLo") {
+        std.out.printf("ok replace\n")
+    } else {
+        std.out.printf("FAIL replace\n")
+    }
+    string[] parts = s.view(0, 5).split("l")
+    if (parts.length() == 3 && parts[0] == "he" && parts[2] == "o") {
+        std.out.printf("ok split\n")
+    } else {
+        std.out.printf("FAIL split\n")
+    }
+    if (s.view(0, 5).regex("hello$")) {
+        std.out.printf("ok regex\n")
+    } else {
+        std.out.printf("FAIL regex\n")
+    }
+    string[] rparts = s.view(0, 5).regex_split("l")
+    if (rparts.length() == 3 && rparts[0] == "he" && rparts[2] == "o") {
+        std.out.printf("ok regex_split\n")
+    } else {
+        std.out.printf("FAIL regex_split\n")
+    }
+    string[] groups = s.view(0, 5).regex_groups("(o.*)")
+    if (groups.length() >= 1 && groups[0] == "o") {
+        std.out.printf("ok regex_groups\n")
+    } else {
+        std.out.printf("FAIL regex_groups\n")
+    }
+    if (s.view(0, 5).regex_replace("l", "L", 0) == "heLLo") {
+        std.out.printf("ok regex_replace\n")
+    } else {
+        std.out.printf("FAIL regex_replace\n")
+    }
+    if (num.view(0, 2).tol() == 12) {
+        std.out.printf("ok tol\n")
+    } else {
+        std.out.printf("FAIL tol\n")
+    }
+    if (w.view(0, 1).isascii()) {
+        std.out.printf("ok isascii\n")
+    } else {
+        std.out.printf("FAIL isascii\n")
+    }
+    if (w.view(0, 5).substr(0, 10) == "héllo") {
+        std.out.printf("ok utf8 substr\n")
+    } else {
+        std.out.printf("FAIL utf8 substr\n")
+    }
+    if (s.find("world") == 6) {
+        std.out.printf("ok owned find\n")
+    } else {
+        std.out.printf("FAIL owned find\n")
+    }
+    if (s.count("l") == 3) {
+        std.out.printf("ok owned count\n")
+    } else {
+        std.out.printf("FAIL owned count\n")
+    }
+    if (s.replace("l", "L") == "heLLo worLd") {
+        std.out.printf("ok owned replace\n")
+    } else {
+        std.out.printf("FAIL owned replace\n")
+    }
+    return 0
+}
