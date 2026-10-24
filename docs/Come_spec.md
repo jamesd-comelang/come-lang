@@ -250,6 +250,18 @@ Rules:
 Design pattern: because `module_init()` is automatic, use it to establish a
 **known safe state** and defer heavy resource allocation to explicit calls.
 
+Module-level variables may have any type, including `map{K, V}` (COIL-142).
+A variable of a header type — `string`, an array, a map — starts as a live
+empty value (an empty map reads as absent, an empty array has length 0), so
+a lookup table is declared bare at module level and filled once in
+`module_init()`/`init()`, then read by every function; it is never rebuilt
+per call. In a singleton module (one that defines `main()`, §3.6) such a
+variable is declared bare: an initializer is a compile error, because the
+value is built by the runtime and cannot be constructed before the
+module's context exists — assign it in `module_init()` or `main()` instead.
+In an instance module the variables are instance fields and keep their
+initializers (§3.6).
+
 ## 3.6 Two ways to use a module: namespace and instances
 
 A module can be used in two ways (COIL-140):

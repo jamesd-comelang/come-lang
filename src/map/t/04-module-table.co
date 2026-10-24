@@ -1,0 +1,43 @@
+// COIL-142: a map declared at module level is a build-once
+// table. The declaration parses at top level (the parser used
+// to die on the map type's '{'), the global is a bare header
+// (a zeroed header is a live empty map), init() fills it
+// once, and every function reads the same table - the shape
+// a keyword lookup needs, instead of rebuilding a 147-entry
+// map inside the lookup function on every call.
+module main
+import std
+
+map{string, int} codes
+map{string, string} names
+string greeting
+int[] seed_copy
+
+void init() {
+    codes["SELECT"] = 139
+    codes["FROM"] = 141
+    names["kw"] = "keyword"
+}
+
+int lookup(string word) {
+    return codes[word]
+}
+
+int main() {
+    if (lookup("SELECT") != 139 || lookup("FROM") != 141) { std.out.printf("FAIL init fill\n"); return 1 }
+    if (lookup("WHERE") != 0) { std.out.printf("FAIL absent\n"); return 1 }
+    if (codes.length() != 2) { std.out.printf("FAIL length %d\n", codes.length()); return 1 }
+    if (names["kw"] != "keyword" || names["absent"] != "") { std.out.printf("FAIL string values\n"); return 1 }
+    std.out.printf("%s\n", names["kw"])
+    codes["WHERE"] = 150
+    if (lookup("WHERE") != 150 || codes.length() != 3) { std.out.printf("FAIL write after init\n"); return 1 }
+    // The same bare-global treatment covers the other header
+    // types in a singleton module (they used to emit runtime
+    // calls as C file-scope initializers and fail in C).
+    greeting = "hi"
+    int[] seed = {7, 8, 9}
+    seed_copy = seed
+    if (greeting != "hi" || seed_copy[1] != 8) { std.out.printf("FAIL header globals\n"); return 1 }
+    std.out.printf("PASS: 04-module-table\n")
+    return 0
+}

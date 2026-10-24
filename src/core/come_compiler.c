@@ -178,7 +178,18 @@ static int file_is_system_module(const char *abs_path) {
     dirname(root); // the compiler tree root
     char prefix[PATH_MAX];
     snprintf(prefix, sizeof(prefix), "%s/src/", root);
-    if (strncmp(abs_path, prefix, strlen(prefix)) == 0) return 1;
+    if (strncmp(abs_path, prefix, strlen(prefix)) == 0) {
+        // A test program under a system module's t/ directory
+        // is a user program that exercises the module, not
+        // part of the module's implementation: it gets the
+        // full user-module treatment (analysis, registry).
+        // Classifying it as system skipped analyze_module,
+        // so module-level state in such a test silently
+        // compiled without the registry (COIL-142).
+        const char *rest = abs_path + strlen(prefix);
+        if (strstr(rest, "/t/") != NULL) return 0;
+        return 1;
+    }
     snprintf(prefix, sizeof(prefix), "%s/lib/modules/", root);
     if (strncmp(abs_path, prefix, strlen(prefix)) == 0) return 1;
     return 0;

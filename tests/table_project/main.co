@@ -1,0 +1,13 @@
+module main
+import std
+import kwlib
+
+int main() {
+    var kw = kwlib.create()
+    std.out.printf("%d %d %d %d\n", kw.code("SELECT"), kw.code("FROM"), kw.code("HAVING"), kw.size())
+    var kw2 = kwlib.create()
+    std.out.printf("%d %d\n", kw2.code("WHERE"), kw2.size())
+    kw.destroy()
+    kw2.destroy()
+    return 0
+}

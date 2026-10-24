@@ -342,6 +342,16 @@ int answer() {          // plain functions are exported
   literals are not fully usable cross-module yet; pass
   structs by value/reference between modules instead of
   constructing foreign literals.
+- **Module-level tables.** Any type may be declared at
+  module level, including `map{string, int}`. Header-typed
+  module variables (string, arrays, maps) start as live
+  empty values: declare the table bare, fill it once in
+  `init()`, and read it in functions - never rebuild a
+  lookup map inside the function that reads it. In the
+  module that defines `main()` such a variable takes NO
+  initializer (compile error); assign it in `init()` or
+  `main()`. In an instance module it is an instance field
+  and may keep an initializer.
 - **Instances.** A module with module-level variables has
   state. A function that uses a module variable (or calls
   one that does) is *stateful* and can ONLY be called on

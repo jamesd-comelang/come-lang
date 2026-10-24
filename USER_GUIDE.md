@@ -624,6 +624,32 @@ void exit() {
 }
 ```
 
+**Build-once tables.** A module-level variable may be a map,
+which makes the classic lookup table a one-liner to declare
+and a fill-once in `init()`:
+
+```come
+module kwlib
+
+map{string, int} codes
+
+void init() {
+    codes["SELECT"] = 139
+    codes["FROM"] = 141
+}
+
+int code(string word) {
+    return codes[word]    // built once, read per call
+}
+```
+
+Header-typed module variables (`string`, arrays, maps) start
+as live empty values. In the program's own module (the one
+with `main`) declare them bare — an initializer there is a
+compile error; assign in `init()` or `main()` instead. In an
+instance module they are instance fields (§12 below) and
+keep their initializers.
+
 A typical small project:
 
 ```

@@ -1,0 +1,12 @@
+module main
+import std
+
+// A module-level map in a singleton module cannot take an
+// initializer: the value is built by the runtime, which
+// cannot run at C file scope (COIL-142).
+map{string, int} codes = {"A": 1}
+
+int main() {
+    std.out.printf("%d\n", codes["A"])
+    return 0
+}

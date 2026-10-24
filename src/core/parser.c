@@ -2076,6 +2076,13 @@ static void parse_top_level_decl(ASTNode* program) {
          } else {
              strcpy(type_name, t->text);
              advance();
+             // Map type: map{K, V} (COIL-142) - the top-level
+             // path missed the braces parse_var_decl has had
+             // since COIL-102, so a module-level map variable
+             // died on the '{' as an unknown top-level token.
+             if (strcmp(type_name, "map") == 0 && current()->type == TOKEN_LBRACE) {
+                 parse_map_braces_text(type_name, sizeof(type_name));
+             }
              // Check array [] in type? "int[] x" or "int[16] x"
              if (match(TOKEN_LBRACKET)) {
                  while(current()->type!=TOKEN_RBRACKET && current()->type!=TOKEN_EOF) advance();

@@ -914,6 +914,42 @@ static const char* dispatch_type_of(const char* name) {
     return t;
 }
 
+// Header-typed values (COIL-135) carry a context pointer and
+// are built by runtime calls - come_map_new, COME_HDR_INIT,
+// come_string_new - so a variable of one of these types
+// cannot take an initializer at C file scope, where
+// initializers must be constant (COIL-142).
+static int is_header_type(const char* t) {
+    if (!t) return 0;
+    return strncmp(t, "map{", 4) == 0 || strcmp(t, "map") == 0 ||
+           strcmp(t, "string") == 0 || strchr(t, '[') != NULL;
+}
+
+// The C type of a header-typed variable's bare file-scope
+// declaration, mirroring the declaration branches below:
+// a zeroed header is a live empty value (the map runtime
+// grows lazily from a NULL data block, arrays likewise),
+// so the bare global needs no file-scope initializer.
+static void header_c_type(const char* t, char* out, size_t n) {
+    if (strncmp(t, "map{", 4) == 0 || strcmp(t, "map") == 0) {
+        snprintf(out, n, "come_map_t");
+    } else if (strcmp(t, "string") == 0) {
+        snprintf(out, n, "come_string_t");
+    } else if (strcmp(t, "string[]") == 0) {
+        snprintf(out, n, "come_string_list_t");
+    } else {
+        char raw[64];
+        const char* lb = strchr(t, '[');
+        size_t rl = lb ? (size_t)(lb - t) : strlen(t);
+        if (rl >= sizeof(raw)) rl = sizeof(raw) - 1;
+        memcpy(raw, t, rl);
+        raw[rl] = 0;
+        if (strcmp(raw, "int") == 0 || strcmp(raw, "var") == 0) snprintf(out, n, "come_int_array_t");
+        else if (strcmp(raw, "byte") == 0) snprintf(out, n, "come_byte_array_t");
+        else snprintf(out, n, "come_array_%s_t", raw);
+    }
+}
+
 const char* codegen_module_fn_ret(const char* module, const char* fn) {
     ModuleState* ms = module_state_of(module);
     if (!ms) return NULL;
@@ -1243,17 +1279,17 @@ static void check_assign_store(ASTNode* assign) {
     // error - s[i] is a character value, not a memory slot.
     if (lhs->type == AST_ARRAY_ACCESS && lhs->child_count >= 1 &&
         lhs->children[0]->type == AST_IDENTIFIER) {
-        const char* bt = get_local_variable_type(lhs->children[0]->text);
+        const char* bt = dispatch_type_of(lhs->children[0]->text);
         if (bt && strcmp(bt, "string") == 0)
             codegen_error("strings are immutable: '%s[i] = ...' is not allowed (spec 6.5) - build a new string instead",
                           lhs->children[0]->text);
     }
     if (lhs->type == AST_IDENTIFIER) {
-        const char* lt = get_local_variable_type(lhs->text);
+        const char* lt = dispatch_type_of(lhs->text);
         if (lt) check_numeric_store(lt, rhs, lhs->text);
     } else if (lhs->type == AST_ARRAY_ACCESS && lhs->child_count >= 1 &&
                lhs->children[0]->type == AST_IDENTIFIER) {
-        const char* bt = get_local_variable_type(lhs->children[0]->text);
+        const char* bt = dispatch_type_of(lhs->children[0]->text);
         if (bt) {
             char elem[64];
             snprintf(elem, sizeof(elem), "%s", bt);
@@ -1683,14 +1719,30 @@ static void emit_cstr_string_method(FILE* f, ASTNode* node, const char* method) 
     fprintf(f, ")");
 }
 
+// Emit the map operand of a store as an address: through the
+// base expression when one is given (a module variable in an
+// instance-form body is (__inst->x), not a C global of that
+// name), else the plain variable name (COIL-142).
+static void emit_map_base_ref(FILE* f, ASTNode* base, const char* name) {
+    if (base) {
+        fprintf(f, "&(");
+        generate_expression(f, base);
+        fprintf(f, ")");
+    } else {
+        fprintf(f, "&%s", name);
+    }
+}
+
 // Emit one map store statement (ends with a newline). Int values are
 // boxed in a cell owned by the current context; string values are
 // stored as the string object itself.
-static void emit_map_put(FILE* f, const char* map_var, const char* vtype, ASTNode* key_expr, ASTNode* val_expr) {
+static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char* vtype, ASTNode* key_expr, ASTNode* val_expr) {
     if (strcmp(vtype, "int") == 0) {
         fprintf(f, "{ int* _vp = (int*)mem_talloc_alloc(COME_CTX, sizeof(int)); *_vp = (");
         generate_expression(f, val_expr);
-        fprintf(f, "); come_map_put(&%s, ", map_var);
+        fprintf(f, "); come_map_put(");
+        emit_map_base_ref(f, base, map_var);
+        fprintf(f, ", ");
         emit_string_expr(f, key_expr);
         fprintf(f, ", _vp); }\n");
     } else if (strcmp(vtype, "string") == 0) {
@@ -1698,11 +1750,15 @@ static void emit_map_put(FILE* f, const char* map_var, const char* vtype, ASTNod
         // stored value is a header value, not a pointer.
         fprintf(f, "{ come_string_t* _vp = (come_string_t*)mem_talloc_alloc(COME_CTX, sizeof(come_string_t)); *_vp = (");
         emit_string_expr(f, val_expr);
-        fprintf(f, "); come_map_put(&%s, ", map_var);
+        fprintf(f, "); come_map_put(");
+        emit_map_base_ref(f, base, map_var);
+        fprintf(f, ", ");
         emit_string_expr(f, key_expr);
         fprintf(f, ", _vp); }\n");
     } else {
-        fprintf(f, "come_map_put(&%s, ", map_var);
+        fprintf(f, "come_map_put(");
+        emit_map_base_ref(f, base, map_var);
+        fprintf(f, ", ");
         emit_string_expr(f, key_expr);
         fprintf(f, ", ");
         emit_string_expr(f, val_expr);
@@ -1980,7 +2036,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
     } else if (node->type == AST_ARRAY_ACCESS) {
         ASTNode* base = node->children[0];
         char mkt[160], mvt[160];
-        const char* bt = (base->type == AST_IDENTIFIER) ? get_local_variable_type(base->text) : NULL;
+        const char* bt = (base->type == AST_IDENTIFIER) ? dispatch_type_of(base->text) : NULL;
         // Indexing a scalar used to generate garbage C with
         // pointer-cast warnings (COIL-129).
         if (bt && (num_info(bt) || strcmp(bt, "bool") == 0)) {
@@ -2001,7 +2057,9 @@ static void generate_expression(FILE* f, ASTNode* node) {
             // when the key is absent.
             if (!map_combo_supported(mkt, mvt)) map_combo_error(mkt, mvt);
             check_map_expr_type(mkt, node->children[1], "key");
-            fprintf(f, "({ void* _p = come_map_get_e(%s, ", base->text);
+            fprintf(f, "({ void* _p = come_map_get_e(");
+            generate_expression(f, base);
+            fprintf(f, ", ");
             emit_string_expr(f, node->children[1]);
             if (strcmp(mvt, "int") == 0) {
                 fprintf(f, "); _p ? *(int*)_p : 0; })");
@@ -2516,7 +2574,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                            // arrays and strings alike (COIL-103/116/119)
                            if (strcmp(name, "type") == 0 && arg->child_count > 0 &&
                                arg->children[0]->type == AST_IDENTIFIER) {
-                               const char* rt = get_local_variable_type(arg->children[0]->text);
+                               const char* rt = dispatch_type_of(arg->children[0]->text);
                                if (rt && (strncmp(rt, "map{", 4) == 0 || strchr(rt, '[') != NULL ||
                                           strcmp(rt, "string") == 0)) {
                                    is_str = 1;
@@ -2545,7 +2603,7 @@ static void generate_expression(FILE* f, ASTNode* node) {
                          // hardcoded name list stays as a fallback.
                          ASTNode* arr = arg->children[0];
                          if (arr->type == AST_IDENTIFIER) {
-                              const char* at = get_local_variable_type(arr->text);
+                              const char* at = dispatch_type_of(arr->text);
                               char mkt[160], mvt[160];
                               if (at && strcmp(at, "string[]") == 0) {
                                   is_str = 1;
@@ -3995,6 +4053,35 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             break;
         }
 
+        // COIL-142: in a singleton module, a module-level
+        // header-typed variable (string, array, map) emits
+        // the bare global only. Its usual declaration
+        // initializer calls the runtime, which C forbids at
+        // file scope ("initializer element is not
+        // constant"); a zeroed header is a live empty value,
+        // so the variable is ready to fill in init() or any
+        // function. A written initializer gets a clear error
+        // here instead of the broken C.
+        if (g_module_level && !cur_module_has_state() &&
+            codegen_module_var_index(current_module, node->text, NULL) >= 0) {
+            const char* et = type_node->text;
+            if (strcmp(et, "var") == 0) {
+                const char* lt = get_local_variable_type(node->text);
+                if (lt) et = lt;
+            }
+            if (is_header_type(et)) {
+                if (init_expr && !(init_expr->type == AST_NUMBER &&
+                                    strcmp(init_expr->text, "0") == 0)) {
+                    codegen_error("module-level %s '%s' cannot have an initializer in a singleton module: its value is built by the runtime, which cannot run at file scope - declare it bare and assign it in init() or main()", et, node->text);
+                }
+                char ct[160];
+                header_c_type(et, ct, sizeof(ct));
+                emit_indent(f, indent);
+                fprintf(f, "%s %s;\n", ct, node->text);
+                break;
+            }
+        }
+
         // COIL-140: a module instance variable - declared
         // with the module's name as its type, or inferred
         // from a create() call. The C value is the instance
@@ -4131,7 +4218,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                             check_map_expr_type(mkt, pair->children[0], "key");
                             check_map_expr_type(mvt, pair->children[1], "value");
                             emit_indent(f, indent);
-                            emit_map_put(f, node->text, mvt, pair->children[0], pair->children[1]);
+                            emit_map_put(f, NULL, node->text, mvt, pair->children[0], pair->children[1]);
                         }
                     }
                 }
@@ -4767,13 +4854,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 ASTNode* acc = node->children[0];
                 ASTNode* mbase = acc->children[0];
                 if (mbase->type == AST_IDENTIFIER) {
-                    const char* mbt = get_local_variable_type(mbase->text);
+                    const char* mbt = dispatch_type_of(mbase->text);
                     char mkt[160], mvt[160];
                     if (mbt && map_type_parts(mbt, mkt, sizeof(mkt), mvt, sizeof(mvt))) {
                         if (!map_combo_supported(mkt, mvt)) map_combo_error(mkt, mvt);
                         check_map_expr_type(mkt, acc->children[1], "key");
                         check_map_expr_type(mvt, node->children[1], "value");
-                        emit_map_put(f, mbase->text, mvt, acc->children[1], node->children[1]);
+                        emit_map_put(f, mbase, mbase->text, mvt, acc->children[1], node->children[1]);
                         map_write = 1;
                     }
                 }

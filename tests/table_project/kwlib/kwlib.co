@@ -1,0 +1,20 @@
+module kwlib
+
+// A build-once keyword table (COIL-142): the map lives at
+// module level, init() fills it once per instance, and the
+// lookup just reads it - no per-call rebuild.
+map{string, int} codes
+
+void init() {
+    codes["SELECT"] = 139
+    codes["FROM"] = 141
+    codes["WHERE"] = 150
+}
+
+int code(string word) {
+    return codes[word]
+}
+
+int size() {
+    return codes.length()
+}
