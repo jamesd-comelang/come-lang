@@ -1,0 +1,12 @@
+module stateless
+
+export (build, count_of)
+
+map{string, int} build() {
+    map{string, int} t = {"a": 1, "b": 2}
+    return t
+}
+
+int count_of(map{string, int} table, string key) {
+    return table[key]
+}

@@ -1,0 +1,24 @@
+module t05sig
+import std
+
+map{string, int} build() {
+    map{string, int} t = {"x": 3, "y": 4}
+    return t
+}
+
+int sum_of(map{string, int} table, string a, string b) {
+    return table[a] + table[b]
+}
+
+int main() {
+    map{string, int} t = build()
+    string a = "x"
+    string b = "y"
+    int s = sum_of(t, a, b)
+    if (s != 7) {
+        std.out.printf("FAIL sum %d\n", s)
+        return 1
+    }
+    std.out.printf("sig ok\n")
+    return 0
+}

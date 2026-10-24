@@ -1,0 +1,16 @@
+module main
+import std
+import stateless
+import stateful
+
+int main() {
+    string kb = "b"
+    map{string, int} t = stateless.build()
+    std.out.printf("%d\n", stateless.count_of(t, kb))
+    stateful s = stateful.create()
+    s.seed(5)
+    string ka = "a"
+    map{string, int} u = s.build()
+    std.out.printf("%d\n", s.count_of(u, ka))
+    return 0
+}

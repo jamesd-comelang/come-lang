@@ -1364,9 +1364,11 @@ static void emit_fn_param(FILE* f, const char* fn_text, const char* name) {
     if (!lp || !rp) { fprintf(f, "void* %s", name ? name : ""); return; }
     char ret[96];
     snprintf(ret, sizeof(ret), "%.*s", (int)(lp - (fn_text + 3)), fn_text + 3);
+    char retc[300];
+    come_type_to_c(ret, retc, sizeof(retc));
     char inner[512];
     snprintf(inner, sizeof(inner), "%.*s", (int)(rp - lp - 1), lp + 1);
-    fprintf(f, "%s (*%s)(", ret, name ? name : "");
+    fprintf(f, "%s (*%s)(", retc, name ? name : "");
     if (inner[0] == 0) {
         fprintf(f, "void");
     } else {
@@ -1383,7 +1385,9 @@ static void emit_fn_param(FILE* f, const char* fn_text, const char* name) {
                 else if (strcmp(raw, "string") == 0) fprintf(f, "come_string_list_t");
                 else fprintf(f, "come_array_t");
             } else {
-                fprintf(f, "%s", parts[i]);
+                char ct[300];
+                come_type_to_c(parts[i], ct, sizeof(ct));
+                fprintf(f, "%s", ct);
             }
         }
     }
@@ -4230,7 +4234,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         if (ret_type->text[0] == '(') {
             fprintf(f, "come_%s__%s_ret_t %s(", current_module, node->text, func_name);
         } else {
-            fprintf(f, "%s %s(", ret_type->text, func_name);
+            // Through the type translator (COIL-151): a
+            // map{...} return is come_map_t, never the raw
+            // Come spelling pasted into C.
+            char ct[300];
+            come_type_to_c(ret_type->text, ct, sizeof(ct));
+            fprintf(f, "%s %s(", ct, func_name);
         }
         
         // Args
@@ -4285,7 +4294,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                    come_type_to_c(type->text, ct, sizeof(ct));
                    fprintf(f, "%s %s", ct, arg->text);
                 } else {
-                   fprintf(f, "%s %s", type->text, arg->text);
+                   // Through the type translator (COIL-151):
+                   // map{...} parameters are come_map_t.
+                   char ct[300];
+                   come_type_to_c(type->text, ct, sizeof(ct));
+                   fprintf(f, "%s %s", ct, arg->text);
                 }
             } else {
                 // Fallback
@@ -5639,7 +5652,9 @@ static void emit_wrapper_param(FILE* f, ASTNode* arg, int with_name) {
     } else if (strcmp(type->text, "string") == 0) {
         fprintf(f, "come_string_t %s", nm);
     } else {
-        fprintf(f, "%s %s", type->text, nm);
+        char ct[300];
+        come_type_to_c(type->text, ct, sizeof(ct));
+        fprintf(f, "%s %s", ct, nm);
     }
 }
 
@@ -5656,9 +5671,12 @@ static void emit_instance_wrapper(FILE* f, ASTNode* fn) {
     else if (strcmp(ret->text, "string") == 0)
         fprintf(f, "come_string_t come_%s__%s__inst(come_%s__instance_t* __inst",
                 current_module, fn->text, current_module);
-    else
+    else {
+        char ct[300];
+        come_type_to_c(ret->text, ct, sizeof(ct));
         fprintf(f, "%s come_%s__%s__inst(come_%s__instance_t* __inst",
-                ret->text, current_module, fn->text, current_module);
+                ct, current_module, fn->text, current_module);
+    }
     for (int i = 1; i < body_idx; i++) {
         ASTNode* arg = fn->children[i];
         if (arg->type != AST_VAR_DECL) continue;
@@ -5707,7 +5725,11 @@ static void emit_proto_param(FILE* f, const char* t) {
         come_type_to_c(t, ct, sizeof(ct));
         fprintf(f, "%s", ct);
     } else {
-        fprintf(f, "%s", t);
+        // Through the type translator (COIL-151): a
+        // map{...} parameter is come_map_t in C.
+        char ct[300];
+        come_type_to_c(t, ct, sizeof(ct));
+        fprintf(f, "%s", ct);
     }
 }
 
@@ -5737,7 +5759,7 @@ static void emit_import_prototypes(FILE* f, const char* mod, int own) {
         char rbuf[320];
         if (ret[0] == '(') snprintf(rbuf, sizeof(rbuf), "come_%s__%s_ret_t", mod, nm);
         else if (strcmp(ret, "string") == 0) snprintf(rbuf, sizeof(rbuf), "come_string_t");
-        else snprintf(rbuf, sizeof(rbuf), "%s", ret);
+        else come_type_to_c(ret, rbuf, sizeof(rbuf));
         char parts[32][160];
         int np = params[0] ? split_types(params, parts, 32) : 0;
         fprintf(f, "%s come_%s__%s(", rbuf, mod, nm);
@@ -6413,7 +6435,13 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                        fprintf(f, "come_%s__%s_ret_t %s(", current_module, child->text, func_name);
                   } else {
                        if (strcmp(ret->text, "string") == 0) fprintf(f, "come_string_t %s(", func_name);
-                       else fprintf(f, "%s %s(", ret->text, func_name);
+                       else {
+                           // Through the type translator
+                           // (COIL-151): map{...} -> come_map_t.
+                           char ct[300];
+                           come_type_to_c(ret->text, ct, sizeof(ct));
+                           fprintf(f, "%s %s(", ct, func_name);
+                       }
                   }
              } else {
                   // Fallback for void return without explicit type? or AST_FUNCTION without children?
@@ -6469,7 +6497,14 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
                                 come_type_to_c(type->text, ct, sizeof(ct));
                                 fprintf(f, "%s", ct);
                             }
-                            else fprintf(f, "%s", type->text);
+                            else {
+                                // Through the type translator
+                                // (COIL-151): map{...} ->
+                                // come_map_t.
+                                char ct[300];
+                                come_type_to_c(type->text, ct, sizeof(ct));
+                                fprintf(f, "%s", ct);
+                            }
                        }
                   } else {
                      fprintf(f, "void*"); // Fallback

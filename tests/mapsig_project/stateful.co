@@ -1,0 +1,18 @@
+module stateful
+
+export (build, count_of, seed)
+
+int cache = 0
+
+void seed(int v) {
+    cache = v
+}
+
+map{string, int} build() {
+    map{string, int} t = {"a": 1}
+    return t
+}
+
+int count_of(map{string, int} table, string key) {
+    return table[key] + cache
+}
