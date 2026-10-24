@@ -3,7 +3,9 @@
 #include "lexer.h"
 
 int main() {
-    TokenList tokens;
+    // Static: a TokenList is far too large for the stack
+    // since COIL-144 widened Token.text to 4096.
+    static TokenList tokens;
     if (lex_file("examples/hello.co", &tokens)) {
         printf("\033[1;38;2;255;255;255;48;2;200;0;0mLexer failed\033[0m\n");
         return 1;

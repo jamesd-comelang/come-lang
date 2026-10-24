@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include "lexer.h"
@@ -7,15 +8,42 @@
 // lex_file returns nonzero when any occurred.
 static int lex_errors = 0;
 
+// Read one full source line into a growable buffer, newline
+// included. The fixed 256-byte line buffer used to truncate
+// long lines mid-literal (gap #12): past it the lexer
+// reported an unterminated literal for a legal line.
+// Returns 0 when nothing more can be read.
+static int read_source_line(FILE* f, char** buf, size_t* cap) {
+    char chunk[1024];
+    size_t len = 0;
+    int got = 0;
+    while (fgets(chunk, sizeof(chunk), f)) {
+        got = 1;
+        size_t cl = strlen(chunk);
+        if (len + cl + 1 > *cap) {
+            size_t nc = (len + cl + 1) * 2;
+            char* nb = realloc(*buf, nc);
+            if (!nb) { perror("out of memory"); exit(1); }
+            *buf = nb;
+            *cap = nc;
+        }
+        memcpy(*buf + len, chunk, cl + 1);
+        len += cl;
+        if (cl && chunk[cl - 1] == '\n') break;
+    }
+    return got;
+}
+
 int lex_file(const char* filename, TokenList* out) {
     lex_errors = 0;
     FILE* f = fopen(filename, "r");
     if (!f) { perror("Cannot open file"); return 1; }
     out->count = 0;
-    char line[256];
+    char* line = NULL;
+    size_t line_cap = 0;
     int in_block_comment = 0;
     int line_num = 1;  // Track current line number for source mapping
-    while(fgets(line,sizeof(line),f)) {
+    while(read_source_line(f, &line, &line_cap)) {
         char* p = line;
         while(*p) {
             if (in_block_comment) {
@@ -196,15 +224,44 @@ int lex_file(const char* filename, TokenList* out) {
                 tok.text[i] = '\0'; 
                 tok.type = TOKEN_NUMBER; 
             }
-            else if(*p=='"'){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='\n'){ if(*p=='\\' && p[1] && p[1]!='\n'){ tok.text[i++]=*p++; tok.text[i++]=*p++; continue; } if(*p=='"') break; tok.text[i++]=*p++; } if(*p=='"'){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_STRING_LITERAL; if(!closed){ printf("Error: unterminated string literal at line %d - close it with '\"' on the same line\n", line_num); lex_errors++; } }
-            else if(*p=='\''){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='\n'){ if(*p=='\\' && p[1] && p[1]!='\n'){ tok.text[i++]=*p++; tok.text[i++]=*p++; continue; } if(*p=='\'') break; tok.text[i++]=*p++; } if(*p=='\''){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_CHAR_LITERAL; if(!closed){ printf("Error: unterminated character literal at line %d - close it with a single quote on the same line\n", line_num); lex_errors++; } } // Changed to CHAR_LITERAL default, distinction handled in parsing?
-            
-            else if(isalpha(*p) || *p=='_'){ int i=0; while(isalnum(*p)||*p=='_') tok.text[i++]=*p++; tok.text[i]='\0'; tok.type=TOKEN_IDENTIFIER; }
+            else if(*p=='"' || *p=='\''){
+                // Literal scan (COIL-143/144): find the span
+                // first (escape-aware: a backslash pair never
+                // terminates), then copy it bounded - a literal
+                // past the token buffer is a loud error, never
+                // a silent truncation or an overrun.
+                char quote = *p;
+                const char* start = p;
+                int closed = 0;
+                p++;
+                while(*p && *p!='\n'){
+                    if(*p=='\\' && p[1] && p[1]!='\n'){ p+=2; continue; }
+                    if(*p==quote){ p++; closed=1; break; }
+                    p++;
+                }
+                size_t span = (size_t)(p - start);
+                if(!closed){
+                    if(quote=='"') printf("Error: unterminated string literal at line %d - close it with '\"' on the same line\n", line_num);
+                    else printf("Error: unterminated character literal at line %d - close it with a single quote on the same line\n", line_num);
+                    lex_errors++;
+                } else if(span >= sizeof(tok.text)){
+                    printf("Error: %s literal too long at line %d (limit %d bytes)\n",
+                           quote=='"' ? "string" : "character", line_num, (int)sizeof(tok.text) - 1);
+                    lex_errors++;
+                    span = sizeof(tok.text) - 1;
+                }
+                memcpy(tok.text, start, span);
+                tok.text[span]='\0';
+                tok.type = (quote=='"') ? TOKEN_STRING_LITERAL : TOKEN_CHAR_LITERAL;
+            }
+
+            else if(isalpha(*p) || *p=='_'){ int i=0; while(isalnum(*p)||*p=='_'){ if(i < (int)sizeof(tok.text)-1) tok.text[i]=(char)*p; i++; p++; } if(i > (int)sizeof(tok.text)-1) i = (int)sizeof(tok.text)-1; tok.text[i]='\0'; tok.type=TOKEN_IDENTIFIER; }
             else { p++; continue; }
             out->tokens[out->count++]=tok;
         }
         line_num++;  // Increment line number after processing each line
     }
+    free(line);
     fclose(f);
     Token eof={TOKEN_EOF,"", line_num};
     out->tokens[out->count++]=eof;

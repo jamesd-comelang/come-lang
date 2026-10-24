@@ -306,7 +306,7 @@ static ASTNode* parse_primary() {
         tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER &&
         tokens.tokens[pos + 2].type == TOKEN_LBRACE) {
         char stag[300];
-        snprintf(stag, sizeof(stag), "struct %s", tokens.tokens[pos + 1].text);
+        snprintf(stag, sizeof(stag), "struct %.150s", tokens.tokens[pos + 1].text);
         advance(); // struct
         advance(); // Name
         advance(); // {
@@ -324,8 +324,15 @@ static ASTNode* parse_primary() {
          }
     } else if (t->type == TOKEN_STRING_LITERAL) {
         node = ast_new(AST_STRING_LITERAL);
-        char combined[4096] = ""; 
+        char combined[4096] = "";
         while (current()->type == TOKEN_STRING_LITERAL) {
+             if (strlen(combined) + strlen(current()->text) >= sizeof(combined)) {
+                 printf("Error: string literal too long (line %d, limit %d bytes)\n",
+                        current()->line, (int)sizeof(combined) - 1);
+                 g_parse_errors++;
+                 advance();
+                 break;
+             }
              strcat(combined, current()->text);
              advance();
         }
@@ -672,7 +679,7 @@ static ASTNode* parse_var_decl() {
             return NULL;
         }
         advance(); // struct
-        snprintf(type_name, sizeof(type_name), "&(struct %s)", current()->text);
+        snprintf(type_name, sizeof(type_name), "&(struct %.150s)", current()->text);
         advance(); // Name
         if (!expect(TOKEN_RPAREN)) return NULL;
         is_ref_decl = 1;
@@ -1335,10 +1342,10 @@ static void parse_extern(ASTNode* program) {
     char ret_type[256];
     if (current()->type == TOKEN_STRUCT) {
         advance();
-        snprintf(ret_type, sizeof(ret_type), "struct %s", current()->text);
+        snprintf(ret_type, sizeof(ret_type), "struct %.248s", current()->text);
         advance();
     } else {
-        snprintf(ret_type, sizeof(ret_type), "%s", current()->text);
+        snprintf(ret_type, sizeof(ret_type), "%.255s", current()->text);
         advance();
     }
     if (match(TOKEN_LBRACKET)) {
@@ -1366,10 +1373,10 @@ static void parse_extern(ASTNode* program) {
         char pt[256];
         if (current()->type == TOKEN_STRUCT) {
             advance();
-            snprintf(pt, sizeof(pt), "struct %s", current()->text);
+            snprintf(pt, sizeof(pt), "struct %.248s", current()->text);
             advance();
         } else {
-            snprintf(pt, sizeof(pt), "%s", current()->text);
+            snprintf(pt, sizeof(pt), "%.255s", current()->text);
             advance();
         }
         if (match(TOKEN_LBRACKET)) {
@@ -1397,7 +1404,7 @@ static void parse_extern(ASTNode* program) {
                 if (current()->type == TOKEN_COMMA) { advance(); continue; }
                 if (current()->type == TOKEN_CONST) advance();
                 char ipt[160];
-                snprintf(ipt, sizeof(ipt), "%s", current()->text);
+                snprintf(ipt, sizeof(ipt), "%.150s", current()->text);
                 advance();
                 if (current()->type == TOKEN_IDENTIFIER) advance();
                 if (!first) strcat(fn_type, ",");
@@ -1543,7 +1550,7 @@ static void parse_export(ASTNode* program) {
             } else {
                 for (int i = entry_start; i < pos && i < tokens.count; i++) {
                     if (tokens.tokens[i].type == TOKEN_LPAREN && i > entry_start) {
-                        snprintf(dotted, sizeof(dotted), "%s", tokens.tokens[i - 1].text);
+                        snprintf(dotted, sizeof(dotted), "%.150s", tokens.tokens[i - 1].text);
                         char* dot = strrchr(dotted, '.');
                         entry_name = dot ? dot + 1 : dotted;
                         break;
@@ -1780,13 +1787,13 @@ static void parse_single_alias(ASTNode* program) {
                   if (current()->type == TOKEN_STRUCT) {
                       advance();
                       char t[256];
-                      snprintf(t, sizeof(t), "struct %s", current()->text);
+                      snprintf(t, sizeof(t), "struct %.150s", current()->text);
                       strcpy(typeNode->text, t);
                       advance();
                   } else if (current()->type == TOKEN_UNION) {
                       advance();
                       char t[256];
-                      snprintf(t, sizeof(t), "union %s", current()->text);
+                      snprintf(t, sizeof(t), "union %.150s", current()->text);
                       strcpy(typeNode->text, t);
                       advance();
                   } else {
@@ -1960,7 +1967,7 @@ static void parse_coroutine_decl(ASTNode* program) {
         char arg_type[256];
         if (current()->type == TOKEN_STRUCT) {
             advance();
-            snprintf(arg_type, sizeof(arg_type), "struct %s", current()->text);
+            snprintf(arg_type, sizeof(arg_type), "struct %.150s", current()->text);
             advance();
         } else {
             strcpy(arg_type, current()->text);
@@ -2063,7 +2070,7 @@ static void parse_top_level_decl(ASTNode* program) {
              // is_struct = 1;
              advance();
              if (current()->type == TOKEN_IDENTIFIER) {
-                 sprintf(type_name, "struct %s", current()->text);
+                 sprintf(type_name, "struct %.150s", current()->text);
                  advance();
              } else {
                  // struct { ... } ?
@@ -2210,7 +2217,7 @@ static void parse_top_level_decl(ASTNode* program) {
                           if (current()->type == TOKEN_STRUCT && pos + 1 < tokens.count &&
                               tokens.tokens[pos + 1].type == TOKEN_IDENTIFIER) {
                               advance(); // struct
-                              snprintf(arg_type, sizeof(arg_type), "&(struct %s)", current()->text);
+                              snprintf(arg_type, sizeof(arg_type), "&(struct %.150s)", current()->text);
                               advance(); // Name
                               is_ref_param = 1;
                           } else {
@@ -2221,7 +2228,7 @@ static void parse_top_level_decl(ASTNode* program) {
                           if (!expect(TOKEN_RPAREN)) break;
                       } else if (current()->type == TOKEN_STRUCT) {
                           advance();
-                          sprintf(arg_type, "struct %s", current()->text);
+                          sprintf(arg_type, "struct %.150s", current()->text);
                           advance();
                       } else {
                           strcpy(arg_type, current()->text);
@@ -2275,10 +2282,10 @@ static void parse_top_level_decl(ASTNode* program) {
                                   char pt[160];
                                   if (current()->type == TOKEN_STRUCT) {
                                       advance();
-                                      snprintf(pt, sizeof(pt), "struct %s", current()->text);
+                                      snprintf(pt, sizeof(pt), "struct %.150s", current()->text);
                                       advance();
                                   } else {
-                                      snprintf(pt, sizeof(pt), "%s", current()->text);
+                                      snprintf(pt, sizeof(pt), "%.150s", current()->text);
                                       advance();
                                   }
                                   if (match(TOKEN_LBRACKET)) {
