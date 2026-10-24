@@ -166,15 +166,17 @@ echo "$out" | grep -qE "avg [0-9]+(\.[0-9])? ms over 5 runs" || fail "bench outp
 echo "CLI: bench ok"
 
 # ---------- come test --cover ----------
-# pick() never takes the v < 0 branch: line 9 of the
-# fixture (its return) is the first uncovered line.
-# (COIL-157: the branch body is the pinned shape, not a
-# trailing return - a trailing return's line also
-# collects the function's epilogue attribution under
-# gcov, so it cannot pin an uncovered branch.)
+# pick(20) takes the v > 10 branch, so the v < 0 branch
+# and the trailing return never execute: lines 8-11 are
+# the uncovered range, and 8 is its first line.
+# (Before A4, the per-statement arms put executable
+# blocks on those lines and gcov counted line 8 as hit
+# through a partial-block artifact, so the pin was 9;
+# with arms only before may-fail statements, the report
+# is the lines that genuinely never execute.)
 out=$($COME test "$SCRATCH/cov" --cover) || fail "cover run failed"
 echo "$out" | grep -q "coverage:" || fail "cover line missing: $out"
-echo "$out" | grep -q "uncovered: 9" || fail "cover missed the uncovered line: $out"
+echo "$out" | grep -q "uncovered: 8" || fail "cover missed the uncovered line: $out"
 echo "$out" | grep -q "Line coverage:" || fail "cover total missing: $out"
 echo "CLI: cover ok"
 

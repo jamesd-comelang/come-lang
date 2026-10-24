@@ -841,6 +841,9 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     // registered: directory groups free these ASTs right
     // after this analysis and re-parse per file.
     codegen_analyze_frameless(module_name, asts, nast);
+    // A4 (redesign): may-fail functions for this module,
+    // from the same pre-scan ASTs.
+    codegen_analyze_mayfail(module_name, asts, nast);
 }
 
 // Compile all files of a directory module as one module (COIL-108).

@@ -95,4 +95,13 @@ int codegen_module_const_at(const char* module, int i, const char** name,
 void codegen_analyze_frameless(const char* module, ASTNode** asts, int nast);
 void codegen_register_module_frameless(const char* module, const char** names, int count);
 int codegen_is_frameless(const char* module, const char* fn);
+// A4 (redesign): the driver computes each module's
+// may-fail functions from all of its files' ASTs and
+// registers the names here before generating any file;
+// emission arms ERR only before statements that may fail.
+void codegen_analyze_mayfail(const char* module, ASTNode** asts, int nast);
+void codegen_register_module_mayfail(const char* module, const char** names, int count);
+int codegen_mayfail_known(const char* module);
+int codegen_is_mayfail(const char* module, const char* fn);
+int codegen_stmt_may_fail(ASTNode* node);
 #endif

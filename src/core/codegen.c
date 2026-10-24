@@ -1358,6 +1358,369 @@ void codegen_analyze_frameless(const char* module, ASTNode** asts, int nast) {
     codegen_register_module_frameless(module, names, count);
 }
 
+// ---- A4 (redesign): may-fail functions ----
+// A function may fail when its body can reach a
+// come_ERR_set call: a typed map read (come_map_get_e
+// sets ENOENT on a missing key), a string index
+// (come_string_wchar_at_e sets ERANGE out of bounds), a
+// failing runtime method (regex/at/tol/tod on strings,
+// insert/remove on arrays, FILE operations, getenv), an
+// instance-method call (the destroyed-instance guard sets
+// EBADF before the body runs), a division/modulo, a
+// spawn/yield, or a call to a may-fail function. Array
+// index reads do NOT count: they use the OOB slot macro,
+// which records its own location via #line, never the arm.
+// The driver computes the set per module as a fixpoint
+// over the call graph before generating any file, and
+// registers the names here; emission then arms the ERR
+// pending location only before statements that may fail,
+// instead of before every statement. Arms elsewhere are
+// pure overhead: no error can be set during those
+// statements, so the location they would record is never
+// consumed. Over-approximation is safe (an extra arm);
+// under-approximation would record a stale location, so
+// every rule below arms on doubt, and the statement
+// predicate in codegen mode re-derives receiver types
+// from dispatch (locals plus module variables), so a
+// gap in the analysis only loses the caller-arm safety
+// net, never the inner arm at the failing statement
+// itself: the callee's own statements arm per the same
+// predicate, and an inner arm always overwrites an
+// outer one before any error is set.
+#define MAYFAIL_MAX_FNS 256
+
+typedef struct { char module[128]; char names[MAYFAIL_MAX_FNS][128]; int count; } MayfailModule;
+static MayfailModule g_mayfail[64];
+static int g_mayfail_count = 0;
+
+void codegen_register_module_mayfail(const char* module, const char** names, int count) {
+    MayfailModule* slot = NULL;
+    for (int i = 0; i < g_mayfail_count; i++)
+        if (strcmp(g_mayfail[i].module, module) == 0) slot = &g_mayfail[i];
+    if (!slot) {
+        if (g_mayfail_count >= 64) return;
+        slot = &g_mayfail[g_mayfail_count++];
+        memset(slot, 0, sizeof(*slot));
+        snprintf(slot->module, sizeof(slot->module), "%s", module);
+    }
+    slot->count = 0;
+    for (int i = 0; i < count && slot->count < MAYFAIL_MAX_FNS; i++) {
+        snprintf(slot->names[slot->count], sizeof(slot->names[0]), "%s", names[i]);
+        slot->count++;
+    }
+}
+
+int codegen_mayfail_known(const char* module) {
+    for (int i = 0; i < g_mayfail_count; i++)
+        if (strcmp(g_mayfail[i].module, module) == 0) return 1;
+    return 0;
+}
+
+int codegen_is_mayfail(const char* module, const char* fn) {
+    for (int i = 0; i < g_mayfail_count; i++) {
+        if (strcmp(g_mayfail[i].module, module) != 0) continue;
+        for (int j = 0; j < g_mayfail[i].count; j++)
+            if (strcmp(g_mayfail[i].names[j], fn) == 0) return 1;
+        return 0;
+    }
+    return 0;
+}
+
+typedef struct { char name[128]; ASTNode* node; char ret[128]; } MayfailFn;
+static MayfailFn g_mayfail_fns[MAYFAIL_MAX_FNS];
+static int g_mayfail_fn_count = 0;
+static int g_mayfail_flags[MAYFAIL_MAX_FNS];
+static char g_mayfail_module[128];
+static int g_mayfail_analysis = 0;
+
+static FrameVar g_mayfail_vars[FRAME_MAX_VARS];
+static int g_mayfail_var_count = 0;
+
+static const char* dispatch_type_of(const char* name);
+
+static int mayfail_fn_index(const char* name) {
+    for (int i = 0; i < g_mayfail_fn_count; i++)
+        if (strcmp(g_mayfail_fns[i].name, name) == 0) return i;
+    return -1;
+}
+
+static void mayfail_var_set(const char* name, const char* type) {
+    if (g_mayfail_var_count >= FRAME_MAX_VARS) return;
+    snprintf(g_mayfail_vars[g_mayfail_var_count].name, sizeof(g_mayfail_vars[0].name), "%s", name);
+    snprintf(g_mayfail_vars[g_mayfail_var_count].type, sizeof(g_mayfail_vars[0].type), "%s", type ? type : "");
+    g_mayfail_var_count++;
+}
+
+static const char* mayfail_var_get(const char* name) {
+    for (int i = g_mayfail_var_count - 1; i >= 0; i--)
+        if (strcmp(g_mayfail_vars[i].name, name) == 0) return g_mayfail_vars[i].type;
+    return NULL;
+}
+
+// The type of a name for may-fail dispatch: the analysis
+// tracker in analysis mode, the codegen dispatch (locals
+// plus module variables) in codegen mode.
+static const char* mayfail_lookup_var(const char* name) {
+    if (g_mayfail_analysis) return mayfail_var_get(name);
+    return dispatch_type_of(name);
+}
+
+// 1 = may fail, 0 = proven not, -1 = unknown (arms on doubt).
+static int mayfail_lookup_fn(const char* module, const char* fn) {
+    if (g_mayfail_analysis && strcmp(module, g_mayfail_module) == 0) {
+        int idx = mayfail_fn_index(fn);
+        if (idx < 0) return -1;
+        return g_mayfail_flags[idx];
+    }
+    if (!codegen_mayfail_known(module)) return -1;
+    return codegen_is_mayfail(module, fn);
+}
+
+// Methods that never set ERR, on any receiver (verified
+// against the come_ERR_set inventory: only the failing
+// methods below, the map/string/array index helpers, the
+// FILE operations, and the instance guard set errors).
+static int mayfail_method_pure(const char* m) {
+    if (!m) return 0;
+    static const char* pure[] = {
+        "length", "bytesize", "owner", "type", "dup", "chown",
+        "lower", "upper", "substr", "find", "split", "split_n",
+        "replace", "repeat", "trim", "ltrim", "rtrim", "join",
+        "byte_array", "append", "clear", "resize", "free", "slice",
+        "put", "str", NULL };
+    for (int i = 0; pure[i]; i++)
+        if (strcmp(m, pure[i]) == 0) return 1;
+    return 0;
+}
+
+// Methods that can set ERR, on any receiver: the failing
+// string methods (regex family, at, tol, tod), array
+// insert/remove, and the FILE/Proc operations.
+static int mayfail_method_fails(const char* m) {
+    if (!m) return 0;
+    if (strcmp(m, "regex") == 0 || strncmp(m, "regex_", 6) == 0) return 1;
+    static const char* fails[] = {
+        "at", "tol", "tod", "insert", "remove", "get",
+        "open", "close", "fdopen", "reopen", "fileno",
+        "read", "write", "getc", "putc", "gets", "puts",
+        "fname", "ungetc", "getenv", "init", "exit", NULL };
+    for (int i = 0; fails[i]; i++)
+        if (strcmp(m, fails[i]) == 0) return 1;
+    return 0;
+}
+
+static int mayfail_library_type(const char* t) {
+    if (!t) return 0;
+    if (strcmp(t, "string") == 0 || strncmp(t, "map{", 4) == 0 ||
+        strcmp(t, "map") == 0 || strcmp(t, "FILE") == 0) return 1;
+    if (strchr(t, '[') != NULL) return 1;
+    return frame_scalar_type(t);
+}
+
+// 1 = this subtree may set an error. The tracker holds
+// the local types visible at the current point in
+// analysis mode; block-like nodes save and restore it so
+// a declaration never leaks past its own scope.
+static int mayfail_walk(ASTNode* n) {
+    if (!n) return 0;
+    switch (n->type) {
+        case AST_BLOCK:
+        case AST_IF:
+        case AST_ELSE:
+        case AST_WHILE:
+        case AST_FOR:
+        case AST_DO_WHILE: {
+            int save = g_mayfail_var_count;
+            for (int i = 0; i < n->child_count; i++)
+                if (mayfail_walk(n->children[i])) {
+                    if (g_mayfail_analysis) g_mayfail_var_count = save;
+                    return 1;
+                }
+            if (g_mayfail_analysis) g_mayfail_var_count = save;
+            return 0;
+        }
+        case AST_VAR_DECL: {
+            if (g_mayfail_analysis && n->child_count >= 2 && n->children[1]) {
+                const char* t = n->children[1]->text;
+                if (strcmp(t, "var") == 0) {
+                    ASTNode* init = (n->child_count >= 1) ? n->children[0] : NULL;
+                    if (init && init->type == AST_STRING_LITERAL) t = "string";
+                    else if (init && init->type == AST_IDENTIFIER) {
+                        const char* it = mayfail_var_get(init->text);
+                        if (it) t = it;
+                    } else if (init && init->type == AST_CALL) {
+                        int idx = mayfail_fn_index(init->text);
+                        if (idx >= 0) t = g_mayfail_fns[idx].ret;
+                    }
+                }
+                mayfail_var_set(n->text, t);
+            }
+            if (n->child_count >= 1 && n->children[0])
+                return mayfail_walk(n->children[0]);
+            return 0;
+        }
+        case AST_CALL: {
+            const char* curmod = g_mayfail_analysis ? g_mayfail_module : current_module;
+            int r = mayfail_lookup_fn(curmod, n->text);
+            if (r != 0) return 1;
+            for (int i = 0; i < n->child_count; i++)
+                if (mayfail_walk(n->children[i])) return 1;
+            return 0;
+        }
+        case AST_METHOD_CALL: {
+            for (int i = 0; i < n->child_count; i++)
+                if (mayfail_walk(n->children[i])) return 1;
+            const char* m = n->text;
+            ASTNode* recv = (n->child_count > 0) ? n->children[0] : NULL;
+            if (!recv || recv->type != AST_IDENTIFIER) {
+                if (mayfail_method_pure(m)) return 0;
+                if (mayfail_method_fails(m)) return 1;
+                return 1;
+            }
+            if (strcmp(recv->text, "ERR") == 0) return 0;
+            const char* curmod = g_mayfail_analysis ? g_mayfail_module : current_module;
+            if (strcmp(recv->text, curmod) == 0) {
+                int r = mayfail_lookup_fn(curmod, m);
+                return r != 0;
+            }
+            const char* t = mayfail_lookup_var(recv->text);
+            if (t) {
+                if (mayfail_method_pure(m)) return 0;
+                if (mayfail_method_fails(m)) return 1;
+                if (mayfail_library_type(t)) return 0;
+                return 1;
+            }
+            // Not a value: a module name (import or system)
+            // or an unknown name; the registry decides, and
+            // an unregistered module arms on doubt.
+            int r = mayfail_lookup_fn(recv->text, m);
+            return r != 0;
+        }
+        case AST_ARRAY_ACCESS: {
+            // Mirror the emitter: string index and map read
+            // set ERR; array index uses the OOB slot macro
+            // (explicit location, never the arm).
+            if (n->child_count >= 1 && n->children[0] &&
+                n->children[0]->type == AST_IDENTIFIER) {
+                const char* t = mayfail_lookup_var(n->children[0]->text);
+                if (t && strcmp(t, "string") == 0) return 1;
+                if (t && (strncmp(t, "map{", 4) == 0 || strcmp(t, "map") == 0)) return 1;
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (mayfail_walk(n->children[i])) return 1;
+            return 0;
+        }
+        case AST_ASSIGN: {
+            // A plain map-index write (m[k] = v) is a put,
+            // which never sets ERR; only the key and value
+            // expressions can fail. Compound assignment
+            // still reads first, so it walks normally (the
+            // map-read arm fires). A string-index write
+            // still sets ERR through the index helper.
+            if (n->child_count >= 2 &&
+                strcmp(n->text, "=") == 0 && n->children[0] &&
+                n->children[0]->type == AST_ARRAY_ACCESS) {
+                ASTNode* lhs = n->children[0];
+                const char* t = NULL;
+                if (lhs->child_count >= 1 && lhs->children[0] &&
+                    lhs->children[0]->type == AST_IDENTIFIER)
+                    t = mayfail_lookup_var(lhs->children[0]->text);
+                if (t && (strncmp(t, "map{", 4) == 0 || strcmp(t, "map") == 0)) {
+                    for (int i = 1; i < lhs->child_count; i++)
+                        if (mayfail_walk(lhs->children[i])) return 1;
+                    for (int i = 1; i < n->child_count; i++)
+                        if (mayfail_walk(n->children[i])) return 1;
+                    return 0;
+                }
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (mayfail_walk(n->children[i])) return 1;
+            return 0;
+        }
+        case AST_BINARY_OP: {
+            if (n->child_count >= 2 &&
+                (strcmp(n->text, "/") == 0 || strcmp(n->text, "%") == 0)) return 1;
+            for (int i = 0; i < n->child_count; i++)
+                if (mayfail_walk(n->children[i])) return 1;
+            return 0;
+        }
+        case AST_SPAWN:
+        case AST_YIELD:
+            return 1;
+        default: {
+            for (int i = 0; i < n->child_count; i++)
+                if (mayfail_walk(n->children[i])) return 1;
+            return 0;
+        }
+    }
+}
+
+static int mayfail_fn_body_may_fail(int idx) {
+    ASTNode* fn = g_mayfail_fns[idx].node;
+    if (!fn || fn->child_count == 0) return 1;
+    ASTNode* body = fn->children[fn->child_count - 1];
+    if (!body || body->type != AST_BLOCK) return 1;
+    g_mayfail_var_count = 0;
+    for (int i = 1; i < fn->child_count; i++) {
+        ASTNode* p = fn->children[i];
+        if (!p || p->type == AST_BLOCK) break;
+        if (p->type == AST_VAR_DECL && p->child_count >= 2 && p->children[1])
+            mayfail_var_set(p->text, p->children[1]->text);
+    }
+    return mayfail_walk(body);
+}
+
+void codegen_analyze_mayfail(const char* module, ASTNode** asts, int nast) {
+    g_mayfail_fn_count = 0;
+    memset(g_mayfail_flags, 0, sizeof(g_mayfail_flags));
+    snprintf(g_mayfail_module, sizeof(g_mayfail_module), "%s", module);
+    g_mayfail_analysis = 1;
+    for (int a = 0; a < nast; a++) {
+        ASTNode* ast = asts[a];
+        if (!ast || ast->type != AST_PROGRAM) continue;
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode* ch = ast->children[i];
+            if (!ch || ch->type != AST_FUNCTION || !ch->text[0]) continue;
+            if (ch->is_extern) continue;
+            if (ch->child_count == 0) continue;
+            ASTNode* body = ch->children[ch->child_count - 1];
+            if (!body || body->type != AST_BLOCK) continue;
+            if (mayfail_fn_index(ch->text) >= 0) continue;
+            if (g_mayfail_fn_count >= MAYFAIL_MAX_FNS) continue;
+            MayfailFn* f = &g_mayfail_fns[g_mayfail_fn_count++];
+            snprintf(f->name, sizeof(f->name), "%.*s", (int)sizeof(f->name) - 1, ch->text);
+            f->node = ch;
+            if (ch->child_count > 0 && ch->children[0] && ch->children[0]->text[0])
+                snprintf(f->ret, sizeof(f->ret), "%.*s", (int)sizeof(f->ret) - 1, ch->children[0]->text);
+            else
+                snprintf(f->ret, sizeof(f->ret), "void");
+        }
+    }
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int i = 0; i < g_mayfail_fn_count; i++) {
+            if (g_mayfail_flags[i]) continue;
+            if (mayfail_fn_body_may_fail(i)) { g_mayfail_flags[i] = 1; changed = 1; }
+        }
+    }
+    const char* names[MAYFAIL_MAX_FNS];
+    int count = 0;
+    for (int i = 0; i < g_mayfail_fn_count; i++)
+        if (g_mayfail_flags[i]) names[count++] = g_mayfail_fns[i].name;
+    codegen_register_module_mayfail(module, names, count);
+    g_mayfail_analysis = 0;
+}
+
+// The codegen-mode predicate: arms only before statements
+// that may set an error. The #line directive stays
+// unconditional (OOB slots read their location from it).
+int codegen_stmt_may_fail(ASTNode* node) {
+    g_mayfail_analysis = 0;
+    g_mayfail_var_count = 0;
+    return mayfail_walk(node);
+}
+
 int codegen_module_struct_at(const char* module, int i, const char** name,
                              const char** def, int* packed, int* align) {
     ModuleStructs* ms = module_structs_of(module);
@@ -4964,12 +5327,15 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
     // happened to end on, and line coverage credits the
     // wrong branch (a taken branch's arm landed on the
     // next branch's line).
+    // A4 (redesign): the #line stays unconditional (OOB
+    // slots read their location from it); the arm fires
+    // only before statements that may set an error.
     if (g_in_fn_body && node->source_line > 0 &&
         node->type != AST_BLOCK && node->type != AST_FUNCTION &&
         node->type != AST_CASE && node->type != AST_DEFAULT &&
         node->type != AST_FALLTHROUGH) {
         emit_line_directive_forced(f, node);
-        emit_err_arm(f, node, indent);
+        if (codegen_stmt_may_fail(node)) emit_err_arm(f, node, indent);
     }
 
     switch (node->type) {
