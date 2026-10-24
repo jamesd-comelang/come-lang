@@ -1,0 +1,66 @@
+module main
+import std
+
+int pos_single(byte[] b) {
+    int s = 0
+    int i = 0
+    while (i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int pos_inc(byte[] b) {
+    int s = 0
+    int i = 0
+    while (i < b.length()) {
+        s = s + int(b[i])
+        i++
+    }
+    return s
+}
+
+int pos_assign(byte[] b) {
+    int s = 0
+    int i
+    i = 0
+    while (i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int ctl_param(byte[] b, int k) {
+    int s = 0
+    int i = k
+    while (i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
+int ctl_dec(byte[] b) {
+    int s = 0
+    int i = 0
+    int n = 0
+    while (i < b.length()) {
+        i--
+        s = s + int(b[i])
+        n++
+        if (n >= 1) { break }
+    }
+    return s
+}
+
+int main() {
+    byte[] b = "hello".byte_array()
+    std.out.printf("pos_single: %d\n", pos_single(b))
+    std.out.printf("pos_inc: %d\n", pos_inc(b))
+    std.out.printf("pos_assign: %d\n", pos_assign(b))
+    std.out.printf("ctl_param: %d\n", ctl_param(b, 0))
+    std.out.printf("ctl_dec: %d\n", ctl_dec(b))
+    return 0
+}

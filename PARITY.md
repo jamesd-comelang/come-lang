@@ -470,6 +470,39 @@ shape (concat + length walk dominate the frame
 saving). Step 4 is COMPLETE. Remaining is the
 exhaust work (see below).
 
+## Interval analysis DONE (2026-10-24, exhaust safe slice): single-bound while proofs
+
+Profiling first: the tokenizer's hot path
+already has ZERO checked array reads (tk_byte's
+read is raw via step 1, the rest is calls/maps),
+so no bounds work can move it -- this slice is
+a general-Come win, not a tokenizer win. A
+while with a single-bound condition (`i <
+b.length()`) and i provably nonneg at entry now
+proves (b, i) at body top (step 2 only covered
+positive-form `0 <= i && i < len` and counted
+for). Nonneg is threaded through block children
+(saved/restored per block, cleared at function
+entry): gained by int i = <nonneg constant /
+length / nonneg identifier>, preserved by i++
+and i = i + <nonneg>, lost by any other
+assignment and by i--. Reads before any
+modification to i in the body are raw; reads
+after one are checked, because the void rule
+now also voids on i++/i-- (a soundness fix:
+step 2's bodies had the same hole for i++ inside
+the body). The bounds_loop cond-only control
+moved to positives (it is now proven); its
+other controls are unchanged. Test:
+`tests/interval_project/` +
+`tests/run_interval_test.sh` (3 positives raw,
+2 controls checked, output + ASan). Suites
+green from clean (Come exit 0, co_SQLite 7/7).
+Tokenizer bench ~0.59-0.64 s, essentially
+unchanged, as profiled. Remaining exhaust work
+below is now the main lever: baselines,
+unchecked, port restructuring.
+
 ## Step 4c design (2026-10-24, not yet implemented)
 
 Verified first, because it changes the shape of
@@ -547,8 +580,6 @@ local-scratch-container micro, not the tokenizer.
   "exhaust everything" authorization: unchecked
   region + port restructuring both included)
 
-- General interval analysis (bounds proofs beyond
-  guards), plus profiling for new wins.
 - Rust/Go baselines on identical work (toolchains
   needed; none in the VM now).
 - Unchecked region, opt-in only, design +

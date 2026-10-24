@@ -27,10 +27,24 @@ int sum_for_nonzero(byte[] b) {
     return s
 }
 
+// Interval slice (parity exhaust): a single-bound
+// while (`i < b.length()`) with i provably nonneg
+// at entry proves (b, i) at body top -- formerly
+// the cond-only control, now a positive.
+int sum_cond_only(byte[] b) {
+    int s = 0
+    int i = 0
+    while (i < b.length()) {
+        s = s + int(b[i])
+        i = i + 1
+    }
+    return s
+}
+
 int main() {
     string s = "hello"
     byte[] b = s.byte_array()
-    if (sum_while_pos(b) == 532 && sum_for(b) == 532 && sum_for_nonzero(b) == 327) {
+    if (sum_while_pos(b) == 532 && sum_for(b) == 532 && sum_for_nonzero(b) == 327 && sum_cond_only(b) == 532) {
         std.out.printf("ok pos\n")
     } else {
         std.out.printf("FAIL pos\n")

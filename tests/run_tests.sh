@@ -48,6 +48,7 @@ bash tests/run_transient_first_test.sh
 bash tests/run_transient_cont_test.sh
 bash tests/run_transient_map_test.sh
 bash tests/run_checkpoint_test.sh
+bash tests/run_interval_test.sh
 bash tests/run_bounds_test.sh
 bash tests/run_bounds_loop_test.sh
 bash tests/run_intrinsic_test.sh

@@ -3319,11 +3319,17 @@ static int bound_body_exits(ASTNode* body) {
 }
 // Does this subtree contain an assignment or a call?
 // (Conservative void trigger: any of them may have
-// changed a proven buffer or index.)
+// changed a proven buffer or index.) POST_INC and
+// POST_DEC are included: `i++` in a loop body after
+// a proof was added at body top would otherwise
+// leave a later read of b[i] raw past the end
+// (interval-analysis soundness fix; step 2's bodies
+// had the same hole for i++ inside the body).
 static int bound_subtree_has_assign_or_call(ASTNode* node) {
     if (!node) return 0;
     if (node->type == AST_ASSIGN || node->type == AST_CALL ||
-        node->type == AST_METHOD_CALL) return 1;
+        node->type == AST_METHOD_CALL || node->type == AST_POST_INC ||
+        node->type == AST_POST_DEC) return 1;
     for (int i = 0; i < node->child_count; i++)
         if (bound_subtree_has_assign_or_call(node->children[i])) return 1;
     return 0;
@@ -3384,9 +3390,99 @@ static int bound_for_counted(ASTNode* init, ASTNode* cond, ASTNode* update, char
 // same way (loop bodies used to bypass block
 // children entirely, letting pre-loop proofs leak
 // into loop bodies -- fixed in step 2).
+// Interval analysis (parity exhaust, safe slice):
+// identifiers provably >= 0 at this point. A
+// nonneg identifier stays nonneg through i++ and
+// through i = i + <nonneg>, is gained by i =
+// <nonneg constant / length / nonneg identifier>,
+// and is lost by any other assignment to it and by
+// i--. Calls do not touch it (Come scalars are
+// values; a call cannot modify a caller's local).
+// Threaded like the proof set, but NOT cleared at
+// loop boundaries: nonneg is a variable property,
+// and a loop's single-bound condition needs it at
+// entry. Saved/restored per block so block-local
+// nonneg does not leak out.
+typedef struct { char name[128]; } NonnegId;
+static NonnegId g_nonneg[64];
+static int g_nonneg_count = 0;
+static int nonneg_contains(const char* name) {
+    for (int i = 0; i < g_nonneg_count; i++)
+        if (strcmp(g_nonneg[i].name, name) == 0) return 1;
+    return 0;
+}
+static void nonneg_add(const char* name) {
+    if (nonneg_contains(name)) return;
+    if (g_nonneg_count >= 64) return;
+    snprintf(g_nonneg[g_nonneg_count].name, 128, "%s", name);
+    g_nonneg_count++;
+}
+static void nonneg_remove(const char* name) {
+    for (int i = 0; i < g_nonneg_count; i++) {
+        if (strcmp(g_nonneg[i].name, name) == 0) {
+            g_nonneg[i] = g_nonneg[--g_nonneg_count];
+            return;
+        }
+    }
+}
+static int nonneg_save(NonnegId* dst) {
+    for (int i = 0; i < g_nonneg_count; i++) dst[i] = g_nonneg[i];
+    return g_nonneg_count;
+}
+static void nonneg_restore(NonnegId* src, int count) {
+    for (int i = 0; i < count; i++) g_nonneg[i] = src[i];
+    g_nonneg_count = count;
+}
+static int nonneg_expr(ASTNode* n) {
+    if (!n) return 0;
+    if (bound_nonneg_number(n, NULL)) return 1;
+    if (n->type == AST_METHOD_CALL &&
+        (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0)) return 1;
+    if (n->type == AST_IDENTIFIER) return nonneg_contains(n->text);
+    return 0;
+}
+static void nonneg_update_for_stmt(ASTNode* ch) {
+    if (!ch) return;
+    if (ch->type == AST_VAR_DECL) {
+        if (ch->child_count >= 2 && ch->children[1] &&
+            strcmp(ch->children[1]->text, "int") == 0) {
+            if (nonneg_expr(ch->children[0])) nonneg_add(ch->text);
+            else nonneg_remove(ch->text);
+        }
+        return;
+    }
+    if (ch->type == AST_POST_DEC) {
+        if (ch->child_count >= 1 && ch->children[0]->type == AST_IDENTIFIER)
+            nonneg_remove(ch->children[0]->text);
+        return;
+    }
+    if (ch->type == AST_POST_INC) return;
+    if (ch->type == AST_ASSIGN && ch->child_count >= 2 &&
+        ch->children[0]->type == AST_IDENTIFIER) {
+        const char* tgt = ch->children[0]->text;
+        ASTNode* rhs = ch->children[1];
+        if (strcmp(ch->text, "=") == 0) {
+            if (rhs->type == AST_BINARY_OP && strcmp(rhs->text, "+") == 0 &&
+                rhs->child_count >= 2 &&
+                ((rhs->children[0]->type == AST_IDENTIFIER &&
+                  strcmp(rhs->children[0]->text, tgt) == 0 && nonneg_expr(rhs->children[1])) ||
+                 (rhs->children[1]->type == AST_IDENTIFIER &&
+                  strcmp(rhs->children[1]->text, tgt) == 0 && nonneg_expr(rhs->children[0]))))
+                return;
+            if (nonneg_expr(rhs)) nonneg_add(tgt);
+            else nonneg_remove(tgt);
+        } else if (strcmp(ch->text, "+=") == 0) {
+            if (!bound_nonneg_number(rhs, NULL)) nonneg_remove(tgt);
+        } else {
+            nonneg_remove(tgt);
+        }
+        return;
+    }
+}
 static void generate_guarded_stmt(FILE* f, ASTNode* ch, int indent) {
     generate_node(f, ch, indent);
     if (bound_subtree_has_assign_or_call(ch)) bound_proof_clear();
+    nonneg_update_for_stmt(ch);
     if (ch && ch->type == AST_IF && ch->child_count == 2) {
         char buf[128], idx[128];
         if (bound_early_exit_guard(ch->children[0], buf, idx) &&
@@ -3398,12 +3494,15 @@ static void generate_block_children(FILE* f, ASTNode* block, int indent) {
     // Parity step 1: proofs are scoped to this block.
     BoundProof saved[64];
     int saved_count = bound_proof_save(saved);
+    NonnegId saved_nonneg[64];
+    int saved_nonneg_count = nonneg_save(saved_nonneg);
     for (int i = 0; i < block->child_count; i++) {
         ASTNode* ch = block->children[i];
         if (ch && ch->type == AST_RETURN) emit_file_closes_for(f, block, i, indent);
         generate_guarded_stmt(f, ch, indent);
     }
     bound_proof_restore(saved, saved_count);
+    nonneg_restore(saved_nonneg, saved_nonneg_count);
     // At the block's end (unless the last statement is a return:
     // the closes already ran before it).
     if (block->child_count == 0 || block->children[block->child_count - 1]->type != AST_RETURN)
@@ -6610,6 +6709,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         current_function_name[sizeof(current_function_name) - 1] = '\0';
         // Parity step 1: no proof carries across functions.
         bound_proof_clear();
+        // Interval slice: no nonneg carries across
+        // functions either (a leaked `i` would prove
+        // a parameter index nonneg in the next fn).
+        g_nonneg_count = 0;
         g_cur_tuple = NULL;
         if (ret_type->text[0] == '(') {
             // Tuple return (spec 8.2): the C function returns
@@ -8336,6 +8439,22 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             int saved_loop_count = bound_proof_save(saved_loop);
             bound_proof_clear();
             if (wproof) bound_proof_add(wbuf, widx);
+            // Interval slice: a single-bound while
+            // (`i < b.length()`) with i provably
+            // nonneg at loop entry proves (b, i) at
+            // body top. The body's own modifications
+            // to i void the proof after themselves
+            // (generate_guarded_stmt voids on assign,
+            // call, and now i++/i--), so reads before
+            // any modification are raw and reads after
+            // one are checked -- sound for the common
+            // `i = i + 1` / `i++` body patterns.
+            {
+                char sbuf[128] = "", sidx[128] = "";
+                if (bound_cmp_kind(node->children[0], sidx, sbuf) == BOUND_LT_LEN &&
+                    nonneg_contains(sidx))
+                    bound_proof_add(sbuf, sidx);
+            }
             if (body->type == AST_BLOCK) {
                  // Clean blocks (redesign): a frame that
                  // would be empty is skipped; lexical
