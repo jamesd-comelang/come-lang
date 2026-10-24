@@ -115,12 +115,25 @@ static int current_import_count = 0;
 // Emit #line directive if needed
 static void emit_line_directive(FILE* f, ASTNode* node) {
     if (!g_gen_line_map || !source_filename || !node || node->source_line <= 0) return;
-    
+
     // Only emit if line changed to avoid clutter
     if (node->source_line != last_emitted_line) {
         fprintf(f, "\n#line %d \"%s\"\n", node->source_line, source_filename);
         last_emitted_line = node->source_line;
     }
+}
+
+// COIL-157: a return expands to several C statements
+// (temp, adopt, pop, return). Without a reset before
+// each one, #line arithmetic sprays them across the
+// following source lines and line coverage misattributes
+// the return - a taken branch's pop lands on the next
+// branch's line. Force each statement back to the
+// return's own line.
+static void emit_line_directive_forced(FILE* f, ASTNode* node) {
+    if (!g_gen_line_map || !source_filename || !node || node->source_line <= 0) return;
+    fprintf(f, "\n#line %d \"%s\"\n", node->source_line, source_filename);
+    last_emitted_line = node->source_line;
 }
 
 // COIL-139: ERR source-site emission. Generated code arms a
@@ -1177,6 +1190,19 @@ static int g_in_coroutine = 0;
 static int g_break_depth = 0;
 static int g_continue_depth = 0;
 
+// COIL-157: lexical scope depth within the current
+// function (0 = the function body, i.e. the marker
+// frame). Nested blocks and loop bodies count up; the
+// depth is recorded with every local at declaration, so
+// an assignment can adopt a value to its destination's
+// scope. Loop bodies push their enclosing depth here so
+// break/continue can unwind to it.
+static int g_scope_depth = 0;
+static int g_loop_depths[64];
+static int g_loop_depth_count = 0;
+static void scope_depth_push(void) { g_scope_depth++; g_local_add_depth = g_scope_depth; }
+static void scope_depth_pop(void) { g_scope_depth--; g_local_add_depth = g_scope_depth; }
+
 // Buffer types transfer ownership on spawn (spec 9.1/7);
 // value types are simply copied into the args struct.
 static int is_buffer_type(const char* t) {
@@ -1717,6 +1743,26 @@ static int is_array_receiver(ASTNode* receiver) {
 // operations take the address of the header slot, and growth never
 // moves a shared data block, so no assignment back is needed - the
 // expression still yields the header value where the old code did.
+// COIL-157: adopt helpers defined below (before
+// emit_map_put); the array toolbox uses them.
+static int type_needs_adopt(const char* t);
+static void emit_adopt_value(FILE* f, int indent, const char* lv,
+                             const char* type, const char* dst);
+static void elem_c_type(const char* elem, char* out, size_t n);
+
+// COIL-157: an identifier or member chain re-emits
+// without side effects, so it can be read again for a
+// destination context. Anything else (an index, a call)
+// may evaluate again, so storing methods skip adoption
+// for those receivers (a documented corner).
+static int expr_is_lvalue_chain(ASTNode* n) {
+    if (!n) return 0;
+    if (n->type == AST_IDENTIFIER) return 1;
+    if (n->type == AST_MEMBER_ACCESS && n->child_count >= 1)
+        return expr_is_lvalue_chain(n->children[0]);
+    return 0;
+}
+
 static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const char* method) {
     char rtb[160];
     const char* rt = expr_come_type(receiver, rtb, sizeof(rtb));
@@ -1856,6 +1902,20 @@ static void emit_array_method(FILE* f, ASTNode* node, ASTNode* receiver, const c
         fprintf(f, "0");
     }
     fprintf(f, "); ");
+    // COIL-157: a stored element moves to the receiver's
+    // context, or it dies when the storing scope exits
+    // while the array lives on. Reads (contains/index)
+    // never store, so they never adopt.
+    int adopt_elem = (strcmp(method, "append") == 0 || strcmp(method, "insert") == 0 ||
+                      strcmp(method, "set") == 0) &&
+                     type_needs_adopt(elem) && expr_is_lvalue_chain(receiver);
+    if (adopt_elem) {
+        fprintf(f, "void* _actx = (");
+        generate_expression(f, receiver);
+        fprintf(f, ").ctx; ");
+        emit_adopt_value(f, 0, "_ae", elem, "_actx");
+        fprintf(f, " ");
+    }
     if (strcmp(method, "append") == 0) {
         fprintf(f, "come_array_append_g((come_hdr_t*)&(");
         generate_expression(f, receiver);
@@ -1980,25 +2040,375 @@ static void emit_map_base_ref(FILE* f, ASTNode* base, const char* name) {
 // Emit one map store statement (ends with a newline). Int values are
 // boxed in a cell owned by the current context; string values are
 // stored as the string object itself.
-static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char* vtype, ASTNode* key_expr, ASTNode* val_expr) {
-    if (strcmp(vtype, "int") == 0) {
-        fprintf(f, "{ int* _vp = (int*)mem_talloc_alloc(COME_CTX, sizeof(int)); *_vp = (");
-        generate_expression(f, val_expr);
-        fprintf(f, "); come_map_put(");
-        emit_map_base_ref(f, base, map_var);
+// ---- COIL-157: scope adoption ----
+// Emit statements that move a value's buffers to a
+// longer-lived scope (dst, a C expression for a context).
+// lv is a pure C lvalue (identifier, member chain, or a
+// temp); type is Come type text. Scalars, references
+// (non-owning), and links need nothing. Arrays adopt
+// their data block and, for buffer elements, each
+// element's data. Maps adopt the entries block, every
+// key's data, and every value (boxed ints move as
+// chunks; boxed string headers move their data too).
+// Structs recurse per field. A value whose buffers are
+// already owned outside every scope (module or instance
+// context, another buffer) is left alone by the runtime's
+// ancestor check, so adoption is safe to emit wherever
+// a value may cross into a longer-lived scope.
+static int g_adopt_tmp = 0;
+
+static int adopt_struct_def(const char* sname, char* def, size_t n) {
+    // The driver registry: fields serialized as
+    // "name\x1ftype" pairs joined by ';' (COIL-146).
+    for (int m = 0; m < g_module_struct_modules; m++) {
+        for (int i = 0; i < 64; i++) {
+            const char* nm = NULL; const char* df = NULL;
+            if (!codegen_module_struct_at(g_module_structs[m].module, i, &nm, &df, NULL, NULL)) break;
+            if (nm && strcmp(nm, sname) == 0 && df) {
+                snprintf(def, n, "%s", df);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void emit_adopt_value(FILE* f, int indent, const char* lv,
+                             const char* type, const char* dst);
+
+static void emit_adopt_struct(FILE* f, int indent, const char* lv,
+                              const char* sname, const char* dst) {
+    char def[2048];
+    if (adopt_struct_def(sname, def, sizeof(def))) {
+        char* p = def;
+        while (*p) {
+            char* semi = strchr(p, ';');
+            if (semi) *semi = 0;
+            char* sep = strchr(p, '\x1f');
+            if (sep) {
+                *sep = 0;
+                // Sized past the longest field path the
+                // compiler can construct (a 2048-byte
+                // lvalue plus a field name).
+                char flv[4100];
+                snprintf(flv, sizeof(flv), "(%s).%s", lv, p);
+                emit_adopt_value(f, indent, flv, sep + 1, dst);
+            }
+            if (!semi) break;
+            p = semi + 1;
+        }
+        return;
+    }
+    // Same-module structs in this file (collect_structs):
+    int found = 0;
+    for (int i = 0; i < g_sfield_count; i++) {
+        if (strcmp(g_sfield_struct[i], sname) == 0) {
+            found = 1;
+            char flv[512];
+            snprintf(flv, sizeof(flv), "(%s).%s", lv, g_sfield_name[i]);
+            emit_adopt_value(f, indent, flv, g_sfield_type[i], dst);
+        }
+    }
+    if (!found) {
+        codegen_error("cannot move struct '%s' across a scope boundary: its fields are not registered - "
+                      "a buffer it holds would die with its scope", sname);
+    }
+}
+
+static void emit_adopt_value(FILE* f, int indent, const char* lv,
+                             const char* type, const char* dst) {
+    if (!type || !*type || !lv || !*lv || !dst || !*dst) return;
+    if (is_ref_type(type)) return; // non-owning: never adopt
+    if (strcmp(type, "link") == 0) return;
+    if (strcmp(type, "string") == 0) {
+        emit_indent(f, indent);
+        fprintf(f, "if (come_scope_adopt(%s, (%s).data)) (%s).ctx = %s;\n", dst, lv, lv, dst);
+        return;
+    }
+    if (type_is_array(type)) {
+        char base[160];
+        snprintf(base, sizeof(base), "%s", type);
+        char* lb = strrchr(base, '[');
+        if (lb) *lb = 0;
+        if (type_is_fixed_array(type)) {
+            if (!is_ref_type(base) && strcmp(base, "link") != 0 &&
+                (strcmp(base, "string") == 0 || type_is_array(base) ||
+                 strncmp(base, "map{", 4) == 0 || strncmp(base, "struct ", 7) == 0)) {
+                int n = type_fixed_size(type);
+                int t = g_adopt_tmp++;
+                emit_indent(f, indent);
+                fprintf(f, "for (uint32_t _ca%d = 0; _ca%d < %d; _ca%d++) {\n", t, t, n, t);
+                char elv[512];
+                snprintf(elv, sizeof(elv), "(%s)[_ca%d]", lv, t);
+                emit_adopt_value(f, indent + 4, elv, base, dst);
+                emit_indent(f, indent);
+                fprintf(f, "}\n");
+            }
+            return;
+        }
+        // Dynamic array: the data block, then each buffer
+        // element's own data (elements are headers inline
+        // in the block, so they move with it; their data
+        // does not).
+        emit_indent(f, indent);
+        fprintf(f, "if (come_scope_adopt(%s, (%s).data)) (%s).ctx = %s;\n", dst, lv, lv, dst);
+        if (strcmp(base, "string") == 0 || type_is_array(base) ||
+            strncmp(base, "map{", 4) == 0 || strncmp(base, "struct ", 7) == 0) {
+            char ect[300];
+            come_type_to_c(base, ect, sizeof(ect));
+            int t = g_adopt_tmp++;
+            emit_indent(f, indent);
+            fprintf(f, "if ((%s).data) for (uint32_t _ca%d = 0; _ca%d < (%s).count; _ca%d++) {\n",
+                    lv, t, t, lv, t);
+            char elv[512];
+            snprintf(elv, sizeof(elv), "((%s*)(%s).data)[_ca%d]", ect, lv, t);
+            emit_adopt_value(f, indent + 4, elv, base, dst);
+            emit_indent(f, indent);
+            fprintf(f, "}\n");
+        }
+        return;
+    }
+    if (strncmp(type, "map{", 4) == 0) {
+        char mk[160], mv[160];
+        if (!map_type_parts(type, mk, sizeof(mk), mv, sizeof(mv))) return;
+        int t = g_adopt_tmp++;
+        emit_indent(f, indent);
+        fprintf(f, "if ((%s).data) {\n", lv);
+        emit_indent(f, indent + 4);
+        fprintf(f, "if (come_scope_adopt(%s, (%s).data)) (%s).ctx = %s;\n", dst, lv, lv, dst);
+        emit_indent(f, indent + 4);
+        fprintf(f, "for (uint32_t _ca%d = 0; _ca%d < (%s).cap; _ca%d++) {\n", t, t, lv, t);
+        emit_indent(f, indent + 8);
+        fprintf(f, "if ((%s).data[_ca%d].occupied) {\n", lv, t);
+        emit_indent(f, indent + 12);
+        fprintf(f, "if (come_scope_adopt(%s, (%s).data[_ca%d].key.data)) (%s).data[_ca%d].key.ctx = %s;\n",
+                dst, lv, t, lv, t, dst);
+        if (strcmp(mv, "string") == 0) {
+            emit_indent(f, indent + 12);
+            fprintf(f, "if ((%s).data[_ca%d].value) { come_string_t* _cv = (come_string_t*)(%s).data[_ca%d].value; if (come_scope_adopt(%s, _cv->data)) _cv->ctx = %s; }\n",
+                    lv, t, lv, t, dst, dst);
+        } else {
+            emit_indent(f, indent + 12);
+            fprintf(f, "come_scope_adopt(%s, (%s).data[_ca%d].value);\n", dst, lv, t);
+        }
+        emit_indent(f, indent + 8);
+        fprintf(f, "}\n");
+        emit_indent(f, indent + 4);
+        fprintf(f, "}\n");
+        emit_indent(f, indent);
+        fprintf(f, "}\n");
+        return;
+    }
+    if (strncmp(type, "struct ", 7) == 0) {
+        emit_adopt_struct(f, indent, lv, type + 7, dst);
+        return;
+    }
+    // Scalars, FILE handles, and anything else: no buffers.
+}
+
+// Does a value of this Come type own buffers that
+// adoption must move? Mirrors emit_adopt_value's
+// dispatch; scalars, references, and links own none.
+static int type_needs_adopt(const char* t) {
+    if (!t || !*t) return 0;
+    if (is_ref_type(t) || strcmp(t, "link") == 0) return 0;
+    if (strcmp(t, "string") == 0) return 1;
+    if (strncmp(t, "map{", 4) == 0) return 1;
+    if (strncmp(t, "struct ", 7) == 0) return 1;
+    if (type_is_array(t)) {
+        if (type_is_fixed_array(t)) {
+            char base[160];
+            snprintf(base, sizeof(base), "%s", t);
+            char* lb = strrchr(base, '[');
+            if (lb) *lb = 0;
+            return type_needs_adopt(base);
+        }
+        return 1;
+    }
+    return 0;
+}
+
+// The scope context a variable lives in, as C text: a
+// local's recorded depth, the module context for a
+// module variable, the instance context for a field in
+// an instance-form body.
+static void dst_scope_text(const char* name, char* buf, size_t n) {
+    if (g_fn_instance_form && is_module_var(name) &&
+        !get_local_variable_type(name)) {
+        snprintf(buf, n, "__inst->ctx");
+        return;
+    }
+    if (get_local_variable_type(name)) {
+        snprintf(buf, n, "come_scope_ctx_for_depth(%d)", get_local_variable_scope(name));
+        return;
+    }
+    snprintf(buf, n, "come_%s__ctx", current_module);
+}
+
+// The array node an LHS is rooted at (itself for an
+// index store, found down a member chain), or NULL.
+static ASTNode* lhs_array_node(ASTNode* node) {
+    while (node) {
+        if (node->type == AST_ARRAY_ACCESS) return node;
+        if (node->type == AST_MEMBER_ACCESS && node->child_count >= 1) {
+            node = node->children[0];
+            continue;
+        }
+        return NULL;
+    }
+    return NULL;
+}
+
+// Resolve an LHS's Come type: an identifier's recorded
+// type (local, else module variable), a member chain
+// resolved field by field, an index resolved to its
+// element or map value type. NULL when unknowable.
+static const char* resolve_lhs_type(ASTNode* lhs, char* buf, size_t n) {
+    if (lhs->type == AST_IDENTIFIER) {
+        const char* t = get_local_variable_type(lhs->text);
+        if (!t) {
+            const char* rt = NULL;
+            if (codegen_module_var_index(current_module, lhs->text, &rt) >= 0) t = rt;
+        }
+        if (t) { snprintf(buf, n, "%s", t); return buf; }
+        return NULL;
+    }
+    ASTNode* path[64];
+    int depth = 0;
+    ASTNode* cur = lhs;
+    while (cur && depth < 64) {
+        path[depth++] = cur;
+        if (cur->type == AST_MEMBER_ACCESS && cur->child_count >= 1) { cur = cur->children[0]; continue; }
+        if (cur->type == AST_ARRAY_ACCESS && cur->child_count >= 2) { cur = cur->children[0]; continue; }
+        break;
+    }
+    if (!cur || cur->type != AST_IDENTIFIER) return NULL;
+    const char* t = get_local_variable_type(cur->text);
+    if (!t) {
+        const char* rt = NULL;
+        if (codegen_module_var_index(current_module, cur->text, &rt) >= 0) t = rt;
+    }
+    if (!t) return NULL;
+    char cur_t[300];
+    snprintf(cur_t, sizeof(cur_t), "%s", t);
+    for (int i = depth - 2; i >= 0; i--) {
+        ASTNode* step = path[i];
+        char ib[300];
+        const char* dt = deref_ref_type(cur_t, ib, sizeof(ib));
+        if (step->type == AST_MEMBER_ACCESS) {
+            if (strncmp(dt, "struct ", 7) != 0) return NULL;
+            const char* ft = struct_field_type(dt + 7, step->text);
+            if (!ft) return NULL;
+            snprintf(cur_t, sizeof(cur_t), "%s", ft);
+        } else if (step->type == AST_ARRAY_ACCESS) {
+            if (strncmp(dt, "map{", 4) == 0) {
+                char mk[160], mv[160];
+                if (!map_type_parts(dt, mk, sizeof(mk), mv, sizeof(mv))) return NULL;
+                snprintf(cur_t, sizeof(cur_t), "%s", mv);
+            } else if (type_is_array(dt)) {
+                char* lb = strrchr(cur_t, '[');
+                if (!lb) return NULL;
+                *lb = 0;
+            } else return NULL;
+        } else return NULL;
+    }
+    snprintf(buf, n, "%s", cur_t);
+    return buf;
+}
+
+// Emit an LHS with one node replaced by text: for an
+// array-rooted store, the array header becomes a temp
+// so the index is evaluated once and the destination
+// scope is the temp's ctx.
+static void emit_lhs_rerooted(FILE* f, ASTNode* node, ASTNode* target, const char* repl) {
+    if (node == target) { fprintf(f, "%s", repl); return; }
+    if (node->type == AST_MEMBER_ACCESS && node->child_count >= 1) {
+        emit_lhs_rerooted(f, node->children[0], target, repl);
+        fprintf(f, ".%s", node->text);
+        return;
+    }
+    if (node->type == AST_ARRAY_ACCESS && node->child_count >= 2) {
+        // Array element access is COME_ARR_GET_T, not a
+        // subscript of the header (COIL-135): the macro
+        // reads the header's data, so it stays a valid
+        // lvalue with the temp header in place.
+        char bb[300];
+        const char* bt = resolve_lhs_type(node->children[0], bb, sizeof(bb));
+        char et[96] = "int";
+        if (bt) {
+            const char* lb = strchr(bt, '[');
+            if (lb && (size_t)(lb - bt) < 64) {
+                char elem[64];
+                memcpy(elem, bt, (size_t)(lb - bt));
+                elem[lb - bt] = 0;
+                elem_c_type(elem, et, sizeof(et));
+            }
+        }
+        fprintf(f, "COME_ARR_GET_T(");
+        emit_lhs_rerooted(f, node->children[0], target, repl);
         fprintf(f, ", ");
+        generate_expression(f, node->children[1]);
+        fprintf(f, ", %s)", et);
+        return;
+    }
+    generate_expression(f, node);
+}
+
+// The context a map's entries live in: the map header's
+// ctx. The base is always identifier-pure at the call
+// sites (map index writes require an identifier base;
+// literal paths pass NULL), so re-emitting it is safe.
+static void emit_map_ctx(FILE* f, ASTNode* base, const char* map_var) {
+    if (base) {
+        fprintf(f, "(");
+        generate_expression(f, base);
+        fprintf(f, ").ctx");
+    } else {
+        fprintf(f, "%s.ctx", map_var);
+    }
+}
+
+static void emit_map_put(FILE* f, ASTNode* base, const char* map_var, const char* vtype, ASTNode* key_expr, ASTNode* val_expr) {
+    // COIL-157: entries live in the map's own context.
+    // A map built in a loop and kept (or returned) keeps
+    // its entries; a map dropped with its scope frees
+    // them with it. Keys are adopted to the map's ctx
+    // too, or an entry's key would dangle when the
+    // storing scope exits.
+    if (strcmp(vtype, "int") == 0) {
+        fprintf(f, "{ int* _vp = (int*)mem_talloc_alloc(");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, ", sizeof(int)); *_vp = (");
+        generate_expression(f, val_expr);
+        fprintf(f, "); { come_string_t _ck = ");
         emit_string_expr(f, key_expr);
-        fprintf(f, ", _vp); }\n");
+        fprintf(f, "; if (come_scope_adopt(");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, ", _ck.data)) _ck.ctx = ");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, "; come_map_put(");
+        emit_map_base_ref(f, base, map_var);
+        fprintf(f, ", _ck, _vp); } }\n");
     } else if (strcmp(vtype, "string") == 0) {
         // String values are boxed in a cell too (COIL-135): the
         // stored value is a header value, not a pointer.
-        fprintf(f, "{ come_string_t* _vp = (come_string_t*)mem_talloc_alloc(COME_CTX, sizeof(come_string_t)); *_vp = (");
+        fprintf(f, "{ come_string_t _cv = ");
         emit_string_expr(f, val_expr);
-        fprintf(f, "); come_map_put(");
-        emit_map_base_ref(f, base, map_var);
-        fprintf(f, ", ");
+        fprintf(f, "; if (come_scope_adopt(");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, ", _cv.data)) _cv.ctx = ");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, "; come_string_t* _vp = (come_string_t*)mem_talloc_alloc(");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, ", sizeof(come_string_t)); *_vp = _cv; { come_string_t _ck = ");
         emit_string_expr(f, key_expr);
-        fprintf(f, ", _vp); }\n");
+        fprintf(f, "; if (come_scope_adopt(");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, ", _ck.data)) _ck.ctx = ");
+        emit_map_ctx(f, base, map_var);
+        fprintf(f, "; come_map_put(");
+        emit_map_base_ref(f, base, map_var);
+        fprintf(f, ", _ck, _vp); } }\n");
     } else {
         fprintf(f, "come_map_put(");
         emit_map_base_ref(f, base, map_var);
@@ -2502,6 +2912,43 @@ static void generate_expression(FILE* f, ASTNode* node) {
                     return;
                 }
                 // reference = reference: a plain rebind, below.
+            }
+        }
+        // COIL-157: an assignment used as a value still
+        // moves scopes when it stores a buffer: temp the
+        // value, adopt it to the destination's scope,
+        // store it, and yield it.
+        if (strcmp(node->text, "=") == 0 && node->child_count >= 2 &&
+            (node->children[0]->type == AST_IDENTIFIER ||
+             node->children[0]->type == AST_MEMBER_ACCESS)) {
+            char ltb[300];
+            const char* ltype = resolve_lhs_type(node->children[0], ltb, sizeof(ltb));
+            // A map INDEX write keeps its existing path: a
+            // map index is not an array element, and map
+            // writes have their own interception. But a
+            // whole-map variable assignment DOES adopt -
+            // narrowing the guard to index writes only, or
+            // a table stored into a field (kw_table in
+            // create()) would die with the storing scope.
+            if (ltype && type_needs_adopt(ltype) &&
+                !(strncmp(ltype, "map{", 4) == 0 &&
+                  node->children[0]->type == AST_ARRAY_ACCESS)) {
+                char ctype[300];
+                come_type_to_c(ltype, ctype, sizeof(ctype));
+                char dst[160];
+                ASTNode* root = node->children[0];
+                while (root->type == AST_MEMBER_ACCESS && root->child_count >= 1)
+                    root = root->children[0];
+                if (root->type == AST_IDENTIFIER) dst_scope_text(root->text, dst, sizeof(dst));
+                else snprintf(dst, sizeof(dst), "COME_CTX");
+                fprintf(f, "({ %s _come_v = ", ctype);
+                generate_expression(f, node->children[1]);
+                fprintf(f, "; ");
+                emit_adopt_value(f, 0, "_come_v", ltype, dst);
+                fprintf(f, " ");
+                generate_expression(f, node->children[0]);
+                fprintf(f, " = _come_v; _come_v; })");
+                return;
             }
         }
         generate_expression(f, node->children[0]);
@@ -4187,13 +4634,10 @@ static void emit_instance_guard(FILE* f, ASTNode* fn, int indent) {
     fprintf(f, "if (!__inst || !__inst->alive) { come_ERR_set(EBADF, \"module instance has been destroyed\"); ");
     emit_instance_zero_return(f, fn);
     fprintf(f, " }\n");
-    // Inside the body the module context macro binds to
-    // the instance's own allocation root: a local with the
-    // global's name shadows it for this function only.
-    emit_indent(f, indent);
-    fprintf(f, "TALLOC_CTX* come_%s__ctx = __inst->ctx;\n", current_module);
-    emit_indent(f, indent);
-    fprintf(f, "(void)come_%s__ctx;\n", current_module);
+    // COIL-157: no context local here anymore. Buffers a
+    // method creates belong to its scope (COME_CTX is the
+    // scope stack); buffers it stores in a field are
+    // adopted to __inst->ctx by the assignment path.
 }
 
 static void generate_program(FILE* f, ASTNode* node) {
@@ -4210,11 +4654,19 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
 
     // COIL-139: arm the ERR pending location with this
     // statement's source site (function bodies only).
+    // COIL-157: the arm carries its own forced #line:
+    // without it, #line arithmetic attributes the arm to
+    // whatever line the previous statement's expansion
+    // happened to end on, and line coverage credits the
+    // wrong branch (a taken branch's arm landed on the
+    // next branch's line).
     if (g_in_fn_body && node->source_line > 0 &&
         node->type != AST_BLOCK && node->type != AST_FUNCTION &&
         node->type != AST_CASE && node->type != AST_DEFAULT &&
-        node->type != AST_FALLTHROUGH)
+        node->type != AST_FALLTHROUGH) {
+        emit_line_directive_forced(f, node);
         emit_err_arm(f, node, indent);
+    }
 
     switch (node->type) {
         case AST_PROGRAM:
@@ -4413,12 +4865,35 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             int prev_inst = g_fn_instance_form;
             g_in_fn_body = 1;
             g_fn_instance_form = inst_form;
+            // COIL-157: the function body is the marker
+            // frame. It must be pushed after the guard
+            // (the guard returns early, before any scope
+            // exists) and popped on every exit: returns
+            // pop to the marker themselves, and the
+            // fallthrough path pops here.
+            g_scope_depth = 0;
+            g_local_add_depth = 0;
+            g_loop_depth_count = 0;
+            emit_indent(f, indent + 4);
+            fprintf(f, "come_scope_push_marker();\n");
             generate_block_children(f, body, indent + 4);
             g_fn_instance_form = prev_inst;
             g_in_fn_body = prev_in_fn;
-            if (is_main) {
-                emit_indent(f, indent + 4);
-                fprintf(f, "return 0;\n");
+            // COIL-157: a body ending in a return never
+            // falls through, so the fallthrough pop (and
+            // main's return 0) would be dead code - and
+            // dead code still confuses line coverage.
+            if (body->child_count == 0 ||
+                body->children[body->child_count - 1]->type != AST_RETURN) {
+                if (is_main) {
+                    emit_indent(f, indent + 4);
+                    fprintf(f, "come_scope_pop_to_marker();\n");
+                    emit_indent(f, indent + 4);
+                    fprintf(f, "return 0;\n");
+                } else {
+                    emit_indent(f, indent + 4);
+                    fprintf(f, "come_scope_pop_to_marker();\n");
+                }
             }
             emit_indent(f, indent);
             fprintf(f, "}\n");
@@ -4913,9 +5388,22 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         case AST_BLOCK: {
             // A bare block is its own C scope: without braces,
             // two sibling blocks could not reuse a name.
+            // COIL-157: it is also its own scope context:
+            // buffers a block creates die at its end.
             emit_indent(f, indent);
             fprintf(f, "{\n");
+            emit_indent(f, indent + 1);
+            fprintf(f, "come_scope_push();\n");
+            scope_depth_push();
             generate_block_children(f, node, indent + 1);
+            scope_depth_pop();
+            // A block ending in a return never reaches its
+            // pop: the return already popped to the marker.
+            if (node->child_count == 0 ||
+                node->children[node->child_count - 1]->type != AST_RETURN) {
+                emit_indent(f, indent + 1);
+                fprintf(f, "come_scope_pop();\n");
+            }
             emit_indent(f, indent);
             fprintf(f, "}\n");
             break;
@@ -5083,6 +5571,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 // struct is its own C type, so unless the
                 // callee is this very function the value is
                 // rebuilt field by field.
+                // COIL-157: every exit adopts the value to
+                // the caller's scope before popping the
+                // marker frame, or its buffers would die
+                // with this function.
                 if (node->child_count == 1 &&
                     (node->children[0]->type == AST_CALL ||
                      node->children[0]->type == AST_METHOD_CALL)) {
@@ -5091,13 +5583,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     const TupleFn* tf = resolve_tuple_call(node->children[0],
                                                            defmod, sizeof(defmod), &scratch);
                     if (tf && tf->count == g_cur_tuple->count) {
+                        fprintf(f, "come_%s__%s_ret_t _come_ret = ", current_module, g_cur_tuple->name);
                         if (strcmp(defmod, current_module) == 0 &&
                             strcmp(tf->name, g_cur_tuple->name) == 0) {
-                            fprintf(f, "return ");
                             generate_expression(f, node->children[0]);
                             fprintf(f, ";\n");
                         } else {
-                            fprintf(f, "return ({ come_%s__%s_ret_t _t = ", defmod, tf->name);
+                            fprintf(f, "({ come_%s__%s_ret_t _t = ", defmod, tf->name);
                             generate_expression(f, node->children[0]);
                             fprintf(f, "; (come_%s__%s_ret_t){", current_module, g_cur_tuple->name);
                             for (int i = 0; i < tf->count; i++) {
@@ -5106,6 +5598,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                             }
                             fprintf(f, "}; });\n");
                         }
+                        for (int i = 0; i < g_cur_tuple->count; i++) {
+                            char elv[64];
+                            snprintf(elv, sizeof(elv), "_come_ret._%d", i);
+                            emit_adopt_value(f, indent, elv, g_cur_tuple->elems[i], "come_scope_caller_ctx()");
+                        }
+                        emit_line_directive_forced(f, node);
+                        emit_indent(f, indent);
+                        fprintf(f, "come_scope_pop_to_marker();\n");
+                        emit_line_directive_forced(f, node);
+                        emit_indent(f, indent);
+                        fprintf(f, "return _come_ret;\n");
                         break;
                     }
                 }
@@ -5116,7 +5619,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                                   g_cur_tuple->name, g_cur_tuple->count, node->child_count);
                     break;
                 }
-                fprintf(f, "return (come_%s__%s_ret_t){", current_module, g_cur_tuple->name);
+                fprintf(f, "come_%s__%s_ret_t _come_ret = (come_%s__%s_ret_t){", current_module, g_cur_tuple->name, current_module, g_cur_tuple->name);
                 for (int i = 0; i < node->child_count; i++) {
                     if (i) fprintf(f, ", ");
                     if (strcmp(g_cur_tuple->elems[i], "string") == 0) {
@@ -5126,6 +5629,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     }
                 }
                 fprintf(f, "};\n");
+                for (int i = 0; i < g_cur_tuple->count; i++) {
+                    char elv[64];
+                    snprintf(elv, sizeof(elv), "_come_ret._%d", i);
+                    emit_adopt_value(f, indent, elv, g_cur_tuple->elems[i], "come_scope_caller_ctx()");
+                }
+                emit_line_directive_forced(f, node);
+                emit_indent(f, indent);
+                fprintf(f, "come_scope_pop_to_marker();\n");
+                emit_line_directive_forced(f, node);
+                emit_indent(f, indent);
+                fprintf(f, "return _come_ret;\n");
                 break;
             }
             if (node->child_count > 1) {
@@ -5135,11 +5649,18 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (node->child_count > 0 && expr_is_fn_value(node->children[0]))
                 codegen_error("functions cannot be returned (spec 8.3): '%s'", node->children[0]->text);
             if (strcmp(current_function_return_type, "void") == 0) {
+                 emit_line_directive_forced(f, node);
+                 fprintf(f, "come_scope_pop_to_marker();\n");
+                 emit_indent(f, indent);
                  fprintf(f, "return;\n");
             } else {
-                fprintf(f, "return");
                 if (node->child_count > 0) {
-                    fprintf(f, " ");
+                    // COIL-157: materialize into a temp,
+                    // adopt its buffers to the caller's
+                    // scope, pop the marker, then return.
+                    char rct[300];
+                    come_type_to_c(current_function_return_type, rct, sizeof(rct));
+                    fprintf(f, "%s _come_ret = ", rct);
                     // Same materialization as call arguments: a
                     // string function must return a come_string_t,
                     // not a raw literal (COIL-133).
@@ -5162,10 +5683,27 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                         emit_string_expr(f, node->children[0]);
                     else
                         generate_expression(f, node->children[0]);
+                    fprintf(f, ";\n");
+                    const char* atype = current_function_return_type;
+                    char abuf[300];
+                    if (strcmp(atype, "var") == 0 && rtx) {
+                        snprintf(abuf, sizeof(abuf), "%s", rtx);
+                        atype = abuf;
+                    }
+                    emit_adopt_value(f, indent, "_come_ret", atype, "come_scope_caller_ctx()");
+                    emit_line_directive_forced(f, node);
+                    emit_indent(f, indent);
+                    fprintf(f, "come_scope_pop_to_marker();\n");
+                    emit_line_directive_forced(f, node);
+                    emit_indent(f, indent);
+                    fprintf(f, "return _come_ret;\n");
                 } else {
-                    fprintf(f, " 0");
+                    emit_line_directive_forced(f, node);
+                    fprintf(f, "come_scope_pop_to_marker();\n");
+                    emit_line_directive_forced(f, node);
+                    emit_indent(f, indent);
+                    fprintf(f, "return 0;\n");
                 }
-                fprintf(f, ";\n");
             }
             break;
         }
@@ -5365,7 +5903,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // materializes, exactly as in a declaration;
             // emitting the raw C literal would type-mismatch
             // (COIL-126).
-            if (node->children[1]->type == AST_STRING_LITERAL &&
+            // COIL-157: the literal paths are plain stores
+            // only; a compound op must fall through to the
+            // plain tail instead of silently becoming '='.
+            if (strcmp(node->text, "=") == 0 &&
+                node->children[1]->type == AST_STRING_LITERAL &&
                 (node->children[0]->type == AST_IDENTIFIER ||
                  node->children[0]->type == AST_MEMBER_ACCESS)) {
                 // A string literal assigned to a string variable
@@ -5373,10 +5915,28 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 char ltb[160];
                 const char* lt = expr_come_type(node->children[0], ltb, sizeof(ltb));
                 if (lt && strcmp(lt, "string") == 0) {
-                    generate_expression(f, node->children[0]);
-                    fprintf(f, " = come_string_new(COME_CTX, ");
+                    // COIL-157: materialize into a temp and
+                    // adopt it to the destination's scope,
+                    // or a literal stored into an outer
+                    // variable from a loop body would die
+                    // at the iteration's end.
+                    char dst[160];
+                    ASTNode* root = node->children[0];
+                    while (root->type == AST_MEMBER_ACCESS && root->child_count >= 1)
+                        root = root->children[0];
+                    if (root->type == AST_IDENTIFIER) dst_scope_text(root->text, dst, sizeof(dst));
+                    else snprintf(dst, sizeof(dst), "COME_CTX");
+                    fprintf(f, "{\n");
+                    emit_indent(f, indent + 4);
+                    fprintf(f, "come_string_t _come_v = come_string_new(COME_CTX, ");
                     generate_expression(f, node->children[1]);
                     fprintf(f, ");\n");
+                    emit_adopt_value(f, indent + 4, "_come_v", "string", dst);
+                    emit_indent(f, indent + 4);
+                    generate_expression(f, node->children[0]);
+                    fprintf(f, " = _come_v;\n");
+                    emit_indent(f, indent);
+                    fprintf(f, "}\n");
                     break;
                 }
             }
@@ -5405,24 +5965,191 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     break;
                 }
             }
-            if (node->children[0]->type == AST_ARRAY_ACCESS &&
+            if (strcmp(node->text, "=") == 0 &&
+                node->children[0]->type == AST_ARRAY_ACCESS &&
                 node->children[1]->type == AST_STRING_LITERAL) {
                 // A string literal stored into a string element
                 // materializes, like any string store.
                 char atb[160];
                 const char* at = expr_come_type(node->children[0], atb, sizeof(atb));
                 if (at && strcmp(at, "string") == 0) {
-                    generate_expression(f, node->children[0]);
-                    fprintf(f, " %s come_string_new(COME_CTX, ", node->text);
-                    generate_expression(f, node->children[1]);
-                    fprintf(f, ");\n");
+                    // COIL-157: temp + adopt. A dynamic
+                    // array's destination is its header's
+                    // ctx (temped once, so an impure index
+                    // is evaluated once); a fixed array's
+                    // destination is its variable's scope.
+                    ASTNode* hdr = node->children[0]->children[0];
+                    char hb[300];
+                    const char* ht = resolve_lhs_type(hdr, hb, sizeof(hb));
+                    if (ht && type_is_fixed_array(ht)) {
+                        char dst[160];
+                        ASTNode* root = hdr;
+                        while (root->type == AST_MEMBER_ACCESS && root->child_count >= 1)
+                            root = root->children[0];
+                        if (root->type == AST_IDENTIFIER) dst_scope_text(root->text, dst, sizeof(dst));
+                        else snprintf(dst, sizeof(dst), "COME_CTX");
+                        fprintf(f, "{\n");
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "come_string_t _come_v = come_string_new(COME_CTX, ");
+                        generate_expression(f, node->children[1]);
+                        fprintf(f, ");\n");
+                        emit_adopt_value(f, indent + 4, "_come_v", "string", dst);
+                        emit_indent(f, indent + 4);
+                        generate_expression(f, node->children[0]);
+                        fprintf(f, " %s _come_v;\n", node->text);
+                        emit_indent(f, indent);
+                        fprintf(f, "}\n");
+                    } else if (ht && strncmp(ht, "map{", 4) != 0) {
+                        // typeof: the header's exact C type
+                        // (see the plain tail above).
+                        fprintf(f, "{\n");
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "typeof(");
+                        generate_expression(f, hdr);
+                        fprintf(f, ") _come_h = ");
+                        generate_expression(f, hdr);
+                        fprintf(f, ";\n");
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "come_string_t _come_v = come_string_new(COME_CTX, ");
+                        generate_expression(f, node->children[1]);
+                        fprintf(f, ");\n");
+                        emit_adopt_value(f, indent + 4, "_come_v", "string", "_come_h.ctx");
+                        emit_indent(f, indent + 4);
+                        emit_lhs_rerooted(f, node->children[0], hdr, "_come_h");
+                        fprintf(f, " %s _come_v;\n", node->text);
+                        emit_indent(f, indent);
+                        fprintf(f, "}\n");
+                    } else {
+                        generate_expression(f, node->children[0]);
+                        fprintf(f, " %s come_string_new(COME_CTX, ", node->text);
+                        generate_expression(f, node->children[1]);
+                        fprintf(f, ");\n");
+                    }
                     break;
                 }
             }
-            generate_expression(f, node->children[0]);
-            fprintf(f, " %s ", node->text);
-            generate_expression(f, node->children[1]);
-            fprintf(f, ";\n");
+            // COIL-157: a buffer stored into a longer-lived
+            // variable must move scopes with it, or it dies
+            // when the storing scope exits. Materialize the
+            // value into a temp, adopt the temp to the
+            // destination's scope, then store it.
+            int adopted_store = 0;
+            if (strcmp(node->text, "=") == 0 && node->child_count >= 2) {
+                ASTNode* lhs = node->children[0];
+                ASTNode* rhs = node->children[1];
+                char ltb[300];
+                const char* ltype = resolve_lhs_type(lhs, ltb, sizeof(ltb));
+                if (!ltype && lhs->type == AST_IDENTIFIER) {
+                    char rb[300];
+                    const char* rt = expr_come_type(rhs, rb, sizeof(rb));
+                    if (rt) { snprintf(ltb, sizeof(ltb), "%s", rt); ltype = ltb; }
+                }
+                // Map index writes keep their existing path
+                // (see the expression site): a map index is
+                // not an array element. Whole-map variable
+                // assignments adopt like any other buffer.
+                if (ltype && type_needs_adopt(ltype) &&
+                    !(strncmp(ltype, "map{", 4) == 0 &&
+                      lhs->type == AST_ARRAY_ACCESS)) {
+                    char ctype[300];
+                    come_type_to_c(ltype, ctype, sizeof(ctype));
+                    ASTNode* anode = lhs_array_node(lhs);
+                    int handled = 0;
+                    if (anode && anode->child_count >= 1) {
+                        char ab[300];
+                        const char* atype = resolve_lhs_type(anode->children[0], ab, sizeof(ab));
+                        if (atype && type_is_fixed_array(atype)) {
+                            // Fixed arrays are inline in
+                            // their variable: the value's
+                            // destination is the array
+                            // variable's scope, and the
+                            // store itself is emitted once.
+                            char dst[160];
+                            ASTNode* root = anode->children[0];
+                            while (root->type == AST_MEMBER_ACCESS && root->child_count >= 1)
+                                root = root->children[0];
+                            if (root->type == AST_IDENTIFIER) dst_scope_text(root->text, dst, sizeof(dst));
+                            else snprintf(dst, sizeof(dst), "COME_CTX");
+                            fprintf(f, "{\n");
+                            emit_indent(f, indent + 4);
+                            fprintf(f, "%s _come_v = ", ctype);
+                            generate_expression(f, rhs);
+                            fprintf(f, ";\n");
+                            emit_adopt_value(f, indent + 4, "_come_v", ltype, dst);
+                            emit_indent(f, indent + 4);
+                            generate_expression(f, lhs);
+                            fprintf(f, " = _come_v;\n");
+                            emit_indent(f, indent);
+                            fprintf(f, "}\n");
+                            handled = 1;
+                        } else if (atype) {
+                            // Dynamic array store: temp the
+                            // array header once; the
+                            // destination scope is the
+                            // temp's ctx, and the store path
+                            // reuses it so the index is
+                            // evaluated once. typeof takes
+                            // the header's exact C type
+                            // (string lists differ from
+                            // plain headers) without
+                            // evaluating it.
+                            fprintf(f, "{\n");
+                            emit_indent(f, indent + 4);
+                            fprintf(f, "typeof(");
+                            generate_expression(f, anode->children[0]);
+                            fprintf(f, ") _come_arr = ");
+                            generate_expression(f, anode->children[0]);
+                            fprintf(f, ";\n");
+                            emit_indent(f, indent + 4);
+                            fprintf(f, "%s _come_v = ", ctype);
+                            generate_expression(f, rhs);
+                            fprintf(f, ";\n");
+                            emit_adopt_value(f, indent + 4, "_come_v", ltype, "_come_arr.ctx");
+                            emit_indent(f, indent + 4);
+                            emit_lhs_rerooted(f, lhs, anode->children[0], "_come_arr");
+                            fprintf(f, " = _come_v;\n");
+                            emit_indent(f, indent);
+                            fprintf(f, "}\n");
+                            handled = 1;
+                        }
+                        // Unresolvable array type: fall
+                        // through to the plain store.
+                    }
+                    if (!handled && !anode) {
+                        // Identifier or member LHS: the
+                        // destination scope comes from the
+                        // root variable.
+                        char dst[160];
+                        ASTNode* root = lhs;
+                        while (root->type == AST_MEMBER_ACCESS && root->child_count >= 1)
+                            root = root->children[0];
+                        if (root->type == AST_IDENTIFIER) dst_scope_text(root->text, dst, sizeof(dst));
+                        else snprintf(dst, sizeof(dst), "COME_CTX");
+                        fprintf(f, "{\n");
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "%s _come_v = ", ctype);
+                        generate_expression(f, rhs);
+                        fprintf(f, ";\n");
+                        emit_adopt_value(f, indent + 4, "_come_v", ltype, dst);
+                        emit_indent(f, indent + 4);
+                        generate_expression(f, lhs);
+                        fprintf(f, " = _come_v;\n");
+                        emit_indent(f, indent);
+                        fprintf(f, "}\n");
+                        adopted_store = 1;
+                    } else if (handled) {
+                        adopted_store = 1;
+                    }
+                    // Otherwise (unresolvable array type):
+                    // fall through to the plain store.
+                }
+            }
+            if (!adopted_store) {
+                generate_expression(f, node->children[0]);
+                fprintf(f, " %s ", node->text);
+                generate_expression(f, node->children[1]);
+                fprintf(f, ";\n");
+            }
             }
             break;
         }
@@ -5590,13 +6317,30 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, ") {\n");
             g_break_depth++;
             g_continue_depth++;
+            // COIL-157: the body scope is per iteration -
+            // a map built in a loop body must die at the
+            // iteration's end, not at the function's.
+            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
             // Body is a block usually?
             ASTNode* body = node->children[1];
             if (body->type == AST_BLOCK) {
+                 emit_indent(f, indent+4);
+                 fprintf(f, "come_scope_push();\n");
+                 scope_depth_push();
                  for(int i=0; i<body->child_count; i++) generate_node(f, body->children[i], indent+4);
+                 scope_depth_pop();
+                 // A body ending in a return never reaches
+                 // its pop: the return already popped to
+                 // the marker.
+                 if (body->child_count == 0 ||
+                     body->children[body->child_count - 1]->type != AST_RETURN) {
+                     emit_indent(f, indent+4);
+                     fprintf(f, "come_scope_pop();\n");
+                 }
             } else {
                  generate_node(f, body, indent+4);
             }
+            g_loop_depth_count--;
             g_break_depth--;
             g_continue_depth--;
             emit_indent(f, indent);
@@ -5610,12 +6354,26 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, "do {\n");
             g_break_depth++;
             g_continue_depth++;
+            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
              ASTNode* body = node->children[0];
             if (body->type == AST_BLOCK) {
+                 emit_indent(f, indent+4);
+                 fprintf(f, "come_scope_push();\n");
+                 scope_depth_push();
                  for(int i=0; i<body->child_count; i++) generate_node(f, body->children[i], indent+4);
+                 scope_depth_pop();
+                 // A body ending in a return never reaches
+                 // its pop: the return already popped to
+                 // the marker.
+                 if (body->child_count == 0 ||
+                     body->children[body->child_count - 1]->type != AST_RETURN) {
+                     emit_indent(f, indent+4);
+                     fprintf(f, "come_scope_pop();\n");
+                 }
             } else {
                  generate_node(f, body, indent+4);
             }
+            g_loop_depth_count--;
             g_break_depth--;
             g_continue_depth--;
             emit_indent(f, indent);
@@ -5677,11 +6435,24 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // children[3]: body
             g_break_depth++;
             g_continue_depth++;
+            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
             ASTNode* body = node->children[3];
             if (body->type == AST_BLOCK) {
                 fprintf(f, "{\n");
+                emit_indent(f, indent + 4);
+                fprintf(f, "come_scope_push();\n");
+                scope_depth_push();
                 for (int i = 0; i < body->child_count; i++) {
                     generate_node(f, body->children[i], indent + 4);
+                }
+                scope_depth_pop();
+                // A body ending in a return never reaches
+                // its pop: the return already popped to
+                // the marker.
+                if (body->child_count == 0 ||
+                    body->children[body->child_count - 1]->type != AST_RETURN) {
+                    emit_indent(f, indent + 4);
+                    fprintf(f, "come_scope_pop();\n");
                 }
                 emit_indent(f, indent);
                 fprintf(f, "}\n");
@@ -5689,6 +6460,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 fprintf(f, "\n");
                 generate_node(f, body, indent + 4);
             }
+            g_loop_depth_count--;
             g_break_depth--;
             g_continue_depth--;
             break;
@@ -5699,6 +6471,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 codegen_error("'break' has no loop or switch to break out of - it is only allowed inside a for, while, do-while, or switch body");
             }
             emit_indent(f, indent);
+            // COIL-157: unwind the current iteration's
+            // scope (and any nested blocks) before the
+            // jump, or the iteration's buffers would
+            // survive until the function returns.
+            if (g_loop_depth_count > 0)
+                fprintf(f, "come_scope_pop_to_depth(%d);\n", g_loop_depths[g_loop_depth_count - 1]);
+            emit_indent(f, indent);
             fprintf(f, "break;\n");
             break;
         }
@@ -5706,6 +6485,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (g_continue_depth == 0) {
                 codegen_error("'continue' has no loop to continue - it is only allowed inside a for, while, or do-while body");
             }
+            emit_indent(f, indent);
+            if (g_loop_depth_count > 0)
+                fprintf(f, "come_scope_pop_to_depth(%d);\n", g_loop_depths[g_loop_depth_count - 1]);
             emit_indent(f, indent);
             fprintf(f, "continue;\n");
             break;
@@ -5985,18 +6767,27 @@ static void emit_instance_runtime(FILE* f, ASTNode* ast) {
     }
     fprintf(f, "static void come_%s__init_fields(come_%s__instance_t* __inst) {\n",
             current_module, current_module);
-    fprintf(f, "    TALLOC_CTX* come_%s__ctx = __inst->ctx;\n", current_module);
     {
         int save = g_fn_instance_form;
         g_fn_instance_form = 1;
         for (int i = 0; i < ast->child_count; i++) {
             ASTNode* v = ast->children[i];
             if (!v || v->type != AST_VAR_DECL) continue;
-            if (codegen_module_var_index(current_module, v->text, NULL) < 0) continue;
+            const char* ftype = NULL;
+            if (codegen_module_var_index(current_module, v->text, &ftype) < 0) continue;
             ASTNode* init = v->child_count > 0 ? v->children[0] : NULL;
             // The parser's dummy 0 for "no initializer":
             // the field is already zero from create's memset.
-            if (!init || (init->type == AST_NUMBER && strcmp(init->text, "0") == 0)) continue;
+            if (!init || (init->type == AST_NUMBER && strcmp(init->text, "0") == 0)) {
+                // COIL-157: a header-typed field with no
+                // initializer still needs its ctx seeded
+                // to the instance, or its first growth
+                // would land in the caller's scope.
+                if (ftype && (strcmp(ftype, "string") == 0 || strncmp(ftype, "map{", 4) == 0 ||
+                              (strchr(ftype, '[') && !type_is_fixed_array(ftype))))
+                    fprintf(f, "    __inst->%s.ctx = __inst->ctx;\n", v->text);
+                continue;
+            }
             fprintf(f, "    __inst->%s = ", v->text);
             if (init->type == AST_STRING_LITERAL) {
                 fprintf(f, "come_string_new(COME_CTX, ");
@@ -6006,6 +6797,16 @@ static void emit_instance_runtime(FILE* f, ASTNode* ast) {
                 generate_expression(f, init);
             }
             fprintf(f, ";\n");
+            // COIL-157: the initializer ran in the
+            // creator's scope, but the field must live
+            // as long as the instance, so adopt it.
+            if (ftype && type_needs_adopt(ftype)) {
+                // Sized past the longest identifier the
+                // lexer can hold (4095 bytes).
+                char flv[4200];
+                snprintf(flv, sizeof(flv), "__inst->%s", v->text);
+                emit_adopt_value(f, 4, flv, ftype, "__inst->ctx");
+            }
         }
         g_fn_instance_form = save;
     }
@@ -6186,7 +6987,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "int come_std__Proc__system(void*, come_string_t);\n");
     }
     // Macros for method dispatch
-    fprintf(f, "#define COME_CTX come_%s__ctx\n\n", current_module);
+    fprintf(f, "#define COME_CTX come_scope_current()\n\n");
 
     // Forward declarations for imported stateful modules
     // come before everything else (COIL-154): this
@@ -6315,8 +7116,9 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "void come_%s__exit_chain(void);\n", current_module);
 
         fprintf(f, "\nint main(int argc, char* argv[]) {\n");
-        fprintf(f, "    COME_CTX = mem_talloc_new_ctx(NULL);\n");
-        fprintf(f, "    if (!COME_CTX) { fprintf(stderr, \"OOM\\n\"); return 1; }\n");
+        // The entry module's context is set by its init
+        // chain below (as for every module); allocations
+        // before any scope is pushed land on the root.
         
         fprintf(f, "    come_coro_init();\n");
         fprintf(f, "    come_%s__init_chain();\n", current_module);
@@ -6344,7 +7146,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         
         fprintf(f, "    \n");
         fprintf(f, "    come_run_exits();\n");
-        fprintf(f, "    mem_talloc_free(COME_CTX);\n");
+        fprintf(f, "    mem_talloc_free(come_%s__ctx);\n", current_module);
         fprintf(f, "    return ret;\n");
         fprintf(f, "}\n");
         } // if (has_main_fn)
@@ -6375,6 +7177,11 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "    static bool initialized = false;\n");
     fprintf(f, "    if (initialized) return;\n");
     fprintf(f, "    initialized = true;\n");
+    // COIL-157: every module gets a real context here (it
+    // used to stay NULL for non-entry modules, which made
+    // their allocations root-owned). Module variables
+    // adopted from a function scope land here.
+    fprintf(f, "    come_%s__ctx = mem_talloc_new_ctx(NULL);\n", current_module);
     // Register this module's memory context with the coroutine
     // scheduler (COIL-120): context switches swap it per coroutine.
     fprintf(f, "    come_coro_register_ctx(&come_%s__ctx);\n", current_module);

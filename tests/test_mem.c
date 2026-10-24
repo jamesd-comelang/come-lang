@@ -156,8 +156,130 @@ static void test_exit_registry() {
     passed("Exit registry (reverse order)");
 }
 
+// COIL-157: scope contexts (spec 7). Generated code runs
+// inside a stack of scope contexts; a buffer a scope
+// creates dies when the scope exits, and adopt moves a
+// buffer only to a scope that outlives its current one.
+// (Liveness at scale is pinned by the map-scope e2e test's
+// RSS bound; these pin the stack and adopt mechanics.)
+void test_scope_stack() {
+    void* stack = come_scope_stack_new();
+    assert(stack != NULL);
+    come_scope_stack_activate(stack);
+    void* root = come_scope_current();
+    assert(root != NULL);
+
+    // A function body is a marker frame; blocks nest under it.
+    come_scope_push_marker();
+    void* body = come_scope_current();
+    assert(body != NULL && body != root);
+    assert(come_scope_ctx_for_depth(0) == body);
+    assert(come_scope_caller_ctx() == root);
+
+    come_scope_push();
+    void* inner = come_scope_current();
+    assert(inner != NULL && inner != body);
+    assert(come_scope_ctx_for_depth(0) == body);
+    assert(come_scope_ctx_for_depth(1) == inner);
+    // Depth past the top clamps to the current frame.
+    assert(come_scope_ctx_for_depth(9) == inner);
+
+    // Pop returns to the body frame.
+    come_scope_pop();
+    assert(come_scope_current() == body);
+
+    // pop_to_depth: from two nested blocks back to the body.
+    come_scope_push();
+    come_scope_push();
+    assert(come_scope_current() != body);
+    come_scope_pop_to_depth(0);
+    assert(come_scope_current() == body);
+
+    // pop_to_marker: from a nested block past the marker.
+    come_scope_push();
+    come_scope_pop_to_marker();
+    assert(come_scope_current() == root);
+
+    come_scope_stack_activate(NULL);
+    come_scope_stack_free(stack);
+    passed("Scope stack");
+}
+
+void test_scope_adopt() {
+    void* stack = come_scope_stack_new();
+    come_scope_stack_activate(stack);
+    // Off-stack: outlives every scope on this stack.
+    void* outer_ctx = mem_talloc_new_ctx(NULL);
+
+    come_scope_push_marker();
+    void* body = come_scope_current();
+    come_scope_push();
+    void* inner = come_scope_current();
+
+    // A buffer born in the inner scope moves outward...
+    char* buf = mem_talloc_alloc(come_scope_current(), 16);
+    strcpy(buf, "keep");
+    assert(come_scope_adopt(body, buf) == 1);
+    // ...and now sits in the body scope: adopting it to
+    // the body again, or back to the inner scope, moves
+    // nothing (a destination must strictly outlive).
+    assert(come_scope_adopt(body, buf) == 0);
+    assert(come_scope_adopt(inner, buf) == 0);
+    // Adopting to an off-stack context always moves.
+    assert(come_scope_adopt(outer_ctx, buf) == 1);
+    // A buffer whose parent is not a scope never moves.
+    char* rooted = mem_talloc_alloc(outer_ctx, 16);
+    assert(come_scope_adopt(body, rooted) == 0);
+    // A NULL destination is the root: it outlives everything.
+    char* buf2 = mem_talloc_alloc(come_scope_current(), 16);
+    assert(come_scope_adopt(NULL, buf2) == 1);
+    // NULL data is a no-op, never a crash.
+    assert(come_scope_adopt(body, NULL) == 0);
+
+    // A buffer adopted to the body survives its birth
+    // scope's exit (its parent is the body, not inner).
+    char* buf3 = mem_talloc_alloc(come_scope_current(), 16);
+    strcpy(buf3, "stay");
+    assert(come_scope_adopt(body, buf3) == 1);
+    come_scope_pop(); // inner
+    assert(strcmp(buf3, "stay") == 0);
+    assert(come_scope_adopt(body, buf3) == 0); // already there
+    come_scope_pop_to_marker();
+    assert(come_scope_current() != body);
+
+    mem_talloc_free(outer_ctx);
+    mem_talloc_free(buf2);
+    come_scope_stack_activate(NULL);
+    come_scope_stack_free(stack);
+    passed("Scope adopt");
+}
+
+void test_scope_stacks_independent() {
+    void* a = come_scope_stack_new();
+    void* b = come_scope_stack_new();
+    come_scope_stack_activate(a);
+    come_scope_push_marker();
+    void* a_body = come_scope_current();
+    come_scope_stack_activate(b);
+    // An empty stack falls back to the root, not a_body.
+    assert(come_scope_current() != a_body);
+    come_scope_push_marker();
+    void* b_body = come_scope_current();
+    assert(b_body != a_body);
+    come_scope_stack_activate(a);
+    assert(come_scope_current() == a_body);
+    come_scope_stack_activate(NULL);
+    // Freeing a stack with live frames reaps them.
+    come_scope_stack_free(a);
+    come_scope_stack_free(b);
+    passed("Scope stacks");
+}
+
 int main() {
     mem_talloc_module_init();
+    test_scope_stack();
+    test_scope_adopt();
+    test_scope_stacks_independent();
     test_exit_registry();
     test_alloc_basics();
     test_subtree_free();

@@ -43,6 +43,10 @@ struct come_coro {
     int home_slot; // module slot the argument block lives in
     // This coroutine's context for each registered module slot.
     TALLOC_CTX* own[COME_CORO_MAX_CTX];
+    // This coroutine's scope stack (COIL-157): swapped on
+    // every switch, so a coroutine suspended inside a scope
+    // keeps its frames intact while another runs.
+    void* scope_stack;
     // This coroutine's ERR record (COIL-139): errors set in
     // one coroutine are never visible in another.
     ComeErrRecord err;
@@ -106,6 +110,8 @@ static void reap_done(void) {
         co->state = CS_FREE;
         free(co->stack);
         co->stack = NULL;
+        come_scope_stack_free(co->scope_stack);
+        co->scope_stack = NULL;
         for (int s = 0; s < g_ctx_slot_count; s++) {
             if (co->own[s]) {
                 mem_talloc_free(co->own[s]);
@@ -132,6 +138,8 @@ static void switch_to(int next) {
     g_coros[prev].state = (g_coros[prev].state == CS_RUNNING) ? CS_READY : g_coros[prev].state;
     g_coros[next].state = CS_RUNNING;
     g_current = next;
+    g_coros[prev].scope_stack = come_scope_stack_active();
+    come_scope_stack_activate(g_coros[next].scope_stack);
     install_ctxs(next);
     come_err_activate(&g_coros[next].err);
     swapcontext(&g_coros[prev].uc, &g_coros[next].uc);
@@ -243,6 +251,7 @@ come_coro_t* come_coro_create(come_coro_fn fn, TALLOC_CTX** home_slot) {
     for (int i = 0; i < g_ctx_slot_count; i++) {
         co->own[i] = mem_talloc_new_ctx(g_ctx_base[i]);
     }
+    co->scope_stack = come_scope_stack_new();
     co->stack = (char*)malloc(COME_CORO_STACK_SIZE);
     if (!co->stack) {
         fprintf(stderr, "coroutine: out of memory\n");

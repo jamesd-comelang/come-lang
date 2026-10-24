@@ -1,0 +1,26 @@
+module kwtab
+
+// COIL-157 regression: a whole map built by a helper and
+// assigned to an instance field in create() must survive
+// create()'s return - the assignment adopts the map's
+// entries (keys and values) to the instance context.
+// (The tokenizer's kw_table = tk_kw_map() shape: before
+// the fix, the keys died with create()'s scope and the
+// first lookup read freed memory.)
+map{string, int} tab
+
+map{string, int} build_tab() {
+    map{string, int} m = {"SELECT": 139, "FROM": 141}
+    return m
+}
+
+void create() {
+    tab = build_tab()
+}
+
+void destroy() {
+}
+
+int code(string word) {
+    return tab[word]
+}

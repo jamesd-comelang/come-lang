@@ -308,7 +308,12 @@ int main() {
         size_t bl111 = fread(buf111, 1, sizeof(buf111) - 1, of111);
         fclose(of111);
         buf111[bl111] = 0;
-        if (!strstr(buf111, "int abs(int") || !strstr(buf111, "return abs(x);") ||
+        // COIL-157: returns materialize into _come_ret
+        // first (scope adoption), so the call's unmangled
+        // shape is "abs(x)" feeding the temp, not a bare
+        // "return abs(x);".
+        if (!strstr(buf111, "int abs(int") || !strstr(buf111, "abs(x)") ||
+            !strstr(buf111, "return _come_ret;") ||
             strstr(buf111, "come_sysmod__abs")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-111: raw prototype / unmangled call missing in generated C\033[0m\n");
             return 1;
@@ -335,8 +340,11 @@ int main() {
         size_t bl133 = fread(buf133, 1, sizeof(buf133) - 1, of133);
         fclose(of133);
         buf133[bl133] = 0;
+        // COIL-157: returns materialize into _come_ret
+        // first, so the literal's materialization is the
+        // temp assignment, not a bare return.
         if (!strstr(buf133, "come_main__shout(come_string_new(COME_CTX, \"abc\"))") ||
-            !strstr(buf133, "return come_string_new(COME_CTX, \"hi\");")) {
+            !strstr(buf133, "_come_ret = come_string_new(COME_CTX, \"hi\");")) {
             printf("\033[1;38;2;255;255;255;48;2;200;0;0mCOIL-133: literal argument / return not materialized in generated C\033[0m\n");
             return 1;
         }

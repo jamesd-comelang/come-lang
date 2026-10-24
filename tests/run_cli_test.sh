@@ -97,6 +97,9 @@ int pick(int v) {
     if (v > 10) {
         return 1
     }
+    if (v < 0) {
+        return -1
+    }
     return 2
 }
 
@@ -163,11 +166,15 @@ echo "$out" | grep -qE "avg [0-9]+(\.[0-9])? ms over 5 runs" || fail "bench outp
 echo "CLI: bench ok"
 
 # ---------- come test --cover ----------
-# pick() never takes the return-2 branch: line 8 of the
-# fixture is the one uncovered line.
+# pick() never takes the v < 0 branch: line 9 of the
+# fixture (its return) is the first uncovered line.
+# (COIL-157: the branch body is the pinned shape, not a
+# trailing return - a trailing return's line also
+# collects the function's epilogue attribution under
+# gcov, so it cannot pin an uncovered branch.)
 out=$($COME test "$SCRATCH/cov" --cover) || fail "cover run failed"
 echo "$out" | grep -q "coverage:" || fail "cover line missing: $out"
-echo "$out" | grep -q "uncovered: 8" || fail "cover missed the uncovered line: $out"
+echo "$out" | grep -q "uncovered: 9" || fail "cover missed the uncovered line: $out"
 echo "$out" | grep -q "Line coverage:" || fail "cover total missing: $out"
 echo "CLI: cover ok"
 

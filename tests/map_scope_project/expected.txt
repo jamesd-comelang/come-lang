@@ -1,0 +1,7 @@
+escape-string: gamma
+escape-map-return: 3
+escape-instance-map: 280
+escape-map-assign: 2
+escape-map-put: deep
+escape-array-append: alpha beta gamma
+escape-total: 2920000

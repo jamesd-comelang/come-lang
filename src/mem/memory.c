@@ -405,6 +405,187 @@ void *mem_talloc_new_ctx(void *parent) {
     return co_to_ptr(chunk);
 }
 
+/* ---- scope contexts (COIL-157, spec 7) ------------------------------- *
+ * A scope context is a talloc chunk like any other; the stack only
+ * records which chunk is current. Popping a frame frees its chunk,
+ * which frees every buffer allocated in that scope - including
+ * blocks a nested scope stole nothing from. A buffer that must
+ * outlive its scope is adopted first (come_scope_adopt), which
+ * re-parents its block under a longer-lived context.
+ *
+ * Frames are plain malloc memory, never talloc children: the stack
+ * itself must survive the scopes it tracks. The active stack is
+ * per coroutine; the scheduler swaps it on a switch (coro.c). */
+typedef struct {
+    void *ctx;
+    int is_marker;
+} co_scope_frame;
+
+typedef struct {
+    co_scope_frame *frames;
+    int top; /* number of frames on the stack */
+    int cap;
+} co_scope_stack;
+
+static co_scope_stack co_scope_main = { NULL, 0, 0 };
+static co_scope_stack *co_scope_active = &co_scope_main;
+
+static int co_scope_grow(co_scope_stack *s) {
+    if (s->top < s->cap) return 1;
+    int ncap = s->cap ? s->cap * 2 : 16;
+    co_scope_frame *nf = realloc(s->frames, sizeof(co_scope_frame) * (size_t)ncap);
+    if (!nf) return 0;
+    s->frames = nf;
+    s->cap = ncap;
+    return 1;
+}
+
+static int co_scope_marker_base(co_scope_stack *s) {
+    for (int i = s->top - 1; i >= 0; i--)
+        if (s->frames[i].is_marker) return i;
+    return -1;
+}
+
+void *come_scope_current(void) {
+    co_scope_stack *s = co_scope_active;
+    if (s->top > 0) return s->frames[s->top - 1].ctx;
+    if (!co_mem_root) mem_talloc_module_init();
+    return co_mem_root;
+}
+
+void come_scope_push(void) {
+    co_scope_stack *s = co_scope_active;
+    void *parent = come_scope_current();
+    void *ctx = mem_talloc_new_ctx(parent);
+    if (!ctx || !co_scope_grow(s)) return;
+    s->frames[s->top].ctx = ctx;
+    s->frames[s->top].is_marker = 0;
+    s->top++;
+}
+
+void come_scope_push_marker(void) {
+    co_scope_stack *s = co_scope_active;
+    void *parent = come_scope_current();
+    void *ctx = mem_talloc_new_ctx(parent);
+    if (!ctx || !co_scope_grow(s)) return;
+    s->frames[s->top].ctx = ctx;
+    s->frames[s->top].is_marker = 1;
+    s->top++;
+}
+
+void come_scope_pop(void) {
+    co_scope_stack *s = co_scope_active;
+    if (s->top <= 0) return;
+    s->top--;
+    mem_talloc_free(s->frames[s->top].ctx);
+}
+
+void come_scope_pop_to_marker(void) {
+    co_scope_stack *s = co_scope_active;
+    while (s->top > 0) {
+        int marker = s->frames[s->top - 1].is_marker;
+        come_scope_pop();
+        if (marker) break;
+    }
+}
+
+void come_scope_pop_to_depth(int lexical_depth) {
+    co_scope_stack *s = co_scope_active;
+    int base = co_scope_marker_base(s);
+    if (base < 0) {
+        while (s->top > 0) come_scope_pop();
+        return;
+    }
+    while (s->top - 1 > base + lexical_depth) come_scope_pop();
+}
+
+void *come_scope_caller_ctx(void) {
+    co_scope_stack *s = co_scope_active;
+    int base = co_scope_marker_base(s);
+    if (base <= 0) {
+        if (!co_mem_root) mem_talloc_module_init();
+        return co_mem_root;
+    }
+    return s->frames[base - 1].ctx;
+}
+
+void *come_scope_ctx_for_depth(int lexical_depth) {
+    co_scope_stack *s = co_scope_active;
+    int base = co_scope_marker_base(s);
+    if (base < 0) {
+        if (!co_mem_root) mem_talloc_module_init();
+        return co_mem_root;
+    }
+    int idx = base + lexical_depth;
+    if (idx >= s->top) return come_scope_current();
+    return s->frames[idx].ctx;
+}
+
+int come_scope_adopt(void *dst, void *data) {
+    if (!data) return 0;
+    co_scope_stack *s = co_scope_active;
+    co_chunk *chunk = co_from_ptr(data);
+    co_chunk *parent = chunk->parent;
+    if (!parent) return 0;
+    if (!dst) {
+        /* A NULL destination is the root context (a bare
+           module map's ctx, for instance): it outlives
+           every scope, so the steal always moves. */
+        mem_talloc_steal(NULL, data);
+        return 1;
+    }
+    co_chunk *dst_chunk = co_from_ptr(dst);
+    /* Refuse a cycle: dst must not be the block itself or
+       one of its descendants (mirrors mem_talloc_steal). */
+    for (co_chunk *c = dst_chunk; c; c = c->parent)
+        if (c == chunk) return 0;
+    /* Where do parent and dst sit on the scope stack, if
+       at all? A parent that is not a scope - a module or
+       instance context, or another buffer's chunk - already
+       outlives every scope, so there is nothing to move. */
+    int k = -1, j = -1;
+    for (int i = 0; i < s->top; i++) {
+        if (co_from_ptr(s->frames[i].ctx) == parent) k = i;
+        if (co_from_ptr(s->frames[i].ctx) == dst_chunk) j = i;
+    }
+    if (k < 0) return 0;
+    if (j < 0 || j < k) {
+        mem_talloc_steal(dst, data);
+        return 1;
+    }
+    return 0;
+}
+
+void *come_scope_stack_new(void) {
+    co_scope_stack *s = malloc(sizeof(co_scope_stack));
+    if (!s) return NULL;
+    s->frames = NULL;
+    s->top = 0;
+    s->cap = 0;
+    return s;
+}
+
+void come_scope_stack_activate(void *stack) {
+    co_scope_active = stack ? (co_scope_stack *)stack : &co_scope_main;
+}
+
+void *come_scope_stack_active(void) {
+    return co_scope_active;
+}
+
+void come_scope_stack_free(void *stack) {
+    co_scope_stack *s = (co_scope_stack *)stack;
+    if (!s || s == &co_scope_main) return;
+    /* A finished coroutine never resumes, so frames left
+       on its stack are dead: free their contexts too. */
+    co_scope_stack *saved = co_scope_active;
+    co_scope_active = s;
+    while (s->top > 0) come_scope_pop();
+    co_scope_active = saved;
+    free(s->frames);
+    free(s);
+}
+
 void *mem_talloc_steal(void *new_ctx, void *ptr) {
     if (!ptr)
         return NULL;
