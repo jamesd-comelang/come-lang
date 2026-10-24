@@ -836,6 +836,11 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     const char *ctn[256], *ctt[256];
     for (int i = 0; i < const_count; i++) { ctn[i] = consts[i].name; ctt[i] = consts[i].ctype; }
     codegen_register_module_consts(module_name, ctn, ctt, const_count);
+    // A5 (perf-experiments): frameless functions for this
+    // module, from the same pre-scan ASTs. Names only are
+    // registered: directory groups free these ASTs right
+    // after this analysis and re-parse per file.
+    codegen_analyze_frameless(module_name, asts, nast);
 }
 
 // Compile all files of a directory module as one module (COIL-108).

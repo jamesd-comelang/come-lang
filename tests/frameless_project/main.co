@@ -1,0 +1,71 @@
+module main
+import std
+
+// Pure scalar leaf: no marker frame.
+int leaf(int x) {
+    if (x < 0) { return 0 - x }
+    return x + 1
+}
+
+// Calls only a frameless function: no marker (fixpoint).
+int leaf2(int x) {
+    return leaf(x) * 2
+}
+
+// A buffer parameter is fine: nothing is created here.
+int strlen_only(string s) {
+    return s.length()
+}
+
+// Returns a buffer it did not create: no marker; the
+// return adopts outward to the caller's scope.
+string pick(string s, bool flag) {
+    if (flag) { return s }
+    return s
+}
+
+// String concatenation allocates: must keep a frame.
+string cat(string a, string b) {
+    return a + b
+}
+
+// break pops to a lexical depth: must keep a frame.
+int with_break(int n) {
+    int i = 0
+    while (true) {
+        if (i >= n) { break }
+        i = i + 1
+    }
+    return i
+}
+
+// Calls a framed function: must keep a frame.
+int calls_framed(int n) {
+    return with_break(n) + 1
+}
+
+int main() {
+    int sum = 0
+    int i = 0
+    while (i < 1000) {
+        sum = sum + leaf2(i)
+        i = i + 1
+    }
+    std.out.printf("sum=%d\n", sum)
+    std.out.printf("len=%d\n", strlen_only("hello"))
+    string r = ""
+    int k = 0
+    while (k < 10) {
+        r = pick("picked", true)
+        k = k + 1
+    }
+    std.out.printf("pick=%s\n", r)
+    // NOTE: assign first - passing a fresh concatenation
+    // straight to printf segfaults on the baseline compiler
+    // too (pre-existing, unrelated to framelessness).
+    string c = cat("foo", "bar")
+    std.out.printf("cat=%s\n", c)
+    std.out.printf("break=%d\n", with_break(7))
+    std.out.printf("framed=%d\n", calls_framed(7))
+    return 0
+}

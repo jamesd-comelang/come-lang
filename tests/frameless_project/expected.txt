@@ -1,0 +1,6 @@
+sum=1001000
+len=5
+pick=picked
+cat=foobar
+break=7
+framed=8

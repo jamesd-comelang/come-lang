@@ -88,4 +88,11 @@ const char* codegen_module_const_type(const char* module, const char* name);
 int codegen_module_const_count(const char* module);
 int codegen_module_const_at(const char* module, int i, const char** name,
                             const char** ctype);
+// A5 (perf-experiments): the driver computes each module's
+// frameless functions from all of its files' ASTs and
+// registers the names here before generating any file;
+// emission asks codegen_is_frameless per function.
+void codegen_analyze_frameless(const char* module, ASTNode** asts, int nast);
+void codegen_register_module_frameless(const char* module, const char** names, int count);
+int codegen_is_frameless(const char* module, const char* fn);
 #endif

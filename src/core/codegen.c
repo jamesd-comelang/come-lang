@@ -104,6 +104,7 @@ static char current_function_return_type[128] = "";
 static char current_function_name[128] = "";
 static int g_in_fn_body = 0;
 static int g_fn_instance_form = 0; // COIL-140: body being generated is instance-form
+static int g_cur_fn_frameless = 0; // A5: body being generated needs no marker frame
 static int g_module_level = 0;     // COIL-140: generating a top-level node   // arming ERR source sites (COIL-139)
 static int g_raw_aggregate = 0;    // COIL-145: emit an array literal's raw braces (the declaration path's own C array) instead of materializing the header value
 static char current_module[256] = "main"; // Default to main if unspecified
@@ -1057,6 +1058,304 @@ const char* codegen_module_const_type(const char* module, const char* name) {
         return NULL;
     }
     return NULL;
+}
+
+// ---- A5 (perf-experiments): frameless functions ----
+// A function is frameless when its body provably allocates
+// nothing and touches no scope-frame machinery: no buffer
+// values created, no calls except to other frameless
+// functions of the same module (plus the non-allocating
+// .length()/.bytesize()/.owner() readers), no break or
+// continue (they pop to a lexical depth), no string or
+// aggregate literals, no buffer-typed locals, and string
+// concatenation only on provably scalar operands. The
+// driver computes the set per module as a fixpoint over
+// the call graph before generating any file, and registers
+// the names here; emission then skips the marker push at
+// entry and the pop-to-marker on every exit path.
+// Soundness: a frameless function's values, if any reach
+// it through a callee's return, are adopted to the
+// caller's live frame instead of a frame of its own - a
+// lifetime extension, never a shortening, because every
+// frame live during the call outlives the call. Returns
+// adopt to come_scope_caller_ctx(), which for a frameless
+// function is the caller's caller scope: again an outward
+// (safe) move, and crash-safe when no marker exists at
+// all (it returns the root). Loop and block frames inside
+// a frameless function are still emitted; only the
+// function marker is skipped.
+#define FRAME_MAX_FNS 256
+#define FRAME_MAX_VARS 512
+
+typedef struct { char module[128]; char names[FRAME_MAX_FNS][128]; int count; } FramelessModule;
+static FramelessModule g_frameless[64];
+static int g_frameless_count = 0;
+
+void codegen_register_module_frameless(const char* module, const char** names, int count) {
+    FramelessModule* slot = NULL;
+    for (int i = 0; i < g_frameless_count; i++)
+        if (strcmp(g_frameless[i].module, module) == 0) slot = &g_frameless[i];
+    if (!slot) {
+        if (g_frameless_count >= 64) return;
+        slot = &g_frameless[g_frameless_count++];
+        memset(slot, 0, sizeof(*slot));
+        snprintf(slot->module, sizeof(slot->module), "%s", module);
+    }
+    slot->count = 0;
+    for (int i = 0; i < count && slot->count < FRAME_MAX_FNS; i++) {
+        snprintf(slot->names[slot->count], sizeof(slot->names[0]), "%s", names[i]);
+        slot->count++;
+    }
+}
+
+int codegen_is_frameless(const char* module, const char* fn) {
+    for (int i = 0; i < g_frameless_count; i++) {
+        if (strcmp(g_frameless[i].module, module) != 0) continue;
+        for (int j = 0; j < g_frameless[i].count; j++)
+            if (strcmp(g_frameless[i].names[j], fn) == 0) return 1;
+        return 0;
+    }
+    return 0;
+}
+
+typedef struct { char name[128]; ASTNode* node; char ret[128]; } FrameFn;
+static FrameFn g_frame_fns[FRAME_MAX_FNS];
+static int g_frame_fn_count = 0;
+static int g_frame_frameless[FRAME_MAX_FNS];
+static char g_frame_module[128];
+
+typedef struct { char name[128]; char type[128]; } FrameVar;
+static FrameVar g_frame_vars[FRAME_MAX_VARS];
+static int g_frame_var_count = 0;
+
+static int frame_scalar_type(const char* t) {
+    return t && (strcmp(t, "int") == 0 || strcmp(t, "bool") == 0 ||
+                 strcmp(t, "byte") == 0 || strcmp(t, "long") == 0 ||
+                 strcmp(t, "float") == 0 || strcmp(t, "double") == 0);
+}
+
+static void frame_var_set(const char* name, const char* type) {
+    if (g_frame_var_count >= FRAME_MAX_VARS) return;
+    snprintf(g_frame_vars[g_frame_var_count].name, sizeof(g_frame_vars[0].name), "%s", name);
+    snprintf(g_frame_vars[g_frame_var_count].type, sizeof(g_frame_vars[0].type), "%s", type);
+    g_frame_var_count++;
+}
+
+static const char* frame_var_get(const char* name) {
+    for (int i = g_frame_var_count - 1; i >= 0; i--)
+        if (strcmp(g_frame_vars[i].name, name) == 0) return g_frame_vars[i].type;
+    return NULL;
+}
+
+static int frame_fn_index(const char* name) {
+    for (int i = 0; i < g_frame_fn_count; i++)
+        if (strcmp(g_frame_fns[i].name, name) == 0) return i;
+    return -1;
+}
+
+// Whether an expression used as a `+` operand is provably
+// scalar, so the `+` cannot be a string concatenation
+// (the one allocating binary operator). Anything unknown
+// answers 0: the function is then not frameless.
+static int frame_operand_scalar(ASTNode* n) {
+    if (!n) return 0;
+    switch (n->type) {
+        case AST_NUMBER: case AST_BOOL_LITERAL: return 1;
+        case AST_IDENTIFIER: return frame_scalar_type(frame_var_get(n->text));
+        case AST_ARRAY_ACCESS: {
+            if (n->child_count < 1 || !n->children[0] ||
+                n->children[0]->type != AST_IDENTIFIER) return 0;
+            const char* t = frame_var_get(n->children[0]->text);
+            if (!t) return 0;
+            if (strcmp(t, "string") == 0) return 1; // s[i] is wchar
+            size_t L = strlen(t);
+            if (L > 2 && strcmp(t + L - 2, "[]") == 0) {
+                char base[128];
+                snprintf(base, sizeof(base), "%.*s", (int)(L - 2), t);
+                return frame_scalar_type(base);
+            }
+            return 0;
+        }
+        case AST_CAST:
+            return n->child_count >= 1 && n->children[0] &&
+                   frame_scalar_type(n->children[0]->text);
+        case AST_METHOD_CALL:
+            return strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0;
+        case AST_CALL: {
+            int idx = frame_fn_index(n->text);
+            if (idx < 0 || !g_frame_frameless[idx]) return 0;
+            return frame_scalar_type(g_frame_fns[idx].ret);
+        }
+        case AST_TERNARY:
+            return n->child_count >= 3 && frame_operand_scalar(n->children[1]) &&
+                   frame_operand_scalar(n->children[2]);
+        default: return 0;
+    }
+}
+
+// 1 = this subtree allocates nothing and needs no frame,
+// 0 = a disqualifier was found. The tracker holds the
+// local types visible at the current point; block-like
+// nodes save and restore it so a declaration never leaks
+// past its own scope (a leaked scalar type could mask a
+// buffer-typed use in a sibling branch).
+static int frame_walk_clean(ASTNode* n) {
+    if (!n) return 1;
+    switch (n->type) {
+        case AST_BLOCK:
+        case AST_IF:
+        case AST_ELSE:
+        case AST_WHILE:
+        case AST_FOR:
+        case AST_DO_WHILE: {
+            int save = g_frame_var_count;
+            int ok = 1;
+            for (int i = 0; i < n->child_count && ok; i++)
+                ok = frame_walk_clean(n->children[i]);
+            g_frame_var_count = save;
+            return ok;
+        }
+        case AST_VAR_DECL: {
+            if (n->child_count < 2 || !n->children[1]) return 0;
+            const char* t = n->children[1]->text;
+            ASTNode* init = n->children[0];
+            if (frame_scalar_type(t)) {
+                frame_var_set(n->text, t);
+                return frame_walk_clean(init);
+            }
+            if (strcmp(t, "var") == 0) {
+                if (!init) return 0;
+                if (init->type == AST_NUMBER) { frame_var_set(n->text, "int"); return 1; }
+                if (init->type == AST_BOOL_LITERAL) { frame_var_set(n->text, "bool"); return 1; }
+                if (init->type == AST_IDENTIFIER) {
+                    const char* it = frame_var_get(init->text);
+                    if (frame_scalar_type(it)) { frame_var_set(n->text, it); return 1; }
+                }
+                return 0;
+            }
+            return 0; // buffer, struct, ref, instance, unknown: needs a frame
+        }
+        case AST_ASSIGN: {
+            if (strcmp(n->text, "=") != 0) return 0; // compound: string += allocates
+            for (int i = 0; i < n->child_count; i++)
+                if (!frame_walk_clean(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_CALL: {
+            int idx = frame_fn_index(n->text);
+            if (idx < 0 || !g_frame_frameless[idx]) return 0;
+            for (int i = 0; i < n->child_count; i++)
+                if (!frame_walk_clean(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_METHOD_CALL: {
+            // A same-module call written module.fn(...).
+            if (n->child_count > 0 && n->children[0] &&
+                n->children[0]->type == AST_IDENTIFIER &&
+                strcmp(n->children[0]->text, g_frame_module) == 0) {
+                int idx = frame_fn_index(n->text);
+                if (idx < 0 || !g_frame_frameless[idx]) return 0;
+                for (int i = 0; i < n->child_count; i++)
+                    if (!frame_walk_clean(n->children[i])) return 0;
+                return 1;
+            }
+            if (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0 ||
+                strcmp(n->text, "owner") == 0) {
+                for (int i = 0; i < n->child_count; i++)
+                    if (!frame_walk_clean(n->children[i])) return 0;
+                return 1;
+            }
+            return 0;
+        }
+        case AST_BINARY_OP: {
+            if (n->child_count >= 2 && strcmp(n->text, "+") == 0) {
+                if (!frame_operand_scalar(n->children[0]) ||
+                    !frame_operand_scalar(n->children[1]))
+                    return 0;
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (!frame_walk_clean(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_CAST: {
+            if (n->child_count < 1 || !n->children[0]) return 0;
+            if (!frame_scalar_type(n->children[0]->text)) return 0;
+            for (int i = 1; i < n->child_count; i++)
+                if (!frame_walk_clean(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_RETURN:
+        case AST_UNARY_OP:
+        case AST_POST_INC:
+        case AST_POST_DEC:
+        case AST_TERNARY:
+        case AST_ARRAY_ACCESS:
+        case AST_MEMBER_ACCESS:
+        case AST_IDENTIFIER:
+        case AST_NUMBER:
+        case AST_BOOL_LITERAL:
+            for (int i = 0; i < n->child_count; i++)
+                if (!frame_walk_clean(n->children[i])) return 0;
+            return 1;
+        default:
+            return 0; // string/aggregate literals, break, continue,
+                      // switch, spawn, yield, printf, net, ... : needs a frame
+    }
+}
+
+static int frame_fn_clean(int idx) {
+    ASTNode* fn = g_frame_fns[idx].node;
+    if (!fn || fn->child_count == 0) return 0;
+    ASTNode* body = fn->children[fn->child_count - 1];
+    if (!body || body->type != AST_BLOCK) return 0;
+    g_frame_var_count = 0;
+    for (int i = 1; i < fn->child_count; i++) {
+        ASTNode* p = fn->children[i];
+        if (!p || p->type == AST_BLOCK) break;
+        if (p->type == AST_VAR_DECL && p->child_count >= 2 && p->children[1])
+            frame_var_set(p->text, p->children[1]->text);
+    }
+    return frame_walk_clean(body);
+}
+
+void codegen_analyze_frameless(const char* module, ASTNode** asts, int nast) {
+    g_frame_fn_count = 0;
+    memset(g_frame_frameless, 0, sizeof(g_frame_frameless));
+    snprintf(g_frame_module, sizeof(g_frame_module), "%s", module);
+    for (int a = 0; a < nast; a++) {
+        ASTNode* ast = asts[a];
+        if (!ast || ast->type != AST_PROGRAM) continue;
+        for (int i = 0; i < ast->child_count; i++) {
+            ASTNode* ch = ast->children[i];
+            if (!ch || ch->type != AST_FUNCTION || !ch->text[0]) continue;
+            if (ch->is_coroutine || ch->is_extern) continue;
+            if (strcmp(ch->text, "main") == 0) continue;
+            if (strcmp(ch->text, "create") == 0 || strcmp(ch->text, "module_create") == 0 ||
+                strcmp(ch->text, "destroy") == 0 || strcmp(ch->text, "module_destroy") == 0) continue;
+            if (frame_fn_index(ch->text) >= 0) continue; // duplicate: first wins
+            if (g_frame_fn_count >= FRAME_MAX_FNS) continue;
+            FrameFn* f = &g_frame_fns[g_frame_fn_count++];
+            snprintf(f->name, sizeof(f->name), "%.*s", (int)sizeof(f->name) - 1, ch->text);
+            f->node = ch;
+            if (ch->child_count > 0 && ch->children[0] && ch->children[0]->text[0])
+                snprintf(f->ret, sizeof(f->ret), "%.*s", (int)sizeof(f->ret) - 1, ch->children[0]->text);
+            else
+                snprintf(f->ret, sizeof(f->ret), "void");
+        }
+    }
+    int changed = 1;
+    while (changed) {
+        changed = 0;
+        for (int i = 0; i < g_frame_fn_count; i++) {
+            if (g_frame_frameless[i]) continue;
+            if (frame_fn_clean(i)) { g_frame_frameless[i] = 1; changed = 1; }
+        }
+    }
+    const char* names[FRAME_MAX_FNS];
+    int count = 0;
+    for (int i = 0; i < g_frame_fn_count; i++)
+        if (g_frame_frameless[i]) names[count++] = g_frame_fns[i].name;
+    codegen_register_module_frameless(module, names, count);
 }
 
 int codegen_module_struct_at(const char* module, int i, const char** name,
@@ -4868,8 +5167,14 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (inst_form) emit_instance_guard(f, node, indent + 4);
             int prev_in_fn = g_in_fn_body;
             int prev_inst = g_fn_instance_form;
+            int prev_frameless = g_cur_fn_frameless;
             g_in_fn_body = 1;
             g_fn_instance_form = inst_form;
+            // A5: main, coroutines, and instance-form
+            // functions always keep a frame; the rest ask
+            // the per-module frameless set.
+            g_cur_fn_frameless = (!is_main && !node->is_coroutine && !inst_form &&
+                                  codegen_is_frameless(current_module, node->text)) ? 1 : 0;
             // COIL-157: the function body is the marker
             // frame. It must be pushed after the guard
             // (the guard returns early, before any scope
@@ -4879,11 +5184,18 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             g_scope_depth = 0;
             g_local_add_depth = 0;
             g_loop_depth_count = 0;
-            emit_indent(f, indent + 4);
-            fprintf(f, "come_scope_push_marker();\n");
+            if (!g_cur_fn_frameless) {
+                emit_indent(f, indent + 4);
+                fprintf(f, "come_scope_push_marker();\n");
+            }
             generate_block_children(f, body, indent + 4);
+            // A5: the fallthrough pop below runs after the
+            // flag is restored, so keep this function's
+            // value in a local first.
+            int fn_frameless = g_cur_fn_frameless;
             g_fn_instance_form = prev_inst;
             g_in_fn_body = prev_in_fn;
+            g_cur_fn_frameless = prev_frameless;
             // COIL-157: a body ending in a return never
             // falls through, so the fallthrough pop (and
             // main's return 0) would be dead code - and
@@ -4891,13 +5203,17 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             if (body->child_count == 0 ||
                 body->children[body->child_count - 1]->type != AST_RETURN) {
                 if (is_main) {
-                    emit_indent(f, indent + 4);
-                    fprintf(f, "come_scope_pop_to_marker();\n");
+                    if (!fn_frameless) {
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "come_scope_pop_to_marker();\n");
+                    }
                     emit_indent(f, indent + 4);
                     fprintf(f, "return 0;\n");
                 } else {
-                    emit_indent(f, indent + 4);
-                    fprintf(f, "come_scope_pop_to_marker();\n");
+                    if (!fn_frameless) {
+                        emit_indent(f, indent + 4);
+                        fprintf(f, "come_scope_pop_to_marker();\n");
+                    }
                 }
             }
             emit_indent(f, indent);
@@ -5610,7 +5926,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                         }
                         emit_line_directive_forced(f, node);
                         emit_indent(f, indent);
-                        fprintf(f, "come_scope_pop_to_marker();\n");
+                        if (!g_cur_fn_frameless) fprintf(f, "come_scope_pop_to_marker();\n");
                         emit_line_directive_forced(f, node);
                         emit_indent(f, indent);
                         fprintf(f, "return _come_ret;\n");
@@ -5641,7 +5957,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 }
                 emit_line_directive_forced(f, node);
                 emit_indent(f, indent);
-                fprintf(f, "come_scope_pop_to_marker();\n");
+                if (!g_cur_fn_frameless) fprintf(f, "come_scope_pop_to_marker();\n");
                 emit_line_directive_forced(f, node);
                 emit_indent(f, indent);
                 fprintf(f, "return _come_ret;\n");
@@ -5655,7 +5971,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 codegen_error("functions cannot be returned (spec 8.3): '%s'", node->children[0]->text);
             if (strcmp(current_function_return_type, "void") == 0) {
                  emit_line_directive_forced(f, node);
-                 fprintf(f, "come_scope_pop_to_marker();\n");
+                 if (!g_cur_fn_frameless) fprintf(f, "come_scope_pop_to_marker();\n");
                  emit_indent(f, indent);
                  fprintf(f, "return;\n");
             } else {
@@ -5698,13 +6014,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     emit_adopt_value(f, indent, "_come_ret", atype, "come_scope_caller_ctx()");
                     emit_line_directive_forced(f, node);
                     emit_indent(f, indent);
-                    fprintf(f, "come_scope_pop_to_marker();\n");
+                    if (!g_cur_fn_frameless) fprintf(f, "come_scope_pop_to_marker();\n");
                     emit_line_directive_forced(f, node);
                     emit_indent(f, indent);
                     fprintf(f, "return _come_ret;\n");
                 } else {
                     emit_line_directive_forced(f, node);
-                    fprintf(f, "come_scope_pop_to_marker();\n");
+                    if (!g_cur_fn_frameless) fprintf(f, "come_scope_pop_to_marker();\n");
                     emit_line_directive_forced(f, node);
                     emit_indent(f, indent);
                     fprintf(f, "return 0;\n");
