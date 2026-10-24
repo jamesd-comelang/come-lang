@@ -502,6 +502,26 @@ under --single-tu; the Point-collision case
 refuses loudly; full suites green from clean
 with the flag off (normal builds untouched).
 
+## String dummy-src over-read fix (DONE 2026-10-24)
+
+ASan (under the -flto global layout) caught a
+pre-existing over-read: five allocate-then-fill
+sites passed "" as the source to
+come_string_new_len with a real length
+(repeat, replace, join, regex_replace,
+vsprintf), and new_len memcpys len bytes from
+its source whenever it is non-NULL - so e.g.
+replace("l","L") on "hello" read 5 bytes from a
+1-byte "" literal. It passed ASan before only
+because the old global layout did not place a
+poisoned redzone there. Fix: pass NULL instead
+of "" at all five sites (new_len's NULL branch
+zero-fills, which is what these callers want -
+they overwrite every byte anyway). No remaining
+dummy-"" new_len calls in string.c. Pre-existing
+before the NUL-scanner audit, which preserved
+these allocation lines untouched.
+
 ## Remaining (in order)
 
 - Design 2 (remainder): general transient-value

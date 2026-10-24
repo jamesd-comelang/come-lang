@@ -299,7 +299,7 @@ come_string_t come_string_lower(come_string_t a) {
 come_string_t come_string_repeat(come_string_t a, size_t n) {
     size_t clen = a.count;
     size_t new_len = clen * n;
-    come_string_t s = come_string_new_len(sctx(a), "", new_len);
+    come_string_t s = come_string_new_len(sctx(a), NULL, new_len);
     if (!s.data) return s;
     for (size_t i = 0; i < n; i++) {
         memcpy(s.data + (i * clen), sdata(a), clen);
@@ -328,7 +328,7 @@ come_string_t come_string_replace(come_string_t a, const char* old_str, const ch
 
     size_t alen = a.count;
     size_t final_len = alen + count * (new_len_part - old_len);
-    come_string_t res = come_string_new_len(sctx(a), "", final_len);
+    come_string_t res = come_string_new_len(sctx(a), NULL, final_len);
     if (!res.data) return res;
 
     size_t pos = 0;
@@ -449,7 +449,7 @@ come_string_t come_string_join(come_string_list_t list, come_string_t sep) {
         if (i + 1 < n) total_len += sep_len;
     }
 
-    come_string_t res = come_string_new_len(ctx, "", total_len);
+    come_string_t res = come_string_new_len(ctx, NULL, total_len);
     if (!res.data) return res;
 
     char* p = res.data;
@@ -706,7 +706,7 @@ come_string_t come_string_regex_replace(come_string_t a, const char* pattern, co
     }
     if (matches == count && *p) new_len += strlen(p); // Remaining
 
-    come_string_t res = come_string_new_len(a.ctx, "", new_len);
+    come_string_t res = come_string_new_len(a.ctx, NULL, new_len);
 
     p = sdata(tmp);
     char* dest = res.data;
@@ -765,7 +765,7 @@ come_string_t come_string_vsprintf(TALLOC_CTX* ctx, const char* fmt, va_list arg
     va_end(copy);
     come_string_t empty = { NULL, 0, 0, ctx };
     if (len < 0) return empty;
-    come_string_t s = come_string_new_len(ctx, "", (size_t)len);
+    come_string_t s = come_string_new_len(ctx, NULL, (size_t)len);
     if (!s.data) return s;
     vsnprintf(s.data, (size_t)len + 1, fmt, args);
     return s;
