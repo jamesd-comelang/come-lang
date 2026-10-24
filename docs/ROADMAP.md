@@ -139,6 +139,15 @@ and at the call site.
 | COIL-141 | A string hands over its bytes: s.byte_array() reaches the runtime it names | Come_string | S | — | The codegen constructs `come_string_<method>` for string methods, but byte_array's runtime function was named `come_string_to_byte_array`; the call was implicitly declared, returned int, and initializing a byte[] from it failed in the generated C ("invalid initializer"). The runtime function takes the constructed name. An audit of every other string method confirms byte_array was the only mismatch. Regression test exercises the assignment form, the empty string and signed UTF-8 bytes | ☑ |
 | COIL-140 | Two ways to use a module: namespace for the stateless, instances for the stateful | §3 | XL | COIL-108, COIL-122 | A module with module-level variables gains instances: `var w = mod.create()` allocates the state bundle (the module's variables as fields, a fresh allocation-tree root, the init hook run bound to the instance); `w.f()` calls bind that state implicitly; `w.destroy()` runs the exit hook and reclaims the instance's owned memory. Statefulness is a static fixpoint over the module call graph (direct variable use, propagated through calls, with a witness chain); namespace calls to stateful functions are compile errors naming the chain, and namespace use never implies a singleton. Stateless functions keep today's plain form and are callable both ways (instance calls reach them through a generated wrapper). Using a destroyed instance is safe: the call sets ERR and returns the zero value; destroy is idempotent. Module variables of an instance module are declared in one file (its state home). Spec §3 documents the two surfaces, the analysis, and the lifetime rules | ☑ |
 
+## v1.1.0 — Release
+
+**Exit criteria:** v1.1.0 tagged; Debian package published on the
+GitHub release and kept in `packaging/releases/`; README,
+USER_GUIDE and DEVELOPER describe v1.1.0 as the current release;
+the full suite green from clean at the tagged commit. Met
+2026-10-23 (66 Come test programs plus the C suites and the
+shell end-to-end suites).
+
 ## Post-v1 backlog (explicitly deferred by the spec)
 
 - Interfaces (explicit implementation declarations only, if ever) — §17

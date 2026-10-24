@@ -47,10 +47,10 @@ int main() {
 ## 2. Installing Come
 
 **From the Debian package** (Ubuntu/Debian, amd64): download
-`come_1.0.0_amd64.deb` from the GitHub release and install it:
+`come_1.1.0_amd64.deb` from the GitHub release and install it:
 
 ```sh
-sudo dpkg -i come_1.0.0_amd64.deb
+sudo dpkg -i come_1.1.0_amd64.deb
 ```
 
 **From source:**

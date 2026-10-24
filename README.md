@@ -7,7 +7,7 @@ parts that bite: no raw pointers in user code, no implicit narrowing,
 no fallthrough by default, and memory that is owned, hierarchical,
 and freed with its owner.
 
-**Status: v1.0.0.** The specification, the published grammar, and the
+**Status: v1.1.0.** The specification, the published grammar, and the
 compiler agree, and one command proves it: `make test` (see
 [Testing](#testing)).
 
@@ -16,7 +16,7 @@ compiler agree, and one command proves it: `make test` (see
 Install the Debian package (Ubuntu/Debian, amd64):
 
 ```sh
-sudo dpkg -i come_1.0.0_amd64.deb
+sudo dpkg -i come_1.1.0_amd64.deb
 ```
 
 or build from source (needs gcc and make):
@@ -145,7 +145,7 @@ in C and declare their Come surface in `.co` files.
 - [Arrays](docs/Come_array.md), [Strings](docs/Come_string.md),
   [Maps](docs/Come_map.md), [Standard library](docs/Come_std.md)
 - [Project layout](docs/Come_project_layout.md)
-- [Roadmap](docs/ROADMAP.md) — how v1.0.0 was built, story by story
+- [Roadmap](docs/ROADMAP.md) — how v1.0.0 and v1.1.0 were built, story by story
 - [Developer guide](DEVELOPER.md) — building and testing the
   compiler, architecture, contribution workflow, and the
   recorded design decisions

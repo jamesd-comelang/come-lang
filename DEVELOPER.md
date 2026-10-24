@@ -60,10 +60,12 @@ compiler.
 
 - **v1.0.0** was released on 2026-10-22 (tag `v1.0.0`, Debian
   package attached to the GitHub release).
-- **v1.1.0 is in development** on `main` (split-header buffers,
-  struct references, the edge-case sweep, the developer
-  commands). It is not tagged or released yet.
-- The language is usable and fully self-tested: 57 Come-language
+- **v1.1.0** was released on 2026-10-23 (tag `v1.1.0`, Debian
+  package attached to the GitHub release): split-header
+  buffers, struct references, the developer commands, module
+  instances, ERR error chains, and the cross-module surface
+  completed (types, constants, map signatures).
+- The language is usable and fully self-tested: 66 Come-language
   conformance tests, nine C unit suites, and a set of shell
   end-to-end suites (spec, grammar, error messages, install,
   CLI) all run under one command (`make test`).
