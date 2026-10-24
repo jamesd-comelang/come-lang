@@ -9,7 +9,7 @@ gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_lexer.c src/core/lexer.
 gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_parser.c src/core/parser.c src/core/lexer.c -o build/tests/test_parser
 ./build/tests/test_parser
 
-gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_codegen.c src/core/parser.c src/core/lexer.c src/core/codegen.c -o build/tests/test_codegen
+gcc -Wall -g -Isrc/include -Isrc/core/include tests/test_codegen.c src/core/parser.c src/core/lexer.c src/core/codegen.c src/core/transient.c -o build/tests/test_codegen
 ./build/tests/test_codegen
 
 gcc -Wall -g -D__STDC_WANT_LIB_EXT1__=1 -Isrc/include -Isrc/core/include tests/test_string.c src/string/string.c src/array/array.c src/mem/memory.c src/core/utils.c -o build/tests/test_string
@@ -41,6 +41,7 @@ bash tests/run_cleanblock_test.sh
 bash tests/run_escapes_test.sh
 bash tests/run_view_test.sh
 bash tests/run_arena_test.sh
+bash tests/run_transient_test.sh
 bash tests/run_view_ops_test.sh
 bash tests/run_types_test.sh
 bash tests/run_capacity_test.sh

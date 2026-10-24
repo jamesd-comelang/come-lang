@@ -10,7 +10,7 @@ TARGET := $(BUILD_DIR)/come
 # Link all objects into final binary
 .PHONY: $(SUB_DIRS)
 # Explicitly list compiler objects to avoid picking up tests/examples in the build dir
-COMPILER_OBJS := $(addprefix $(BUILD_DIR)/, come_compiler.o codegen.o lexer.o parser.o utils.o array.o map.o memory.o)
+COMPILER_OBJS := $(addprefix $(BUILD_DIR)/, come_compiler.o codegen.o lexer.o parser.o utils.o array.o map.o memory.o transient.o)
 
 $(TARGET): $(SUB_MAKE_DIRS)
 	$(CC) $(CFLAGS) -o $@ $(COMPILER_OBJS) -ldl

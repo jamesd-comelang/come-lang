@@ -1,0 +1,110 @@
+module main
+import std
+
+string ret_t(string a, string b) {
+    string t = a + b
+    return t
+}
+
+int check(string t) {
+    if (t == "hello world") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    string a = "hello"
+    string b = " world"
+    string t1 = a + b
+    if (t1 == "hello world") {
+        std.out.printf("ok p1 eq\n")
+    } else {
+        std.out.printf("FAIL p1 eq\n")
+    }
+    string t2 = a + b
+    if (t2.length() == 11) {
+        std.out.printf("ok p2 len\n")
+    } else {
+        std.out.printf("FAIL p2 len\n")
+    }
+    var t3 = a + b
+    if (t3 == "hello world") {
+        std.out.printf("ok p3 var\n")
+    } else {
+        std.out.printf("FAIL p3 var\n")
+    }
+    string t4a = a + b
+    string t4b = t4a + "!"
+    if (t4b == "hello world!") {
+        std.out.printf("ok p4 chain\n")
+    } else {
+        std.out.printf("FAIL p4 chain\n")
+    }
+    string t5 = a + b
+    if (t5.substr(0, 5) == "hello") {
+        std.out.printf("ok p5 substr\n")
+    } else {
+        std.out.printf("FAIL p5 substr\n")
+    }
+    string r1 = a + b
+    r1 = a + "!"
+    if (r1 == "hello!") {
+        std.out.printf("ok c1 reassign\n")
+    } else {
+        std.out.printf("FAIL c1 reassign\n")
+    }
+    if (ret_t(a, b) == "hello world") {
+        std.out.printf("ok c2 return\n")
+    } else {
+        std.out.printf("FAIL c2 return\n")
+    }
+    string r3 = a + b
+    if (check(r3) == 1) {
+        std.out.printf("ok c3 callarg\n")
+    } else {
+        std.out.printf("FAIL c3 callarg\n")
+    }
+    int i = 0
+    int c4ok = 0
+    while (i < 3) {
+        string r4 = a + b
+        if (r4 == "hello world") {
+            c4ok = c4ok + 1
+        }
+        i = i + 1
+    }
+    if (c4ok == 3) {
+        std.out.printf("ok c4 loopdecl\n")
+    } else {
+        std.out.printf("FAIL c4 loopdecl\n")
+    }
+    map{string, string} m
+    string r5 = a + b
+    m["k"] = r5
+    if (m["k"] == "hello world") {
+        std.out.printf("ok c5 mapstore\n")
+    } else {
+        std.out.printf("FAIL c5 mapstore\n")
+    }
+    string r6 = a + b
+    std.out.printf(r6)
+    std.out.printf("\n")
+    std.out.printf("ok c6 printfarg\n")
+    string r7 = a + b
+    string r7e = r7.dup(0)
+    if (r7e == "hello world") {
+        std.out.printf("ok c7 dup0\n")
+    } else {
+        std.out.printf("FAIL c7 dup0\n")
+    }
+    string[] arr
+    string r8 = a + b
+    arr.append(r8)
+    if (arr[0] == "hello world") {
+        std.out.printf("ok c8 arrayappend\n")
+    } else {
+        std.out.printf("FAIL c8 arrayappend\n")
+    }
+    return 0
+}

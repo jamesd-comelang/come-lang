@@ -637,9 +637,73 @@ exists from phase 1.
 
 ## Remaining (in order)
 
-- Design 2 (remainder): general transient-value
-  arenas (value-level escape analysis, dup(0)
-  aliasing, promotion for arrays/maps).
+## Design 1+2, straight-line slice: transient string locals (DONE 2026-10-24)
+
+A string local whose concat initializer never escapes
+its scope now stays in the bump arena instead of
+talloc. Analysis (src/core/transient.c, new file,
+wired into the driver's pre-scan alongside
+frameless/mayfail/escapes): a local is transient only
+when it is declared `string` (or `var` with a
+string-concat init), its init is a concat, the decl is
+NOT inside a loop, the name is not a parameter and is
+not re-declared, the init does not reference the name,
+the name is never assigned again, and every other use
+is a whitelisted borrow (concat operand, == / !=
+operand, or receiver of length / bytesize / owner /
+substr / view / byte_view). Anything else -- return,
+call argument, store, map/array/field value, dup/chown
+receiver, spawn/yield capture, printf argument --
+disqualifies it, and it keeps the talloc path. The
+default is "not transient": an unrecognized construct
+can only miss an optimization, never dangle.
+Codegen change is one condition: at VAR_DECL, a
+transient local does NOT set the storing-position
+flag, so its init emits concat_arena; declaration
+inits get no adoption (COIL-157), so no adoption
+surgery was needed, and ASSIGN is untouched (a
+transient local is never re-assigned by
+construction). Module-level decls always promote (a
+module variable outlives any frame). Soundness: the
+arena concat is created in the same block as the
+declaration, and the local is never stored, returned,
+or captured, so no reference can outlive the block's
+frame pop. The stringish check is only a registry
+filter, not a soundness gate (codegen selects the
+string-concat branch by its own types; the flag is
+ignored for a numeric "+").
+Tests: tests/transient_project/ (main.co combined,
+pos.co positives-only, ctl.co controls-only) +
+tests/run_transient_test.sh, wired into run_tests.sh.
+Pins are per-group, not just file-level: pos.co's
+generated C has arena concats and NO talloc concat
+(all 5 positives registered); ctl.co's has talloc
+concats and NO arena concat (all 8 controls --
+reassign, return, call arg, loop decl, map store,
+printf arg, dup(0), array append -- correctly
+disqualified). ASan clean. Full suites green from
+clean (Come 67/67, co_SQLite 7/7, 0 warnings).
+Measured: tokenizer bench neutral (pre-transient
+0.66-0.68 s vs transient 0.62-0.66 s, checksums
+identical) -- the tokenizer's temps were already
+covered, as predicted. Named-temp micro-benchmark
+(helper with 3 chained transient temps, 2M calls):
+0.32-0.34 s -> 0.21-0.22 s (~1.5x). The stale
+bench_come binary in co_SQLite/tools/bench/ (~52 s)
+is a pre-COIL-158 artifact, not a control -- do not
+cite it against transient.
+Remaining for Design 1+2: loop-body locals (decl +
+assign inside the same loop body, per-iteration
+safe), multi-assignment fixpoint (value flow through
+reassignment and t -> u chains), first-assignment
+locals, printf-argument borrows, and array/map
+promotion. Design 5 checkpoint/full tiers still wait
+on general arenas.
+
+- Design 2 (remainder): loop-body transient locals,
+  multi-assignment fixpoint, first-assignment locals,
+  printf borrows, and promotion for arrays/maps.
+  (Straight-line string-local slice is done, above.)
 - Design 3 follow-up (remainder): bounded pattern
   arguments for string methods (see above).
 - Design 5 (remainder): checkpoint / full-frame

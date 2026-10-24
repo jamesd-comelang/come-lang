@@ -1,0 +1,14 @@
+ok p1 eq
+ok p2 len
+ok p3 var
+ok p4 chain
+ok p5 substr
+ok c1 reassign
+ok c2 return
+ok c3 callarg
+ok c4 loopdecl
+ok c5 mapstore
+hello world
+ok c6 printfarg
+ok c7 dup0
+ok c8 arrayappend

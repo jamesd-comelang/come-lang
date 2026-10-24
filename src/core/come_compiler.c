@@ -870,6 +870,10 @@ static void analyze_module(const char *module_name, ASTNode **asts,
     // Design 1 (redesign): may-escape parameters for this module,
     // from the same pre-scan ASTs.
     codegen_analyze_escapes(module_name, asts, nast);
+    // Design 1+2 (redesign), straight-line slice: transient
+    // string locals for this module, from the same
+    // pre-scan ASTs.
+    codegen_analyze_transient(module_name, asts, nast);
 }
 
 // Compile all files of a directory module as one module (COIL-108).

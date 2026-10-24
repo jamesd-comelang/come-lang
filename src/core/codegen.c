@@ -6347,7 +6347,15 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
         // Design 3 (redesign): a declaration initializer
         // stores its value, so a view there promotes to
         // a copy (no view variable ever exists).
-        g_view_promote = 1;
+        // Design 1+2 (redesign), straight-line slice: a
+        // transient local's concat initializer does NOT
+        // store (it never escapes its scope), so it stays
+        // in the bump arena. Module-level declarations
+        // always promote: a module variable outlives any
+        // frame, so an arena value there would dangle.
+        if (g_module_level ||
+            !codegen_transient_local(current_module, current_function_name, node->text))
+            g_view_promote = 1;
         emit_line_directive(f, node);  // Emit #line for variable declaration
         ASTNode* type_node = node->children[1];
         register_local_type(node->text, type_node);

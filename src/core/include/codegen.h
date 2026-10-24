@@ -114,4 +114,11 @@ void codegen_analyze_escapes(const char* module, ASTNode** asts, int nast);
 int codegen_esc_module_known(const char* module);
 int codegen_esc_param_escapes(const char* module, const char* fn, const char* param);
 void codegen_dump_escapes(FILE* out);
+// Design 1+2 (redesign), straight-line slice: the driver
+// computes each module's transient string locals (concat
+// initializers that can stay in the bump arena) from the
+// same pre-scan ASTs; codegen consults the registry at
+// VAR_DECL time.
+void codegen_analyze_transient(const char* module, ASTNode** asts, int nast);
+int codegen_transient_local(const char* module, const char* fn, const char* name);
 #endif

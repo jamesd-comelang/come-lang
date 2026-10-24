@@ -1,0 +1,79 @@
+module main
+import std
+
+string ret_t(string a, string b) {
+    string t = a + b
+    return t
+}
+
+int check(string t) {
+    if (t == "hello world") {
+        return 1
+    }
+    return 0
+}
+
+int main() {
+    string a = "hello"
+    string b = " world"
+    string r1 = a + b
+    r1 = a + "!"
+    if (r1 == "hello!") {
+        std.out.printf("ok c1\n")
+    } else {
+        std.out.printf("FAIL c1\n")
+    }
+    if (ret_t(a, b) == "hello world") {
+        std.out.printf("ok c2\n")
+    } else {
+        std.out.printf("FAIL c2\n")
+    }
+    string r3 = a + b
+    if (check(r3) == 1) {
+        std.out.printf("ok c3\n")
+    } else {
+        std.out.printf("FAIL c3\n")
+    }
+    int i = 0
+    int c4ok = 0
+    while (i < 3) {
+        string r4 = a + b
+        if (r4 == "hello world") {
+            c4ok = c4ok + 1
+        }
+        i = i + 1
+    }
+    if (c4ok == 3) {
+        std.out.printf("ok c4\n")
+    } else {
+        std.out.printf("FAIL c4\n")
+    }
+    map{string, string} m
+    string r5 = a + b
+    m["k"] = r5
+    if (m["k"] == "hello world") {
+        std.out.printf("ok c5\n")
+    } else {
+        std.out.printf("FAIL c5\n")
+    }
+    string r6 = a + b
+    std.out.printf(r6)
+    std.out.printf("\n")
+    std.out.printf("ok c6\n")
+    string r7 = a + b
+    string r7e = r7.dup(0)
+    if (r7e == "hello world") {
+        std.out.printf("ok c7\n")
+    } else {
+        std.out.printf("FAIL c7\n")
+    }
+    string[] arr
+    string r8 = a + b
+    arr.append(r8)
+    if (arr[0] == "hello world") {
+        std.out.printf("ok c8\n")
+    } else {
+        std.out.printf("FAIL c8\n")
+    }
+    return 0
+}

@@ -1,0 +1,39 @@
+module main
+import std
+
+int main() {
+    string a = "hello"
+    string b = " world"
+    string t1 = a + b
+    if (t1 == "hello world") {
+        std.out.printf("ok p1\n")
+    } else {
+        std.out.printf("FAIL p1\n")
+    }
+    string t2 = a + b
+    if (t2.length() == 11) {
+        std.out.printf("ok p2\n")
+    } else {
+        std.out.printf("FAIL p2\n")
+    }
+    var t3 = a + b
+    if (t3 == "hello world") {
+        std.out.printf("ok p3\n")
+    } else {
+        std.out.printf("FAIL p3\n")
+    }
+    string t4a = a + b
+    string t4b = t4a + "!"
+    if (t4b == "hello world!") {
+        std.out.printf("ok p4\n")
+    } else {
+        std.out.printf("FAIL p4\n")
+    }
+    string t5 = a + b
+    if (t5.substr(0, 5) == "hello") {
+        std.out.printf("ok p5\n")
+    } else {
+        std.out.printf("FAIL p5\n")
+    }
+    return 0
+}
