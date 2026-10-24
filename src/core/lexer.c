@@ -196,8 +196,8 @@ int lex_file(const char* filename, TokenList* out) {
                 tok.text[i] = '\0'; 
                 tok.type = TOKEN_NUMBER; 
             }
-            else if(*p=='"'){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='"' && *p!='\n') tok.text[i++]=*p++; if(*p=='"'){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_STRING_LITERAL; if(!closed){ printf("Error: unterminated string literal at line %d - close it with '\"' on the same line\n", line_num); lex_errors++; } }
-            else if(*p=='\''){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='\'' && *p!='\n') tok.text[i++]=*p++; if(*p=='\''){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_CHAR_LITERAL; if(!closed){ printf("Error: unterminated character literal at line %d - close it with a single quote on the same line\n", line_num); lex_errors++; } } // Changed to CHAR_LITERAL default, distinction handled in parsing?
+            else if(*p=='"'){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='\n'){ if(*p=='\\' && p[1] && p[1]!='\n'){ tok.text[i++]=*p++; tok.text[i++]=*p++; continue; } if(*p=='"') break; tok.text[i++]=*p++; } if(*p=='"'){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_STRING_LITERAL; if(!closed){ printf("Error: unterminated string literal at line %d - close it with '\"' on the same line\n", line_num); lex_errors++; } }
+            else if(*p=='\''){ int i=0; int closed=0; tok.text[i++]=*p++; while(*p && *p!='\n'){ if(*p=='\\' && p[1] && p[1]!='\n'){ tok.text[i++]=*p++; tok.text[i++]=*p++; continue; } if(*p=='\'') break; tok.text[i++]=*p++; } if(*p=='\''){ tok.text[i++]=*p++; closed=1; } tok.text[i]='\0'; tok.type=TOKEN_CHAR_LITERAL; if(!closed){ printf("Error: unterminated character literal at line %d - close it with a single quote on the same line\n", line_num); lex_errors++; } } // Changed to CHAR_LITERAL default, distinction handled in parsing?
             
             else if(isalpha(*p) || *p=='_'){ int i=0; while(isalnum(*p)||*p=='_') tok.text[i++]=*p++; tok.text[i]='\0'; tok.type=TOKEN_IDENTIFIER; }
             else { p++; continue; }

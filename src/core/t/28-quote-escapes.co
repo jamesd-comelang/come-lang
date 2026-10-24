@@ -1,0 +1,30 @@
+// COIL-143 (gaps #5 and #11): a quote can be written inside
+// its own literal. The lexer's char and string scanners
+// copied escapes one byte at a time, so an escaped
+// terminator ('\'' in a char literal, \" in a string) was
+// read as the closing quote and the rest of the line became
+// an unterminated literal. The codegen already decoded \'
+// to 39; only the scan was missing. The tokenizer's
+// CP_SQUOTE = 39 workaround is no longer needed.
+module main
+import std
+
+int main() {
+    byte sq = '\''
+    if (sq != 39) { std.out.printf("FAIL squote %d\n", sq); return 1 }
+    string dq = "a\"b"
+    if (dq.length() != 3 || dq != "a\"b") { std.out.printf("FAIL dquote '%s'\n", dq); return 1 }
+    string both = "it's \"quoted\""
+    if (both != "it's \"quoted\"") { std.out.printf("FAIL both '%s'\n", both); return 1 }
+    // The tokenizer shape: compare a scanned character
+    // against the quote literal directly.
+    string text = "x'y"
+    byte cp = text[1]
+    if (cp != '\'') { std.out.printf("FAIL scan compare\n"); return 1 }
+    // Neighbouring escapes keep working.
+    if ('\\' != 92 || '\n' != 10 || '\t' != 9 || '\0' != 0) { std.out.printf("FAIL escapes\n"); return 1 }
+    string bs = "a\\b"
+    if (bs.length() != 3) { std.out.printf("FAIL backslash len\n"); return 1 }
+    std.out.printf("PASS: 28-quote-escapes\n")
+    return 0
+}
