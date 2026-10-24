@@ -50,6 +50,7 @@ static StringList *g_visited_files = NULL;
 // and file boundaries without LTO.
 static StringList *g_c_files = NULL;
 static int g_single_tu = 0;
+static int g_lto = 0;
 
 static void list_add(StringList **head, const char *val) {
     StringList *node = malloc(sizeof(StringList));
@@ -136,6 +137,21 @@ static int run_cmd(const char *fmt, ...) {
 static const char *cc_extra_flags(void) {
     static char buf[1024];
     const char *v = getenv("COME_CFLAGS");
+    if (g_lto) {
+        // Parity step 3 (TU): opt-in LTO for user code.
+        // Appended after COME_CFLAGS so it composes with
+        // user flags; duplicating -flto (if the user
+        // already set it) is harmless. -O2 is supplied
+        // too: the driver's default compile has no -O
+        // flag (-O0), and LTO at -O0 does not inline
+        // (measured: -flto alone gave no bench win,
+        // -O2 -flto gave 0.64 s -> 0.37 s). The runtime
+        // .o files are prebuilt and untouched, so this
+        // is user-code-only LTO.
+        if (v && *v) snprintf(buf, sizeof(buf), " %s -O2 -flto", v);
+        else snprintf(buf, sizeof(buf), " -O2 -flto");
+        return buf;
+    }
     if (!v || !*v) return "";
     snprintf(buf, sizeof(buf), " %s", v);
     return buf;
@@ -1873,7 +1889,7 @@ static void print_usage(void) {
     fprintf(stderr,
         "Usage:\n"
         "  come build <file.co|dir> [-o output]   compile and link\n"
-        "    [--single-tu]                        compile all user code as one TU\n"
+        "    [--single-tu]                        compile all user code as one TU\n    [--lto]                                link-time optimize user code (user-only LTO; implies -O2; runtime stays prebuilt)\n"
         "                                          (cross-module inlining without LTO)\n"
         "  come genc <file.co> -o <out.c>          emit C only\n"
         "  come check <file.co|dir>                compile, no link or run\n"
@@ -2241,6 +2257,8 @@ int main(int argc, char *argv[]) {
             g_verbose = 1;
         } else if (strcmp(argv[i], "--single-tu") == 0) {
             g_single_tu = 1;
+        } else if (strcmp(argv[i], "--lto") == 0) {
+            g_lto = 1;
         } else {
             input = argv[i];
         }

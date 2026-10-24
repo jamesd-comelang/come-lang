@@ -1,0 +1,14 @@
+module main
+import std
+import helper
+
+int main() {
+    int a = helper.add(40, 2)
+    int m = helper.mul(6, 7)
+    if (a == 42 && m == 42) {
+        std.out.printf("ok lto\n")
+    } else {
+        std.out.printf("FAIL lto\n")
+    }
+    return 0
+}

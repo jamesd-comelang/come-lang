@@ -14,9 +14,8 @@ merged, or reverted independently later. Branch:
   (DONE, see below).
 - Step 2: loop guards -- while positive-form and
   counted for (DONE, see below).
-- Step 3: runtime intrinsics (DONE, see below);
-  whole-program TU continuation (measured, see
-  below; implementation next within step 3).
+- Step 3: runtime intrinsics + whole-program TU
+  (DONE, see below).
 - Step 4: Design 1+2 remainder (loop-body locals,
   multi-assignment fixpoint, array/map promotion)
   then Design 5 frame tiers.
@@ -57,6 +56,35 @@ inlined at default flags) plus the guard's
 what step 3 (intrinsics) targets; step 1 still pays
 where checks dominate (and it removes a check per
 byte that no longer needs proving).
+
+## Step 3 DONE (TU part, 2026-10-24): opt-in `come build --lto` (user-code-only LTO)
+
+`come build --lto` adds `-O2 -flto` to the user-code
+compile and link steps (via the driver's single
+`cc_extra_flags()` point, so it composes with
+COME_CFLAGS). It is user-code-only: the runtime .o
+files are prebuilt and untouched, which the
+measurement says is sufficient (user-only LTO
+matches full LTO). --single-tu was measured first
+and does NOT capture the win (~0.62 s): GCC at -O2
+does not inline the global tk_byte even in one TU.
+--lto needed -O2, not just -flto: the driver's
+default compile has no -O flag (-O0), and LTO at
+-O0 does not inline (first --lto attempt, -flto
+only, gave ~0.62 s, no win; adding -O2 gave
+~0.38 s). The flag is opt-in; making it the
+default is a separate call (not made here).
+Test: `tests/lto_project/` + `tests/run_lto_test.sh`
+(cross-module add/mul: identical output with and
+without --lto; verbose build shows -flto and -O2 in
+the cc commands; nm pin -- the helper symbols are
+global without --lto and inlined away with it).
+Suites green from clean (Come exit 0, "all green";
+co_SQLite 7/7). Bench (checksums identical):
+default ~0.64 s, `come build --lto` ~0.38 s (1.7x).
+Gap to C (0.033 s) is now ~11x, down from ~20x.
+Remaining gap is runtime calls + ownership, which
+is step 4's territory (escape/arenas) and beyond.
 
 ## Step 3 DONE (intrinsic part, 2026-10-24): array/list .length() as a header-count intrinsic
 
@@ -214,9 +242,6 @@ per byte; report it, do not assume it).
 
 ## Remaining (in order)
 
-- Step 3 continuation: whole-program TU / LTO build
-  mode (measured 0.64 s -> ~0.37 s user-only LTO;
-  opt-in first, default only on his call).
 - Step 4: Design 1+2 remainder, then Design 5
   frame tiers.
 - HELD: explicit unchecked region (needs his call).
