@@ -2973,6 +2973,193 @@ static int clean_walk(ASTNode* n) {
     }
 }
 
+// ---- Checkpoint blocks (parity step 4d, Design 5 checkpoint tier) ----
+// A block whose allocations are all arena may use a
+// checkpoint frame (bump rewind only, no talloc
+// frame to allocate or free) instead of a full frame.
+// Conservative predicate, mirroring clean_walk:
+// scalars and transient-string concats are allowed;
+// anything that could allocate talloc in the block
+// (string/aggregate literals, non-transient concats,
+// container stores, non-pure method calls,
+// non-frameless calls, printf/spawn/yield/switch,
+// break/continue) disqualifies. A transient concat
+// is arena only as a VAR_DECL init or an ASSIGN RHS
+// of a transient local; any other `+` disqualifies,
+// except nested `+` inside an approved transient
+// concat (chained concats, all arena), tracked by
+// g_checkpoint_in_concat. Stores into containers
+// disqualify (they may allocate in the block's
+// scope); stores of arena values to outer scopes
+// are already excluded by the scope-depth rule in
+// the transient analysis, so a checkpoint block's
+// arena values never outlive it.
+static int g_checkpoint_in_concat = 0;
+
+// 1 = an operand provably scalar (no allocation):
+// number/bool literal, a scalar-typed identifier
+// (via the live local table; an unregistered name
+// is not scalar, conservatively), a length/bytesize
+// call, or a nested scalar `+`.
+static int ckpt_operand_scalar(ASTNode* n) {
+    if (!n) return 0;
+    if (n->type == AST_NUMBER || n->type == AST_BOOL_LITERAL) return 1;
+    if (n->type == AST_IDENTIFIER) {
+        const char* t = get_local_variable_type(n->text);
+        return t && frame_scalar_type(t);
+    }
+    if (n->type == AST_METHOD_CALL &&
+        (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0)) return 1;
+    if (n->type == AST_BINARY_OP && strcmp(n->text, "+") == 0 &&
+        n->child_count >= 2)
+        return ckpt_operand_scalar(n->children[0]) &&
+               ckpt_operand_scalar(n->children[1]);
+    return 0;
+}
+
+static int checkpoint_walk(ASTNode* n) {
+    if (!n) return 1;
+    switch (n->type) {
+        case AST_BLOCK:
+        case AST_IF:
+        case AST_ELSE:
+        case AST_WHILE:
+        case AST_FOR:
+        case AST_DO_WHILE: {
+            for (int i = 0; i < n->child_count; i++)
+                if (!checkpoint_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_VAR_DECL: {
+            if (n->child_count < 2 || !n->children[1]) return 0;
+            const char* t = n->children[1]->text;
+            ASTNode* init = n->children[0];
+            if (frame_scalar_type(t)) return checkpoint_walk(init);
+            if (strcmp(t, "string") == 0) {
+                if (!init) return 1;
+                if (init->type == AST_IDENTIFIER) return 1;
+                if (init->type == AST_BINARY_OP && strcmp(init->text, "+") == 0 &&
+                    codegen_transient_local(current_module, current_function_name, n->text)) {
+                    int save = g_checkpoint_in_concat;
+                    g_checkpoint_in_concat = 1;
+                    int ok = 1;
+                    for (int i = 0; i < init->child_count && ok; i++)
+                        ok = checkpoint_walk(init->children[i]);
+                    g_checkpoint_in_concat = save;
+                    return ok;
+                }
+                if (init->type == AST_CALL &&
+                    codegen_is_frameless(current_module, init->text)) {
+                    for (int i = 0; i < init->child_count; i++)
+                        if (!checkpoint_walk(init->children[i])) return 0;
+                    return 1;
+                }
+                return 0;
+            }
+            if (strcmp(t, "var") == 0) {
+                if (init && init->type == AST_BINARY_OP && strcmp(init->text, "+") == 0 &&
+                    codegen_transient_local(current_module, current_function_name, n->text)) {
+                    int save = g_checkpoint_in_concat;
+                    g_checkpoint_in_concat = 1;
+                    int ok = 1;
+                    for (int i = 0; i < init->child_count && ok; i++)
+                        ok = checkpoint_walk(init->children[i]);
+                    g_checkpoint_in_concat = save;
+                    return ok;
+                }
+                return 0;
+            }
+            return 0;
+        }
+        case AST_ASSIGN: {
+            if (strcmp(n->text, "=") != 0) return 0;
+            if (n->child_count >= 1 && n->children[0]->type == AST_ARRAY_ACCESS) return 0;
+            if (n->child_count >= 2 && n->children[1]->type == AST_BINARY_OP &&
+                strcmp(n->children[1]->text, "+") == 0 &&
+                n->children[1]->child_count >= 2 &&
+                !(ckpt_operand_scalar(n->children[1]->children[0]) &&
+                  ckpt_operand_scalar(n->children[1]->children[1]))) {
+                if (n->children[0]->type != AST_IDENTIFIER) return 0;
+                if (!codegen_transient_first_assign(current_module, current_function_name,
+                                                   n->children[0]->text)) return 0;
+                ASTNode* rhs = n->children[1];
+                int save = g_checkpoint_in_concat;
+                g_checkpoint_in_concat = 1;
+                int ok = 1;
+                for (int i = 0; i < rhs->child_count && ok; i++)
+                    ok = checkpoint_walk(rhs->children[i]);
+                g_checkpoint_in_concat = save;
+                return ok;
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (!checkpoint_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_CALL: {
+            if (!codegen_is_frameless(current_module, n->text)) return 0;
+            for (int i = 0; i < n->child_count; i++)
+                if (!checkpoint_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_METHOD_CALL: {
+            if (n->child_count > 0 && n->children[0] &&
+                n->children[0]->type == AST_IDENTIFIER &&
+                strcmp(n->children[0]->text, current_module) == 0) {
+                if (!codegen_is_frameless(current_module, n->text)) return 0;
+                for (int i = 0; i < n->child_count; i++)
+                    if (!checkpoint_walk(n->children[i])) return 0;
+                return 1;
+            }
+            if (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0 ||
+                strcmp(n->text, "owner") == 0 || strcmp(n->text, "view") == 0 ||
+                strcmp(n->text, "byte_view") == 0) {
+                for (int i = 0; i < n->child_count; i++)
+                    if (!checkpoint_walk(n->children[i])) return 0;
+                return 1;
+            }
+            return 0;
+        }
+        case AST_BINARY_OP: {
+            if (n->child_count >= 2 && strcmp(n->text, "+") == 0) {
+                if (!g_checkpoint_in_concat &&
+                    !(ckpt_operand_scalar(n->children[0]) &&
+                      ckpt_operand_scalar(n->children[1]))) return 0;
+            }
+            for (int i = 0; i < n->child_count; i++)
+                if (!checkpoint_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_CAST: {
+            if (n->child_count < 1 || !n->children[0]) return 0;
+            if (!frame_scalar_type(n->children[0]->text)) return 0;
+            for (int i = 1; i < n->child_count; i++)
+                if (!checkpoint_walk(n->children[i])) return 0;
+            return 1;
+        }
+        case AST_RETURN:
+        case AST_UNARY_OP:
+        case AST_POST_INC:
+        case AST_POST_DEC:
+        case AST_TERNARY:
+        case AST_ARRAY_ACCESS:
+        case AST_MEMBER_ACCESS:
+        case AST_IDENTIFIER:
+        case AST_NUMBER:
+        case AST_BOOL_LITERAL:
+            for (int i = 0; i < n->child_count; i++)
+                if (!checkpoint_walk(n->children[i])) return 0;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+static int block_is_checkpoint(ASTNode* block) {
+    if (!block || block->type != AST_BLOCK) return 0;
+    g_checkpoint_in_concat = 0;
+    return checkpoint_walk(block);
+}
+
 // 1 = the block's frame would be empty: skip its push/pop.
 static int block_is_clean(ASTNode* block) {
     if (!block || block->type != AST_BLOCK) return 0;
@@ -7155,8 +7342,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             emit_indent(f, indent);
             fprintf(f, "{\n");
             int clean = block_is_clean(node);
+            int checkpoint = !clean && block_is_checkpoint(node);
             emit_indent(f, indent + 1);
-            if (!clean) fprintf(f, "come_scope_push();\n");
+            if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
             scope_depth_push();
             generate_block_children(f, node, indent + 1);
             scope_depth_pop();
@@ -8153,8 +8341,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                  // would be empty is skipped; lexical
                  // depth counting is unchanged.
                  int clean = block_is_clean(body);
+                 int checkpoint = !clean && block_is_checkpoint(body);
                  emit_indent(f, indent+4);
-                 if (!clean) fprintf(f, "come_scope_push();\n");
+                 if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
                  scope_depth_push();
                  for(int i=0; i<body->child_count; i++) generate_guarded_stmt(f, body->children[i], indent+4);
                  scope_depth_pop();
@@ -8197,8 +8386,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                  // would be empty is skipped; lexical
                  // depth counting is unchanged.
                  int clean = block_is_clean(body);
+                 int checkpoint = !clean && block_is_checkpoint(body);
                  emit_indent(f, indent+4);
-                 if (!clean) fprintf(f, "come_scope_push();\n");
+                 if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
                  scope_depth_push();
                  for(int i=0; i<body->child_count; i++) generate_guarded_stmt(f, body->children[i], indent+4);
                  scope_depth_pop();
@@ -8296,8 +8486,9 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 // would be empty is skipped; lexical
                 // depth counting is unchanged.
                 int clean = block_is_clean(body);
+                int checkpoint = !clean && block_is_checkpoint(body);
                 emit_indent(f, indent + 4);
-                if (!clean) fprintf(f, "come_scope_push();\n");
+                if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
                 scope_depth_push();
                 for (int i = 0; i < body->child_count; i++) {
                     generate_guarded_stmt(f, body->children[i], indent + 4);

@@ -626,6 +626,25 @@ void come_scope_push(void) {
     s->top++;
 }
 
+// Step 4d (parity): a checkpoint frame records only
+// the arena checkpoint, with no talloc frame context
+// to allocate or free. It is sound only for blocks
+// whose allocations are all arena (see
+// block_is_checkpoint in codegen): there is nothing
+// talloc to free at block end, and the arena rewind
+// on pop frees the block's arena values. Pop is the
+// ordinary come_scope_pop (its frame-free is a no-op
+// for a NULL ctx).
+void come_scope_push_checkpoint(void) {
+    co_scope_stack *s = co_scope_active;
+    if (!co_scope_grow(s)) return;
+    s->frames[s->top].ctx = NULL;
+    s->frames[s->top].is_marker = 0;
+    s->frames[s->top].arena_block = s->arena_cur;
+    s->frames[s->top].arena_off = s->arena_cur ? s->arena_cur->used : 0;
+    s->top++;
+}
+
 void come_scope_push_marker(void) {
     co_scope_stack *s = co_scope_active;
     void *parent = come_scope_current();

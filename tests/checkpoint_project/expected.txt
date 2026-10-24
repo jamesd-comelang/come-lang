@@ -1,0 +1,4 @@
+ckpt: 2
+ckpt-loop: 6
+ctl-lit: 2
+ctl-outer: xy

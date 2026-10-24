@@ -431,6 +431,45 @@ Tokenizer bench: ~0.60 s, essentially unchanged
 (no maps in its hot path, as predicted). Step 4
 remaining: 4d frame tiers only.
 
+## Step 4d DONE (2026-10-24): checkpoint frames (Design 5 checkpoint tier)
+
+Blocks whose allocations are all arena now get
+a checkpoint frame (bump rewind only, no talloc
+frame to allocate or free) instead of a full
+frame, at all four block sites (bare BLOCK,
+WHILE, FOR, DO_WHILE bodies; IF branches ride
+the bare BLOCK case). Runtime:
+`come_scope_push_checkpoint()` (src/mem/memory.c,
+declared in src/include/mem/talloc.h) records
+only the arena checkpoint in a stack slot with a
+NULL ctx; the ordinary pop rewinds the arena
+and no-ops the frame free. Codegen:
+`block_is_checkpoint()` / `checkpoint_walk()`
+(conservative, mirroring clean_walk): scalars
+and transient-string concats of variables are
+allowed (chained concats via a flag); anything
+that could allocate talloc in the block
+(string/aggregate literals, non-transient
+concats, container stores, non-pure methods,
+non-frameless calls, printf/spawn/yield/switch,
+break/continue) disqualifies, and scalar `+`
+operands are allowed via a scalar-operand
+check. Test: `tests/checkpoint_project/` +
+`tests/run_checkpoint_test.sh` (2 checkpoint
+pushes for a bare block and a loop body with
+variable-only transient concats, 2 full pushes
+for a literal-operand concat and a scope-unsafe
+outer store; output + ASan). Suites green from
+clean (Come exit 0, "all green"; co_SQLite
+7/7). Tokenizer bench ~0.59 s, essentially
+unchanged (its blocks were already clean, as
+predicted). A 1M-iteration variable-concat loop
+micro: pre-4d ~43 ms steady vs 4d ~36-44 ms --
+a small win at best, within noise for this
+shape (concat + length walk dominate the frame
+saving). Step 4 is COMPLETE. Remaining is the
+exhaust work (see below).
+
 ## Step 4c design (2026-10-24, not yet implemented)
 
 Verified first, because it changes the shape of
@@ -504,15 +543,18 @@ expected to be nil (it does not build string
 containers in its hot path) -- measure with a
 local-scratch-container micro, not the tokenizer.
 
-## Remaining (in order)
+## Remaining (in order, under the 2026-10-24
+  "exhaust everything" authorization: unchecked
+  region + port restructuring both included)
 
-- Step 4d: Design 5 frame tiers (checkpoint /
-  full), unblocked by 4a-4c.
-- Then, under the 2026-10-24 "exhaust everything"
-  authorization (unchecked region + port
-  restructuring both included): general interval
-  analysis, Rust/Go baselines, unchecked
-  opt-in, port restructuring.
+- General interval analysis (bounds proofs beyond
+  guards), plus profiling for new wins.
+- Rust/Go baselines on identical work (toolchains
+  needed; none in the VM now).
+- Unchecked region, opt-in only, design +
+  implementation.
+- Port restructuring of the co_SQLite tokenizer
+  (table-driven, bulk reads, raw iteration).
 - HELD: explicit unchecked region (needs his call).
 - Future (not in the current step list): general
   interval analysis -- arbitrary index arithmetic,

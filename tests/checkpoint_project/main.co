@@ -1,0 +1,32 @@
+module main
+import std
+
+int main() {
+    string a = "x"
+    string b = "y"
+    int total = 0
+    {
+        string s = a + b
+        total = s.length()
+    }
+    std.out.printf("ckpt: %d\n", total)
+    int loop_total = 0
+    int j = 0
+    while (j < 3) {
+        string t = a + b
+        loop_total = loop_total + t.length()
+        j++
+    }
+    std.out.printf("ckpt-loop: %d\n", loop_total)
+    {
+        string u = "p" + "q"
+        total = u.length()
+    }
+    std.out.printf("ctl-lit: %d\n", total)
+    string v = "m"
+    {
+        v = a + b
+    }
+    std.out.printf("ctl-outer: %s\n", v)
+    return 0
+}
