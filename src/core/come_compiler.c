@@ -25,6 +25,12 @@
 
 int g_verbose = 0;
 static char g_project_root[PATH_MAX];
+// The anchor for the src/ shapes of module resolution
+// (spec 3.2). Normally the working directory (the project
+// root); `come test` overrides it through COME_PROJECT_ROOT
+// because it builds each test from a scratch working
+// directory (COIL-150).
+static char g_src_root[PATH_MAX];
 static char g_ccache_dir[PATH_MAX];
 static char g_build_dir[PATH_MAX];
 
@@ -843,8 +849,8 @@ static void compile_import(const char *import_name, const char *current_file, in
     char stems[4][PATH_MAX];
     snprintf(stems[0], PATH_MAX, "%s", base_dir);
     snprintf(stems[1], PATH_MAX, "%s/modules", base_dir);
-    snprintf(stems[2], PATH_MAX, "%s/src", g_project_root);
-    snprintf(stems[3], PATH_MAX, "%s/src/modules", g_project_root);
+    snprintf(stems[2], PATH_MAX, "%s/src", g_src_root);
+    snprintf(stems[3], PATH_MAX, "%s/src/modules", g_src_root);
 
     // `import X as ...` (spec 3.2): skip local resolution
     // (stems 0-1) and resolve from the system depot only.
@@ -1247,6 +1253,10 @@ static int cmd_test(int argc, char *argv[]) {
     if (race && cover) setenv("COME_CFLAGS", "-fsanitize=thread --coverage -g", 1);
     else if (race) setenv("COME_CFLAGS", "-fsanitize=thread -g", 1);
     else if (cover) setenv("COME_CFLAGS", "--coverage", 1);
+    // Each child build runs from a scratch working
+    // directory (cache isolation); anchor its src/ module
+    // lookup on the tested project instead (COIL-150).
+    setenv("COME_PROJECT_ROOT", root_abs, 1);
     if (race && system("command -v setarch > /dev/null 2>&1") == 0) g_race_wrap = 1;
 
     char self[PATH_MAX], scratch[PATH_MAX];
@@ -1792,7 +1802,14 @@ int main(int argc, char *argv[]) {
 
     // Setup Directries
     detect_project_root(g_project_root, sizeof(g_project_root));
-    
+    // The src/ anchor defaults to the working directory;
+    // COME_PROJECT_ROOT overrides it (set by `come test` for
+    // its scratch builds - COIL-150). Caches and outputs
+    // stay rooted at the working directory either way.
+    const char *proot = getenv("COME_PROJECT_ROOT");
+    if (!proot || !*proot || !realpath(proot, g_src_root))
+        snprintf(g_src_root, sizeof(g_src_root), "%s", g_project_root);
+
     // Only setup ccache/build if generic build. 
     // If output is forced in genc, we might not need them, but setup anyway.
     snprintf(g_ccache_dir, sizeof(g_ccache_dir), "%s/.ccache", g_project_root);

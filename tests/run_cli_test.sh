@@ -35,6 +35,42 @@ int main() {
     return 0
 }
 EOF
+# A project module of the tested project, with tests that
+# import it - one in the module's own t/, one in the top
+# t/. Both only resolve when the child builds anchor their
+# src/ lookup on the tested project (COIL-150).
+mkdir -p "$SCRATCH/proj/src/greeter/t"
+cat > "$SCRATCH/proj/src/greeter/greeter.co" <<'EOF'
+module greeter
+
+export (hello)
+
+string hello() {
+    return "hi"
+}
+EOF
+cat > "$SCRATCH/proj/src/greeter/t/04-mod.co" <<'EOF'
+module tmod
+import std
+import greeter
+
+int main() {
+    if (greeter.hello() != "hi") { return 1 }
+    std.out.printf("PASS four\n")
+    return 0
+}
+EOF
+cat > "$SCRATCH/proj/t/05-mod.co" <<'EOF'
+module tmod2
+import std
+import greeter
+
+int main() {
+    if (greeter.hello() != "hi") { return 1 }
+    std.out.printf("PASS five\n")
+    return 0
+}
+EOF
 cat > "$SCRATCH/runargs.co" <<'EOF'
 module runargs
 import std
@@ -88,8 +124,9 @@ echo "CLI: run ok"
 
 # ---------- come test ----------
 out=$($COME test "$SCRATCH/proj") || fail "test failed on an all-pass project"
-echo "$out" | grep -q "Results: 2 passed, 0 failed" || fail "test summary wrong: $out"
+echo "$out" | grep -q "Results: 4 passed, 0 failed" || fail "test summary wrong: $out"
 echo "$out" | grep -q "PASS src/deep/t/02-ok.co" || fail "test missed the nested t/ dir: $out"
+echo "$out" | grep -q "PASS src/greeter/t/04-mod.co" || fail "test did not resolve the project's own module: $out"
 if $COME test "$SCRATCH/empty" > /dev/null 2>&1; then
     fail "test accepted an empty root"
 fi
@@ -105,7 +142,7 @@ EOF
 out=$($COME test "$SCRATCH/proj") && rc=0 || rc=$?
 [ "$rc" = "1" ] || fail "test did not fail the run for a failing test"
 echo "$out" | grep -q "FAIL t/03-bad.co (exit 3)" || fail "test failure line wrong: $out"
-echo "$out" | grep -q "Results: 2 passed, 1 failed" || fail "test mixed summary wrong: $out"
+echo "$out" | grep -q "Results: 4 passed, 1 failed" || fail "test mixed summary wrong: $out"
 rm "$SCRATCH/proj/t/03-bad.co"
 cat > "$SCRATCH/proj/t/04-nobuild.co" <<'EOF'
 module bad4

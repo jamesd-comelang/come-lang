@@ -571,7 +571,12 @@ come test --cover           # per-file .co line coverage
 
 Each test builds in an isolated scratch directory (its own
 transpile cache — no basename collisions, no pollution of
-the project's `build/`), with a 30-second timeout. `--race`
+the project's `build/`), with a 30-second timeout. Module
+resolution still anchors on the tested project: the child
+build runs from the scratch directory but looks up `src/`
+modules under the root given to `come test` (passed through
+the `COME_PROJECT_ROOT` environment variable), so a test
+can import the project's own modules. `--race`
 instruments the generated code via `COME_CFLAGS`; the
 prebuilt runtime is not instrumented. On machines where
 ThreadSanitizer refuses to start under the kernel's ASLR
