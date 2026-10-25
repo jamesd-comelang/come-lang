@@ -193,3 +193,60 @@ founder's merge decisions.
 - G: mask/modulus proofs (general codegen, not tokenizer).
 - Hold: header packing / context IDs (redesign, not a
   packing); E tuple half (check tuple lowering first).
+
+## Step 7a trial — runtime-helper header inlining (2026-10-25)
+
+Branch come-lang step7a-inline (from perf2 2193ff5), tag
+step7a-inline-trial, pushed. NOT merged to main.
+
+Change: generated C prologue now defines the 7 hot runtime
+helpers as C99 `static inline` (come_err_arm, come_scope_
+push / push_checkpoint / push_marker / pop / pop_to_marker
+/ pop_to_depth), with scope + arena struct definitions and
+extern decls for the 5 helpers they call (grow, marker_base,
+arena_reset, arena_free_blocks, frame_free_ctx) and the 2
+globals they read (co_scope_active, g_err_active). memory.c:
+those 7 symbols changed static -> extern (defined in
+memory.o; no public header declares them, so hand-written
+code cannot use them -- exposure is to generated code only).
+Header guards (backward-compatible, default unchanged):
+mem/talloc.h scope decls wrapped in COME_SCOPE_NO_PROTO,
+come_err.h err_arm decl wrapped in COME_ERR_NO_ARM_PROTO;
+prologue defines both macros at the very top (before any
+include) and skips codegen's err_arm extern. Checkpoint
+test grep narrowed to call syntax (definitions no longer
+count as pushes; output diff already passed, so this is a
+counting fix, not a behavior change).
+
+Linkage lessons (all caught by the build, not by review):
+plain `inline` emits standalone copies -> multiple definition
+with memory.o; `static inline` conflicts with extern decls
+in the same TU, so externs must be suppressed (guards +
+skipped codegen extern), not coexisted with; come_coro.h
+transitively includes mem/talloc.h before the prologue's
+talloc.h include, so guards must be defined before ANY
+include, not just before talloc.h (preprocess proved the
+double inclusion; the first, pre-guard inclusion leaked
+the decls and talloc.h's own include guard made the second
+a no-op). An early LTO-wrapper segfault building std.o was
+a downstream symptom of the duplicate definitions, not a
+separate LTO bug: it vanished once linkage was fixed.
+
+Gate: come-lang suite green from clean (with checkpoint
+grep fix); co_SQLite suites 9/9 green with step7a compiler
+(next-token branch); bench checksums exact.
+
+Measure (packed, paired interleaved 8 rounds, vs perf2 nt):
+default faithful 299 -> 294 (-7 ms paired median), default
+fast 179 -> 165 (-14 ms, all rounds negative), LTO faithful
+211 -> 210 (flat), LTO fast 144 -> 133 (-10 ms, all rounds
+negative). Best (LTO fast) now ~133 ms (Go 131, ~2 ms behind
+-- essentially at Go parity for the trial fast scanner;
+faithful primary still ~210 ms, so product parity is NOT
+achieved). Asymmetry is the finding: 7a recovers ~38% of
+fast's default-vs-LTO gap but only ~8% of faithful's --
+faithful's gap is mostly user-code inlining (deferred 7b),
+not runtime helpers. The LTO fast gain was unexpected
+(LTO was assumed to already inline these); it suggests LTO
+does not fully inline runtime helpers for fast's shape, a
+finding, not a proven mechanism.

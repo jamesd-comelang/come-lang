@@ -31,12 +31,14 @@ void* mem_talloc_steal(void* new_ctx, void* ptr);
 // a switch, so a coroutine suspended inside a scope keeps
 // its frames intact while another runs.
 void* come_scope_current(void);
+#ifndef COME_SCOPE_NO_PROTO
 void come_scope_push(void);
 void come_scope_push_checkpoint(void);
 void come_scope_push_marker(void);
 void come_scope_pop(void);
 void come_scope_pop_to_marker(void);
 void come_scope_pop_to_depth(int lexical_depth);
+#endif
 void* come_scope_caller_ctx(void);
 void* come_scope_ctx_for_depth(int lexical_depth);
 // Move a buffer's block to dst when dst outlives the
