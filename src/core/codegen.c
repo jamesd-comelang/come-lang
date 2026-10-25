@@ -3190,6 +3190,7 @@ static int block_is_clean(ASTNode* block) {
 // emit raw while either is set -- opt-in only,
 // never the default.
 int g_codegen_unchecked = 0;
+int g_codegen_debug = 0; // Step 6 audit: --debug re-inserts checks
 static int g_unchecked = 0;
 
 typedef struct { char buf[128]; char idx[128]; } BoundProof;
@@ -3449,8 +3450,61 @@ static int nonneg_expr(ASTNode* n) {
     if (n->type == AST_METHOD_CALL &&
         (strcmp(n->text, "length") == 0 || strcmp(n->text, "bytesize") == 0)) return 1;
     if (n->type == AST_IDENTIFIER) return nonneg_contains(n->text);
+    // Step 6: int/long(byte[] read) is nonneg: byte reads
+    // zero-extend in expression position (finding 32), 0..255.
+    if (n->type == AST_CAST && n->child_count >= 2 &&
+        (strcmp(n->children[0]->text, "int") == 0 ||
+         strcmp(n->children[0]->text, "long") == 0) &&
+        n->children[1]->type == AST_ARRAY_ACCESS &&
+        n->children[1]->child_count >= 1) {
+        char bt[160];
+        const char* bct = expr_come_type(n->children[1]->children[0], bt, sizeof(bt));
+        if (bct && strstr(bct, "byte") != NULL && strchr(bct, '[') != NULL) return 1;
+    }
+    // Step 6: binary ops preserving nonnegativity (see comment in
+    // the step 6 trial log). Exclude - (can go negative) and ~
+    // (flips bit 31). Calls and other nodes stay unproven.
+    if (n->type == AST_BINARY_OP && n->child_count >= 2) {
+        if (strcmp(n->text, "&") == 0 || strcmp(n->text, "|") == 0 ||
+            strcmp(n->text, "^") == 0 || strcmp(n->text, "+") == 0 ||
+            strcmp(n->text, "*") == 0 || strcmp(n->text, "/") == 0 ||
+            strcmp(n->text, "%") == 0)
+            return nonneg_expr(n->children[0]) && nonneg_expr(n->children[1]);
+    }
     return 0;
 }
+// Step 6 helpers: number literal value (1 + *out if AST_NUMBER).
+static int step6_num_val(ASTNode* n, long* out) {
+    if (!n || n->type != AST_NUMBER) return 0;
+    char* end = NULL;
+    long v = strtol(n->text, &end, 0);
+    if (end == n->text) return 0;
+    if (out) *out = v;
+    return 1;
+}
+
+// Step 6: for an early-exit IF (then-branch exits), the surviving
+// path has !cond. A lower-bound disjunct (x < C with C >= 0, or
+// x <= C with C >= -1) therefore gives x nonneg. OR disjuncts each
+// hold on the surviving path (!A && !B), so each is processed;
+// AND is not (surviving has !A || !B, only one holds).
+static void step6_early_exit_nonneg(ASTNode* cond) {
+    if (!cond) return;
+    if (cond->type == AST_BINARY_OP && strcmp(cond->text, "||") == 0) {
+        for (int i = 0; i < cond->child_count; i++)
+            step6_early_exit_nonneg(cond->children[i]);
+        return;
+    }
+    if (cond->type == AST_BINARY_OP && cond->child_count >= 2 &&
+        cond->children[0]->type == AST_IDENTIFIER) {
+        long c = 0;
+        if (strcmp(cond->text, "<") == 0 && step6_num_val(cond->children[1], &c) && c >= 0)
+            nonneg_add(cond->children[0]->text);
+        else if (strcmp(cond->text, "<=") == 0 && step6_num_val(cond->children[1], &c) && c >= -1)
+            nonneg_add(cond->children[0]->text);
+    }
+}
+
 static void nonneg_update_for_stmt(ASTNode* ch) {
     if (!ch) return;
     if (ch->type == AST_VAR_DECL) {
@@ -3488,16 +3542,159 @@ static void nonneg_update_for_stmt(ASTNode* ch) {
         }
         return;
     }
+    // Step 6: IF statements update nonneg for FOLLOWING statements.
+    // Early-exit then-branch: surviving path has !cond, so lower
+    // bounds give nonneg. (Byte fixup was removed: c = c + 256
+    // wraps mod 256 for byte variables, so it never makes a byte
+    // nonneg; the hash's nonneg comes from zero-extension, below.)
+    if (ch->type == AST_IF && ch->child_count >= 2) {
+        if (bound_body_exits(ch->children[1]))
+            step6_early_exit_nonneg(ch->children[0]);
+        return;
+    }
 }
+// Step 6: length facts (buf -> length >= min_len). Lower bounds
+// only: mask/modulo proofs need length >= required. Max-merge on
+// repeat guards; per-variable void on reassign/remove/clear
+// (append/insert/set preserve >= since they grow or keep length).
+typedef struct { char buf[128]; long min_len; } LenFact;
+static LenFact g_len_facts[64];
+static int g_len_count = 0;
+static void len_fact_add(const char* buf, long min_len) {
+    for (int i = 0; i < g_len_count; i++)
+        if (strcmp(g_len_facts[i].buf, buf) == 0) {
+            if (min_len > g_len_facts[i].min_len) g_len_facts[i].min_len = min_len;
+            return;
+        }
+    if (g_len_count >= 64) return;
+    snprintf(g_len_facts[g_len_count].buf, 128, "%s", buf);
+    g_len_facts[g_len_count].min_len = min_len;
+    g_len_count++;
+}
+static int len_fact_has(const char* buf, long need) {
+    for (int i = 0; i < g_len_count; i++)
+        if (strcmp(g_len_facts[i].buf, buf) == 0 && g_len_facts[i].min_len >= need) return 1;
+    return 0;
+}
+static void len_fact_remove(const char* buf) {
+    for (int i = 0; i < g_len_count; i++)
+        if (strcmp(g_len_facts[i].buf, buf) == 0) {
+            g_len_facts[i] = g_len_facts[--g_len_count];
+            return;
+        }
+}
+static int len_fact_save(LenFact* dst) {
+    for (int i = 0; i < g_len_count; i++) dst[i] = g_len_facts[i];
+    return g_len_count;
+}
+static void len_fact_restore(LenFact* src, int n) {
+    for (int i = 0; i < n; i++) g_len_facts[i] = src[i];
+    g_len_count = n;
+}
+
+// Step 6: early-exit length guard -> length fact. Patterns
+// (buf.length() < N) and flipped (N > buf.length()) give length
+// >= N; (<=) / flipped (>=) give length >= N+1. OR disjuncts each
+// hold on the surviving path; AND does not (only one holds).
+static void step6_length_guard(ASTNode* cond) {
+    if (!cond) return;
+    if (cond->type == AST_BINARY_OP && strcmp(cond->text, "||") == 0) {
+        for (int i = 0; i < cond->child_count; i++)
+            step6_length_guard(cond->children[i]);
+        return;
+    }
+    if (cond->type != AST_BINARY_OP || cond->child_count < 2) return;
+    // Find (length-call side, number side, flipped?) for < / <=.
+    ASTNode* len_side = NULL;
+    ASTNode* num_side = NULL;
+    int flip = 0;
+    if (cond->children[0]->type == AST_METHOD_CALL &&
+        strcmp(cond->children[0]->text, "length") == 0) {
+        len_side = cond->children[0]; num_side = cond->children[1];
+    } else if (cond->children[1]->type == AST_METHOD_CALL &&
+        strcmp(cond->children[1]->text, "length") == 0) {
+        len_side = cond->children[1]; num_side = cond->children[0]; flip = 1;
+    } else return;
+    if (!len_side || len_side->child_count < 1 ||
+        len_side->children[0]->type != AST_IDENTIFIER) return;
+    long nv = 0;
+    if (!step6_num_val(num_side, &nv)) return;
+    const char* buf = len_side->children[0]->text;
+    // Unflipped <: length < N -> >= N. Flipped <: N > length -> same.
+    // Unflipped <=: length <= N -> > N -> >= N+1. Flipped >=: same.
+    if (strcmp(cond->text, "<") == 0 && !flip) len_fact_add(buf, nv);
+    else if (strcmp(cond->text, ">") == 0 && flip) len_fact_add(buf, nv);
+    else if (strcmp(cond->text, "<=") == 0 && !flip) len_fact_add(buf, nv + 1);
+    else if (strcmp(cond->text, ">=") == 0 && flip) len_fact_add(buf, nv + 1);
+}
+
+// Step 6: per-statement length-fact update. VAR_DECL array
+// literal -> exact length; ASSIGN to a buf -> void (reassign
+// may shorten); remove/clear method on a buf -> void (shrink).
+// append/insert/set preserve >= (grow or keep), so they keep.
+static void step6_len_update_for_stmt(ASTNode* ch) {
+    if (!ch) return;
+    if (ch->type == AST_VAR_DECL && ch->child_count >= 2 && ch->children[0]) {
+        ASTNode* init = ch->children[0];
+        if (init->type == AST_AGGREGATE_INIT &&
+            strncmp(init->text, "struct ", 7) != 0)
+            len_fact_add(ch->text, init->child_count);
+        return;
+    }
+    if (ch->type == AST_ASSIGN && ch->child_count >= 1 &&
+        ch->children[0]->type == AST_IDENTIFIER) {
+        len_fact_remove(ch->children[0]->text);
+        return;
+    }
+    if (ch->type == AST_METHOD_CALL && ch->child_count >= 1 &&
+        ch->children[0]->type == AST_IDENTIFIER &&
+        (strcmp(ch->text, "remove") == 0 || strcmp(ch->text, "clear") == 0))
+        len_fact_remove(ch->children[0]->text);
+}
+
+// Step 6: mask proof. idx = x & MASK (either order), MASK a
+// nonneg literal, x pure (no assign/call), length >= MASK+1.
+// Then x & MASK <= MASK < length for any x (two's complement:
+// & clears high bits including sign, result bits subset of MASK).
+static int step6_mask_proven(const char* buf, ASTNode* idx) {
+    if (!idx || idx->type != AST_BINARY_OP || strcmp(idx->text, "&") != 0 ||
+        idx->child_count < 2) return 0;
+    ASTNode* x = NULL;
+    long mask = 0;
+    if (step6_num_val(idx->children[1], &mask))
+        x = idx->children[0];
+    else if (step6_num_val(idx->children[0], &mask))
+        x = idx->children[1];
+    else return 0;
+    if (mask < 0) return 0;
+    if (bound_subtree_has_assign_or_call(x)) return 0;
+    return len_fact_has(buf, mask + 1);
+}
+
+// Step 6: modulo proof. idx = EXPR % C, C a positive literal,
+// EXPR nonneg (extended nonneg_expr, which implies purity), length
+// >= C. Then EXPR % C in [0, C) and < length.
+static int step6_modulo_proven(const char* buf, ASTNode* idx) {
+    if (!idx || idx->type != AST_BINARY_OP || strcmp(idx->text, "%") != 0 ||
+        idx->child_count < 2) return 0;
+    long c = 0;
+    if (!step6_num_val(idx->children[1], &c) || c <= 0) return 0;
+    if (!nonneg_expr(idx->children[0])) return 0;
+    return len_fact_has(buf, c);
+}
+
 static void generate_guarded_stmt(FILE* f, ASTNode* ch, int indent) {
     generate_node(f, ch, indent);
     if (bound_subtree_has_assign_or_call(ch)) bound_proof_clear();
     nonneg_update_for_stmt(ch);
+    step6_len_update_for_stmt(ch);
     if (ch && ch->type == AST_IF && ch->child_count == 2) {
         char buf[128], idx[128];
-        if (bound_early_exit_guard(ch->children[0], buf, idx) &&
-            bound_body_exits(ch->children[1]))
-            bound_proof_add(buf, idx);
+        if (bound_body_exits(ch->children[1])) {
+            if (bound_early_exit_guard(ch->children[0], buf, idx))
+                bound_proof_add(buf, idx);
+            step6_length_guard(ch->children[0]);
+        }
     }
 }
 static void generate_block_children(FILE* f, ASTNode* block, int indent) {
@@ -3506,6 +3703,8 @@ static void generate_block_children(FILE* f, ASTNode* block, int indent) {
     int saved_count = bound_proof_save(saved);
     NonnegId saved_nonneg[64];
     int saved_nonneg_count = nonneg_save(saved_nonneg);
+    LenFact saved_len[64];
+    int saved_len_count = len_fact_save(saved_len);
     for (int i = 0; i < block->child_count; i++) {
         ASTNode* ch = block->children[i];
         if (ch && ch->type == AST_RETURN) emit_file_closes_for(f, block, i, indent);
@@ -3513,6 +3712,7 @@ static void generate_block_children(FILE* f, ASTNode* block, int indent) {
     }
     bound_proof_restore(saved, saved_count);
     nonneg_restore(saved_nonneg, saved_nonneg_count);
+    len_fact_restore(saved_len, saved_len_count);
     // At the block's end (unless the last statement is a return:
     // the closes already ran before it).
     if (block->child_count == 0 || block->children[block->child_count - 1]->type != AST_RETURN)
@@ -4739,9 +4939,11 @@ static void generate_expression(FILE* f, ASTNode* node) {
                 fprint_escaped_cstr(f, source_filename);
                 fprintf(f, "\", %d, \"come_%s__%s\"))", node->source_line, current_module, current_function_name);
             } else if (g_unchecked ||
-                       (base->type == AST_IDENTIFIER &&
-                        node->children[1]->type == AST_IDENTIFIER &&
-                        bound_proof_has(base->text, node->children[1]->text))) {
+                       (base->type == AST_IDENTIFIER && !g_codegen_debug &&
+                        ((node->children[1]->type == AST_IDENTIFIER &&
+                          bound_proof_has(base->text, node->children[1]->text)) ||
+                         step6_mask_proven(base->text, node->children[1]) ||
+                         step6_modulo_proven(base->text, node->children[1])))) {
                 // Parity step 1: guard-dominated access.
                 // The guard already proved 0 <= idx < count
                 // for these exact identifiers, unmodified
