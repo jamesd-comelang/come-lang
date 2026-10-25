@@ -250,3 +250,79 @@ not runtime helpers. The LTO fast gain was unexpected
 (LTO was assumed to already inline these); it suggests LTO
 does not fully inline runtime helpers for fast's shape, a
 finding, not a proven mechanism.
+
+## Measurements + tests (2026-10-25, branch tests-lazy-header)
+
+Authorized scope: callgrind substitutes (ptrace, gcov, objdump) +
+lazy-marker and header-order tests. No merges, no 7b, step 10
+still unanswered. Tests commit 77aa450 on this branch; this
+section is the measurement log commit on top of it.
+
+### Ptrace instruction counts (default perf2 packed benches)
+Binaries: co_SQLite bench_nt / bench_fast_nt (perf2, default -O2,
+packed methods). Subset: first 200 lines of workload.sql, 20
+passes, 128,720 tokens, checksums identical both scanners
+(typesum=14512780, lensum=407360). Tracer:
+~/workspace/ptrace_tools/tracer2 (workspace, NOT /tmp: /tmp/tracer2
+vanished 00:53-01:01 on 2026-10-25, killing the first subset run;
+recreated in workspace and rerun properly backgrounded).
+Empty baseline (0 lines, 0 tokens): 2,676,242 steps for BOTH
+faithful and fast, identical to the step -- startup is a clean
+common control, subtracted below. Single run each: step counts
+are deterministic, not timing, so paired rounds are not needed
+for noise (empty determinism + identical checksums support this).
+
+- Faithful total 115,220,074 steps (2077 s at ~55k steps/s)
+  net 112,543,832, 874.4 instr/token.
+- Fast total 77,667,224 steps (1392 s)
+  net 74,990,982, 582.6 instr/token.
+- Net ratio faithful/fast = 1.501. Raw ratio = 1.484
+  (startup compresses it slightly toward 1; net is the right
+  figure, raw is shown only because it lands almost exactly
+  on the brief's 1.48).
+- Time ratio, same binaries, default packed (next-token
+  baseline): ~305/187 ms = 1.631. Other trial runs gave
+  1.67-1.76 (VM phase variation), so the CPI penalty below
+  is ~9-14%, not a single precise number.
+
+Verdict: predominantly instruction-bound, with a smaller
+stall/layout penalty in default builds. Time ratio =
+instruction ratio x IPC ratio: 1.631 / 1.501 = 1.087, so
+faithful also runs ~9% worse IPC than fast in default builds.
+Cutting instructions is the main lever (faithful must shed
+~292 instr/token to reach fast -- structural, not a few
+pushes, consistent with the earlier 55 ms unexplained gap);
+stall/layout work alone cannot close a 1.5x instruction gap.
+Limitations: default binaries only -- LTO instruction ratio
+was NOT measured (another ~1 h via ptrace, not done); net
+includes the common bench-loop body per token (~15-20 instr,
+est.), so the scanner-only ratio is slightly higher than
+1.501 (roughly 1.52 if loop overhead is removed), which does
+not change the verdict. Full bench via ptrace would be ~20x
+longer (~19 h), hence the subset.
+
+### Gcov (counts only, never timing)
+COME_CFLAGS="--coverage -O2 -g" builds, full bench, checksums
+exact. Faithful: tk_scan 2,530,480 calls, kw_hash_code 528,980
+(0.209/token). Fast: fast_scan 2,530,480, kw_hash_code 528,980
+(identical). All per-class counts identical. Gcov does NOT
+give instruction counts -- it replicates step 1 counters with
+a per-line breakdown. Files: ~/workspace/gcov_results/.
+
+### Objdump (LTO fast hot function fast_next.isra.0)
+perf2: 24 call sites, 13 scope/err (1 push_marker, 3 pop,
+9 err_arm), 11 oob. 7a: 21 call sites, 0 direct scope/err,
+1 co_scope_grow (rare), 3+3 inlined-pop helpers, 11 oob
+(unchanged). Yes, 7a removed the direct scope/err calls from
+the hot function. Main-function call counts (115 vs 121) are
+not the hot loop (main includes setup/line-loading).
+
+### Tests on this branch (see 77aa450)
+Lazy-marker: nested-callee first allocation, chown across a
+lazy middle frame, escaping returns, unwinding through lazy
+frames + early return -- output + ASan, first run green.
+Header-order (7a-specific): guards before first include,
+talloc/coro after guards, static inline defs present, no
+conflicting externs -- output + ASan, first run green.
+Full suite green, co_SQLite 9/9 green. Neither test is merged
+to main; header-order fails correctly on pre-7a compilers.
