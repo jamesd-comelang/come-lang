@@ -1886,8 +1886,13 @@ static int g_continue_depth = 0;
 // scope. Loop bodies push their enclosing depth here so
 // break/continue can unwind to it.
 static int g_scope_depth = 0;
+// Step 5: g_loop_depths holds RUNTIME depths (lexical minus clean
+// ancestors), not lexical depths, so break/continue pop_to_depth
+// is exact even when clean blocks enclose the loop. Lexical depths
+// stay unchanged for adoption/variable scopes.
 static int g_loop_depths[64];
 static int g_loop_depth_count = 0;
+static int g_clean_depth = 0; // enclosing clean blocks, for runtime depths
 static void scope_depth_push(void) { g_scope_depth++; g_local_add_depth = g_scope_depth; }
 static void scope_depth_pop(void) { g_scope_depth--; g_local_add_depth = g_scope_depth; }
 
@@ -2955,6 +2960,8 @@ static int clean_walk(ASTNode* n) {
             return 1;
         }
         case AST_RETURN:
+        case AST_BREAK:
+        case AST_CONTINUE:
         case AST_UNARY_OP:
         case AST_POST_INC:
         case AST_POST_DEC:
@@ -3137,6 +3144,8 @@ static int checkpoint_walk(ASTNode* n) {
             return 1;
         }
         case AST_RETURN:
+        case AST_BREAK:
+        case AST_CONTINUE:
         case AST_UNARY_OP:
         case AST_POST_INC:
         case AST_POST_DEC:
@@ -6916,6 +6925,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // pop to the marker themselves, and the
             // fallthrough path pops here.
             g_scope_depth = 0;
+            g_clean_depth = 0;
             g_local_add_depth = 0;
             g_loop_depth_count = 0;
             if (!g_cur_fn_frameless) {
@@ -7483,11 +7493,13 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             emit_indent(f, indent + 1);
             if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
             scope_depth_push();
+            if (clean) g_clean_depth++;
             int saved_unchecked = g_unchecked;
             if (node->is_unchecked) g_unchecked = 1;
             generate_block_children(f, node, indent + 1);
             g_unchecked = saved_unchecked;
             scope_depth_pop();
+            if (clean) g_clean_depth--;
             // A block ending in a return never reaches its
             // pop: the return already popped to the marker.
             if (!clean && (node->child_count == 0 ||
@@ -8462,7 +8474,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // COIL-157: the body scope is per iteration -
             // a map built in a loop body must die at the
             // iteration's end, not at the function's.
-            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
+            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth - g_clean_depth;
             // Body is a block usually?
             ASTNode* body = node->children[1];
             // Parity step 2: loop bodies start with a cleared
@@ -8501,8 +8513,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                  emit_indent(f, indent+4);
                  if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
                  scope_depth_push();
+                 if (clean) g_clean_depth++;
                  for(int i=0; i<body->child_count; i++) generate_guarded_stmt(f, body->children[i], indent+4);
                  scope_depth_pop();
+                 if (clean) g_clean_depth--;
                  // A body ending in a return never reaches
                  // its pop: the return already popped to
                  // the marker.
@@ -8529,7 +8543,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             fprintf(f, "do {\n");
             g_break_depth++;
             g_continue_depth++;
-            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
+            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth - g_clean_depth;
              ASTNode* body = node->children[0];
             // Parity step 2: do-while bodies start cleared
             // (the cond runs after the body, so it cannot
@@ -8546,8 +8560,10 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                  emit_indent(f, indent+4);
                  if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
                  scope_depth_push();
+                 if (clean) g_clean_depth++;
                  for(int i=0; i<body->child_count; i++) generate_guarded_stmt(f, body->children[i], indent+4);
                  scope_depth_pop();
+                 if (clean) g_clean_depth--;
                  // A body ending in a return never reaches
                  // its pop: the return already popped to
                  // the marker.
@@ -8622,7 +8638,7 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
             // children[3]: body
             g_break_depth++;
             g_continue_depth++;
-            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth;
+            if (g_loop_depth_count < 64) g_loop_depths[g_loop_depth_count++] = g_scope_depth - g_clean_depth;
             ASTNode* body = node->children[3];
             // Parity step 2: a counted for proves its pair
             // at the top of every iteration (init nonneg +
@@ -8646,10 +8662,12 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                 emit_indent(f, indent + 4);
                 if (!clean) fprintf(f, checkpoint ? "come_scope_push_checkpoint();\n" : "come_scope_push();\n");
                 scope_depth_push();
+                if (clean) g_clean_depth++;
                 for (int i = 0; i < body->child_count; i++) {
                     generate_guarded_stmt(f, body->children[i], indent + 4);
                 }
                 scope_depth_pop();
+                if (clean) g_clean_depth--;
                 // A body ending in a return never reaches
                 // its pop: the return already popped to
                 // the marker.

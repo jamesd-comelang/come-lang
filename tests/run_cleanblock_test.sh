@@ -2,8 +2,11 @@
 # Redesign (Design 5 no-frame tier): clean blocks skip
 # their scope frame. Builds tests/cleanblock_project,
 # checks its output, then counts plain come_scope_push
-# calls in the generated C: exactly 3 (the dirty loop
-# body, the break loop body, and the break if block).
+# calls in the generated C: exactly 1 (the dirty loop
+# body only). Step 5: break/continue no longer defeat
+# clean-block detection, so the break loop body and the
+# break if block (scalars only) are now clean too; loop
+# depths are runtime depths, so unwinding stays exact.
 # The clean loop body, the clean if block, and the
 # outer-buffer-assign if block must carry none. Runs
 # under AddressSanitizer too: a wrongly skipped frame
@@ -41,8 +44,8 @@ if ! diff -u tests/cleanblock_project/expected.txt "$WORK/out_asan.txt"; then
     exit 1
 fi
 PUSHES=$(grep -c "come_scope_push();" "$WORK/.ccache/main.co.c" || true)
-if [ "$PUSHES" != "3" ]; then
-    echo "FAIL: expected 3 plain scope pushes in generated C, found $PUSHES"
+if [ "$PUSHES" != "1" ]; then
+    echo "FAIL: expected 1 plain scope push in generated C, found $PUSHES"
     grep -n "come_scope_push" "$WORK/.ccache/main.co.c" | head -20
     exit 1
 fi
