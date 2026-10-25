@@ -548,9 +548,11 @@ static int co_scope_marker_base(co_scope_stack *s) {
     return -1;
 }
 
+static void *co_scope_materialize(co_scope_stack *s, int idx);
+
 void *come_scope_current(void) {
     co_scope_stack *s = co_scope_active;
-    if (s->top > 0) return s->frames[s->top - 1].ctx;
+    if (s->top > 0) return co_scope_materialize(s, s->top - 1);
     if (!co_mem_root) mem_talloc_module_init();
     return co_mem_root;
 }
@@ -612,13 +614,32 @@ static void co_frame_free_ctx(void *ctx) {
     if (ctx) co_frame_free(co_from_ptr(ctx));
 }
 
+// perf2 lazy markers: a frame's talloc chunk is allocated only on
+// first use (allocation, adoption, or nesting). Push records only
+// the slot (NULL ctx + arena checkpoint); materialization happens
+// in co_scope_materialize, called by come_scope_current(),
+// come_scope_caller_ctx() and come_scope_ctx_for_depth(). A frame
+// that never allocates, adopts, or nests pays no freelist and no
+// talloc link/unlink — only the slot stores and top++. Pop already
+// tolerates a NULL ctx (co_frame_free_ctx is a no-op for NULL),
+// the same path checkpoint frames use.
+static void *co_scope_materialize(co_scope_stack *s, int idx) {
+    if (idx < 0) {
+        if (!co_mem_root) mem_talloc_module_init();
+        return co_mem_root;
+    }
+    if (s->frames[idx].ctx) return s->frames[idx].ctx;
+    void *parent = co_scope_materialize(s, idx - 1);
+    void *ctx = co_frame_new_ctx(parent);
+    if (!ctx) return NULL;
+    s->frames[idx].ctx = ctx;
+    return ctx;
+}
+
 void come_scope_push(void) {
     co_scope_stack *s = co_scope_active;
-    void *parent = come_scope_current();
-    void *ctx = co_frame_new_ctx(parent);
-    if (!ctx) return;
-    if (!co_scope_grow(s)) { co_frame_free_ctx(ctx); return; }
-    s->frames[s->top].ctx = ctx;
+    if (!co_scope_grow(s)) return;
+    s->frames[s->top].ctx = NULL;
     s->frames[s->top].is_marker = 0;
     /* Design 2 (redesign): arena checkpoint for this frame. */
     s->frames[s->top].arena_block = s->arena_cur;
@@ -647,11 +668,8 @@ void come_scope_push_checkpoint(void) {
 
 void come_scope_push_marker(void) {
     co_scope_stack *s = co_scope_active;
-    void *parent = come_scope_current();
-    void *ctx = co_frame_new_ctx(parent);
-    if (!ctx) return;
-    if (!co_scope_grow(s)) { co_frame_free_ctx(ctx); return; }
-    s->frames[s->top].ctx = ctx;
+    if (!co_scope_grow(s)) return;
+    s->frames[s->top].ctx = NULL;
     s->frames[s->top].is_marker = 1;
     /* Design 2 (redesign): arena checkpoint for this frame. */
     s->frames[s->top].arena_block = s->arena_cur;
@@ -701,7 +719,7 @@ void *come_scope_caller_ctx(void) {
         if (!co_mem_root) mem_talloc_module_init();
         return co_mem_root;
     }
-    return s->frames[base - 1].ctx;
+    return co_scope_materialize(s, base - 1);
 }
 
 void *come_scope_ctx_for_depth(int lexical_depth) {
@@ -713,7 +731,7 @@ void *come_scope_ctx_for_depth(int lexical_depth) {
     }
     int idx = base + lexical_depth;
     if (idx >= s->top) return come_scope_current();
-    return s->frames[idx].ctx;
+    return co_scope_materialize(s, idx);
 }
 
 int come_scope_adopt(void *dst, void *data) {
@@ -740,6 +758,7 @@ int come_scope_adopt(void *dst, void *data) {
        outlives every scope, so there is nothing to move. */
     int k = -1, j = -1;
     for (int i = 0; i < s->top; i++) {
+        if (!s->frames[i].ctx) continue;  /* lazy frame owns nothing */
         if (co_from_ptr(s->frames[i].ctx) == parent) k = i;
         if (co_from_ptr(s->frames[i].ctx) == dst_chunk) j = i;
     }
