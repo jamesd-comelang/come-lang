@@ -63,8 +63,10 @@ ComeErrRecord *come_err_active(void);
 void come_err_activate(ComeErrRecord *rec);
 
 // Arm the pending location for the next recorded error.
+#ifndef COME_ERR_NO_ARM_PROTO
 void come_err_arm(const char *module, const char *func,
                   const char *file, int line);
+#endif
 
 // Record an error with an explicit C-side location
 // (file/line/func of the setting site, e.g. from a macro's

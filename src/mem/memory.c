@@ -178,7 +178,7 @@ void mem_talloc_module_shutdown(void) {
  * The record is per execution context (see come_err_activate);
  * the coroutine scheduler swaps it together with errno. */
 static ComeErrRecord g_err_main;
-static ComeErrRecord *g_err_active = &g_err_main;
+ComeErrRecord *g_err_active = &g_err_main;
 
 ComeErrRecord *come_err_active(void) { return g_err_active; }
 
@@ -456,9 +456,9 @@ typedef struct {
 } co_scope_stack;
 
 static co_scope_stack co_scope_main = { NULL, 0, 0, NULL, NULL };
-static co_scope_stack *co_scope_active = &co_scope_main;
+co_scope_stack *co_scope_active = &co_scope_main;
 
-static void co_arena_free_blocks(co_arena_block *head) {
+void co_arena_free_blocks(co_arena_block *head) {
     while (head) {
         co_arena_block *nx = head->next;
         free(head);
@@ -470,7 +470,7 @@ static void co_arena_free_blocks(co_arena_block *head) {
    allocated after the checkpoint block, rewind the checkpoint
    block itself. A NULL checkpoint means the arena was empty
    at push, so free everything. */
-static void co_arena_reset_to(co_scope_stack *s,
+void co_arena_reset_to(co_scope_stack *s,
                               co_arena_block *blk, size_t off) {
     if (!blk) {
         /* Arena was empty at the checkpoint: rewind to
@@ -532,7 +532,7 @@ int come_arena_contains(const void *ptr) {
     return 0;
 }
 
-static int co_scope_grow(co_scope_stack *s) {
+int co_scope_grow(co_scope_stack *s) {
     if (s->top < s->cap) return 1;
     int ncap = s->cap ? s->cap * 2 : 16;
     co_scope_frame *nf = realloc(s->frames, sizeof(co_scope_frame) * (size_t)ncap);
@@ -542,7 +542,7 @@ static int co_scope_grow(co_scope_stack *s) {
     return 1;
 }
 
-static int co_scope_marker_base(co_scope_stack *s) {
+int co_scope_marker_base(co_scope_stack *s) {
     for (int i = s->top - 1; i >= 0; i--)
         if (s->frames[i].is_marker) return i;
     return -1;
@@ -610,7 +610,7 @@ static void *co_frame_new_ctx(void *parent) {
     return co_to_ptr(chunk);
 }
 
-static void co_frame_free_ctx(void *ctx) {
+void co_frame_free_ctx(void *ctx) {
     if (ctx) co_frame_free(co_from_ptr(ctx));
 }
 

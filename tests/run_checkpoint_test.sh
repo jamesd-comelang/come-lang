@@ -35,7 +35,7 @@ if ! diff -u tests/checkpoint_project/expected.txt "$WORK/out.txt"; then
     exit 1
 fi
 GENC="$REPO/.ccache/main.co.c"
-CKPT=$(grep -c "come_scope_push_checkpoint" "$GENC")
+CKPT=$(grep -c "come_scope_push_checkpoint();" "$GENC")
 if [ "$CKPT" -ne 2 ]; then
     echo "FAIL: expected 2 checkpoint pushes, got $CKPT"
     exit 1

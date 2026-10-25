@@ -9131,6 +9131,8 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     }
 
 
+    fprintf(f, "#define COME_SCOPE_NO_PROTO\n");
+    fprintf(f, "#define COME_ERR_NO_ARM_PROTO\n");
     fprintf(f, "#include <stdio.h>\n");
     fprintf(f, "#include <string.h>\n");
     fprintf(f, "#include <stdbool.h>\n");
@@ -9145,6 +9147,29 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
     fprintf(f, "#include <errno.h>\n");
     fprintf(f, "#define come_errno_wrapper() (errno)\n");
     fprintf(f, "static __attribute__((unused)) const char* come_strerror() { return strerror(errno); }\n");
+    // Step 7a: runtime helpers as C99 inline definitions in every
+    // TU, so default (-O2) builds inline them like LTO does.
+    // Structs are emitted here (generated code only, not a public
+    // header); helpers stay out-of-line in memory.o as fallback.
+    fprintf(f, "#include \"come_err.h\"\n");
+    fprintf(f, "typedef struct co_arena_block { struct co_arena_block *next; size_t used; size_t cap; char data[]; } co_arena_block;\n");
+    fprintf(f, "typedef struct { void *ctx; int is_marker; co_arena_block *arena_block; size_t arena_off; } co_scope_frame;\n");
+    fprintf(f, "typedef struct { co_scope_frame *frames; int top; int cap; co_arena_block *arena_head; co_arena_block *arena_cur; } co_scope_stack;\n");
+    fprintf(f, "void co_arena_free_blocks(co_arena_block *head);\n");
+    fprintf(f, "void co_arena_reset_to(co_scope_stack *s, co_arena_block *blk, size_t off);\n");
+    fprintf(f, "int co_scope_grow(co_scope_stack *s);\n");
+    fprintf(f, "int co_scope_marker_base(co_scope_stack *s);\n");
+    fprintf(f, "void co_frame_free_ctx(void *ctx);\n");
+    fprintf(f, "extern co_scope_stack *co_scope_active;\n");
+    fprintf(f, "extern ComeErrRecord *g_err_active;\n");
+    fprintf(f, "static inline void come_err_arm(const char *module, const char *func, const char *file, int line) { ComeErrRecord *r = g_err_active; r->arm_module = module ? module : \"\"; r->arm_func = func ? func : \"\"; r->arm_file = file ? file : \"\"; r->arm_line = line; r->armed = 1; }\n");
+    fprintf(f, "static inline void come_scope_push(void) { co_scope_stack *s = co_scope_active; if (!co_scope_grow(s)) return; s->frames[s->top].ctx = NULL; s->frames[s->top].is_marker = 0; s->frames[s->top].arena_block = s->arena_cur; s->frames[s->top].arena_off = s->arena_cur ? s->arena_cur->used : 0; s->top++; }\n");
+    fprintf(f, "static inline void come_scope_push_checkpoint(void) { co_scope_stack *s = co_scope_active; if (!co_scope_grow(s)) return; s->frames[s->top].ctx = NULL; s->frames[s->top].is_marker = 0; s->frames[s->top].arena_block = s->arena_cur; s->frames[s->top].arena_off = s->arena_cur ? s->arena_cur->used : 0; s->top++; }\n");
+    fprintf(f, "static inline void come_scope_push_marker(void) { co_scope_stack *s = co_scope_active; if (!co_scope_grow(s)) return; s->frames[s->top].ctx = NULL; s->frames[s->top].is_marker = 1; s->frames[s->top].arena_block = s->arena_cur; s->frames[s->top].arena_off = s->arena_cur ? s->arena_cur->used : 0; s->top++; }\n");
+    fprintf(f, "static inline void come_scope_pop(void) { co_scope_stack *s = co_scope_active; if (s->top <= 0) return; s->top--; co_arena_reset_to(s, s->frames[s->top].arena_block, s->frames[s->top].arena_off); if (s->top == 0) { co_arena_free_blocks(s->arena_head); s->arena_head = s->arena_cur = NULL; } co_frame_free_ctx(s->frames[s->top].ctx); }\n");
+    fprintf(f, "static inline void come_scope_pop_to_marker(void) { co_scope_stack *s = co_scope_active; while (s->top > 0) { int marker = s->frames[s->top - 1].is_marker; come_scope_pop(); if (marker) break; } }\n");
+    fprintf(f, "static inline void come_scope_pop_to_depth(int lexical_depth) { co_scope_stack *s = co_scope_active; int base = co_scope_marker_base(s); if (base < 0) { while (s->top > 0) come_scope_pop(); return; } while (s->top - 1 > base + lexical_depth) come_scope_pop(); }\n");
+
     // Auto-include headers for simple modules detection
     // In a real compiler this would be driven by the symbol table/imports
     // Net includes removed
@@ -9162,7 +9187,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
         fprintf(f, "extern come_string_t come_ERR_str(void);\n");
         fprintf(f, "extern void come_ERR_clear(void);\n");
         fprintf(f, "extern void come_ERR_fatal(come_string_t msg);\n");
-        fprintf(f, "extern void come_err_arm(const char*, const char*, const char*, int);\n");
+        // Step 7a: no extern here; prologue defines static inline come_err_arm.
         fprintf(f, "extern int come_ERR_no_at(int, const char*, const char*, const char*, int);\n");
         fprintf(f, "extern come_string_t come_ERR_str_at(int, const char*, const char*, const char*, int);\n");
         fprintf(f, "extern come_string_t come_ERR_where_at(int, const char*, const char*, const char*, int);\n");
