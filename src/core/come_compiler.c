@@ -51,6 +51,7 @@ static StringList *g_visited_files = NULL;
 static StringList *g_c_files = NULL;
 static int g_single_tu = 0;
 static int g_lto = 0;
+static int g_debug = 0;
 
 static void list_add(StringList **head, const char *val) {
     StringList *node = malloc(sizeof(StringList));
@@ -152,7 +153,18 @@ static const char *cc_extra_flags(void) {
         else snprintf(buf, sizeof(buf), " -O2 -flto");
         return buf;
     }
-    if (!v || !*v) return "";
+    // perf2 C: the default compile is -O2 (was -O0: gcc with no
+    // -O flag). -O2 alone captured most of the LTO gain for
+    // faithful code (0.59 s -> 0.47 s) in the perf2 baselines;
+    // --lto still wins where cross-TU inlining matters (fast).
+    // COME_CFLAGS set: the user's flags as-is (add -O2
+    // yourself if you want it); --debug: -O0 -g, but only
+    // when COME_CFLAGS is unset (with COME_CFLAGS or --lto,
+    // --debug has no effect -- LTO implies -O2).
+    if (!v || !*v) {
+        if (g_debug) return " -O0 -g";
+        return " -O2";
+    }
     snprintf(buf, sizeof(buf), " %s", v);
     return buf;
 }
@@ -365,14 +377,37 @@ static void compile_file(const char *source_path, const char *forced_o_path,
     // the .c path above; the .c itself is flag-free
     // except for --unchecked, so it keeps its own
     // suffix only.
-    if (g_codegen_unchecked && g_lto)
-        snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.lto.o", g_build_dir, bn);
-    else if (g_codegen_unchecked)
-        snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.o", g_build_dir, bn);
-    else if (g_lto)
-        snprintf(o_file, sizeof(o_file), "%s/%s.lto.o", g_build_dir, bn);
-    else
-        snprintf(o_file, sizeof(o_file), "%s/%s.o", g_build_dir, bn);
+    // perf2 C: suffix by ACTUAL flags, not just g_ flags.
+    // Default is now -O2 (was -O0), so plain .o would
+    // silently reuse pre-C -O0 objects; default builds
+    // get .o2.o to force a rebuild on upgrade. --debug
+    // is effective only without --lto and without
+    // COME_CFLAGS (see cc_extra_flags), so its suffix
+    // applies only then; COME_CFLAGS builds keep the
+    // old .o/.unchecked.o names (their pre-existing
+    // flag-change staleness is out of scope here).
+    {
+        const char *uc = getenv("COME_CFLAGS");
+        int use_cflags = (uc && *uc);
+        int debug_build = g_debug && !g_lto && !use_cflags;
+        int o2_build = !g_lto && !use_cflags && !debug_build;
+        if (g_codegen_unchecked && g_lto)
+            snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.lto.o", g_build_dir, bn);
+        else if (g_codegen_unchecked && debug_build)
+            snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.debug.o", g_build_dir, bn);
+        else if (g_codegen_unchecked && o2_build)
+            snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.o2.o", g_build_dir, bn);
+        else if (g_codegen_unchecked)
+            snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.o", g_build_dir, bn);
+        else if (g_lto)
+            snprintf(o_file, sizeof(o_file), "%s/%s.lto.o", g_build_dir, bn);
+        else if (debug_build)
+            snprintf(o_file, sizeof(o_file), "%s/%s.debug.o", g_build_dir, bn);
+        else if (o2_build)
+            snprintf(o_file, sizeof(o_file), "%s/%s.o2.o", g_build_dir, bn);
+        else
+            snprintf(o_file, sizeof(o_file), "%s/%s.o", g_build_dir, bn);
+    }
     
     if (!forced_o_path) ensure_dir(g_build_dir);
 
@@ -1911,7 +1946,7 @@ static void print_usage(void) {
     fprintf(stderr,
         "Usage:\n"
         "  come build <file.co|dir> [-o output]   compile and link\n"
-        "    [--single-tu]                        compile all user code as one TU\n    [--lto]                                link-time optimize user code (user-only LTO; implies -O2; runtime stays prebuilt)\n    [--unchecked]                          remove array bounds checks (opt-in; unsafe: out-of-bounds reads/writes become raw heap access)\n"
+        "    [--single-tu]                        compile all user code as one TU\n    [--lto]                                link-time optimize user code (user-only LTO; implies -O2; runtime stays prebuilt)\n    [--debug]                              debug build: -O0 -g instead of the default -O2 (no effect with --lto or COME_CFLAGS set)\n    [--unchecked]                          remove array bounds checks (opt-in; unsafe: out-of-bounds reads/writes become raw heap access)\n"
         "                                          (cross-module inlining without LTO)\n"
         "  come genc <file.co> -o <out.c>          emit C only\n"
         "  come check <file.co|dir>                compile, no link or run\n"
@@ -2281,6 +2316,8 @@ int main(int argc, char *argv[]) {
             g_single_tu = 1;
         } else if (strcmp(argv[i], "--lto") == 0) {
             g_lto = 1;
+        } else if (strcmp(argv[i], "--debug") == 0) {
+            g_debug = 1;
         } else if (strcmp(argv[i], "--unchecked") == 0) {
             g_codegen_unchecked = 1;
         } else {

@@ -114,6 +114,48 @@ gcc version/distro. Merge decision is the founder's: A is
 the perf win, B is robustness. If B is ever deemed unwanted
 complexity, it reverts cleanly (separate commit).
 
+## Step C: default -O2 with --debug escape (DONE)
+
+Driver change (come_compiler.c): non-LTO, no-COME_CFLAGS
+builds now compile with -O2 (was -O0: gcc with no -O flag).
+COME_CFLAGS set: the user's flags as-is (add -O2 yourself
+if you want it). --lto unchanged (-O2 -flto). New flag
+`come build --debug` gives -O0 -g, but only when COME_CFLAGS
+is unset and without --lto (with either, --debug has no
+effect -- documented in --help). The review's static/hidden
+visibility half of C is NOT done: come links .o files
+statically, not a .so, so visibility does not enable any
+inlining here (LTO already covers it).
+
+Object names suffix by ACTUAL flags (the codebase's own
+principle, extended): default -O2 builds use .o2.o (not
+plain .o), so pre-C -O0 objects are not silently reused
+after upgrade; --debug builds use .debug.o (and
+.unchecked.debug.o / .unchecked.o2.o for unchecked).
+COME_CFLAGS builds keep .o/.unchecked.o (their
+pre-existing flag-change staleness is out of scope).
+Single-TU keeps its fixed single_tu.o for all flags
+(pre-existing; --debug + --single-tu users should clean
+between flag changes, as --lto + --single-tu already
+requires).
+
+Measured 2026-10-24 (vs keyword-hash step; checksums
+exact, suites green: come-lang 67/0, co_SQLite 8/8):
+
+| Build | Before C | After C | Delta |
+|---|---|---|---|
+| Default faithful | ~432 | ~329 | -103 (-24%) |
+| Default fast | ~276 | ~232 | -44 (-16%) |
+| --debug faithful | -- | ~432 | = old -O0 exactly |
+| --lto faithful | ~221 | ~215 | flat |
+| --lto fast | ~157 | ~159 | flat |
+
+--debug reproducing the old -O0 value exactly (432) is
+the control: the win is the -O2 itself, nothing else.
+LTO flat as expected (it already had -O2). The value of
+C is the default: users who do not pass --lto now get
+232 ms (fast) / 329 ms (faithful) instead of 276/432.
+
 ## Remaining queue (in order)
 
 - B: inlinable runtime (static inline hot helpers + fat LTO
