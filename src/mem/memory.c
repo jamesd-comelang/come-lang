@@ -28,6 +28,29 @@
 #include <errno.h>
 #include <stdlib.h>
 
+/* Per-token counters (measure branch): always incremented (cheap
+   adds); reporting is gated by COME_COUNTERS env var via atexit.
+   Instrumented builds are for counts only, not wall-time claims. */
+long co_cnt_scope_push = 0;
+long co_cnt_scope_push_marker = 0;
+long co_cnt_scope_push_checkpoint = 0;
+long co_cnt_scope_pop = 0;
+long co_cnt_scope_materialize = 0;
+long co_cnt_err_arm = 0;
+long co_cnt_talloc_alloc = 0;
+long co_cnt_checked_read = 0;
+static void co_counters_print(void) {
+    fprintf(stderr, "COME_COUNTERS push=%ld marker=%ld checkpoint=%ld pop=%ld materialize=%ld err_arm=%ld talloc_alloc=%ld checked_read=%ld\n",
+        co_cnt_scope_push, co_cnt_scope_push_marker, co_cnt_scope_push_checkpoint,
+        co_cnt_scope_pop, co_cnt_scope_materialize, co_cnt_err_arm,
+        co_cnt_talloc_alloc, co_cnt_checked_read);
+}
+static void co_counters_init(void) __attribute__((constructor));
+static void co_counters_init(void) {
+    const char *e = getenv("COME_COUNTERS");
+    if (e && e[0]) atexit(co_counters_print);
+}
+
 /* ---- chunk layout -------------------------------------------------- */
 
 typedef struct co_chunk {
@@ -192,6 +215,7 @@ void come_err_activate(ComeErrRecord *rec) {
 void come_err_arm(const char *module, const char *func,
                   const char *file, int line) {
     ComeErrRecord *r = g_err_active;
+    co_cnt_err_arm++;
     // Pointers first, armed last: the record is only read
     // once armed, and every arming site passes literals.
     r->arm_module = module ? module : "";
@@ -372,6 +396,7 @@ void *mem_talloc_alloc(void *ctx, size_t size) {
         mem_talloc_module_init();
     co_chunk *parent = ctx ? co_from_ptr(ctx) : co_root_chunk();
     co_chunk *chunk = co_alloc_chunk(parent, size);
+    if (chunk) co_cnt_talloc_alloc++;
     if (!chunk)
         errno = ENOMEM;
     return chunk ? co_to_ptr(chunk) : NULL;
@@ -632,6 +657,7 @@ static void *co_scope_materialize(co_scope_stack *s, int idx) {
     void *parent = co_scope_materialize(s, idx - 1);
     void *ctx = co_frame_new_ctx(parent);
     if (!ctx) return NULL;
+    co_cnt_scope_materialize++;
     s->frames[idx].ctx = ctx;
     return ctx;
 }
@@ -639,6 +665,7 @@ static void *co_scope_materialize(co_scope_stack *s, int idx) {
 void come_scope_push(void) {
     co_scope_stack *s = co_scope_active;
     if (!co_scope_grow(s)) return;
+    co_cnt_scope_push++;
     s->frames[s->top].ctx = NULL;
     s->frames[s->top].is_marker = 0;
     /* Design 2 (redesign): arena checkpoint for this frame. */
@@ -659,6 +686,7 @@ void come_scope_push(void) {
 void come_scope_push_checkpoint(void) {
     co_scope_stack *s = co_scope_active;
     if (!co_scope_grow(s)) return;
+    co_cnt_scope_push_checkpoint++;
     s->frames[s->top].ctx = NULL;
     s->frames[s->top].is_marker = 0;
     s->frames[s->top].arena_block = s->arena_cur;
@@ -669,6 +697,7 @@ void come_scope_push_checkpoint(void) {
 void come_scope_push_marker(void) {
     co_scope_stack *s = co_scope_active;
     if (!co_scope_grow(s)) return;
+    co_cnt_scope_push_marker++;
     s->frames[s->top].ctx = NULL;
     s->frames[s->top].is_marker = 1;
     /* Design 2 (redesign): arena checkpoint for this frame. */
@@ -680,6 +709,7 @@ void come_scope_push_marker(void) {
 void come_scope_pop(void) {
     co_scope_stack *s = co_scope_active;
     if (s->top <= 0) return;
+    co_cnt_scope_pop++;
     s->top--;
     /* Design 2 (redesign): bulk-free this frame's arena
        temporaries. If the stack is now empty, no arena
