@@ -193,3 +193,48 @@ founder's merge decisions.
 - G: mask/modulus proofs (general codegen, not tokenizer).
 - Hold: header packing / context IDs (redesign, not a
   packing); E tuple half (check tuple lowering first).
+
+## Step 5 trial — break/continue not defeating clean-block (2026-10-24)
+
+Branch come-lang step5-clean (from perf2 2193ff5), commit
+08a2956, tag step5-clean-blocks, pushed. NOT merged to main.
+
+Change (src/core/codegen.c, codegen only): clean_walk and
+checkpoint_walk allow AST_BREAK/AST_CONTINUE (return was
+already allowed). frame_walk_clean UNCHANGED: it is
+function-level frameless, and a function containing
+break/continue must keep its marker, else pop_to_depth
+with no marker base pops everything. Loop depths now
+record RUNTIME depth (lexical minus clean ancestors, via
+g_clean_depth tracked at block and loop-body push/pop),
+so break/continue pop_to_depth is exact with clean blocks
+on the path; lexical depths stay unchanged for
+adoption/variable scopes. Honesty note: by transitivity,
+the old lexical numbers were already safe (whenever
+lexical != runtime there were no frames above loop entry
+to pop; whenever frames existed, lexical == runtime), so
+the depth fix makes pops exact, not fixing a live leak.
+It is defensive, not a bug fix.
+
+Gate: come-lang suite green from clean (including updated
+cleanblock pin 3->1 plain pushes: break body/if now clean,
+output + ASan already passed); new clean_unwind gate
+(tests/clean_unwind_project + run_clean_unwind_test.sh:
+clean-enclosed break/continue, checkpoint-body break,
+return-from-clean helper; 0 plain pushes, 1 checkpoint
+push, 4 pop_to_depth all (0) -- cases A/E enclose loops
+in 1/2 clean blocks, so lexical would be (1)/(2); ASan
+clean); co_SQLite suites 9/9 green with step5 compiler
+(next-token branch); bench checksums exact in all runs.
+
+Measure (packed benches, paired interleaved 8 rounds,
+vs perf2-built nt binaries): default faithful 311 -> 300
+(median diff -11 ms), LTO faithful 212 -> 203 (-9 ms),
+default fast 177 -> 180 (flat, noise), LTO fast 141 -> 142
+(flat, noise). Saving above the 2-8 ms estimate (layout
+effects or more break-defeated pushes on the hot path
+than estimated). Best (LTO fast) unchanged ~141-142 (Go
+131). Faithful-fast LTO gap narrows 68 -> ~61 ms; step
+10's rule (fast primary if faithful still >20 ms behind
+fast) still projects to trigger, but the decision waits
+for all trials.
