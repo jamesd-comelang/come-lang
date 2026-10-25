@@ -1,0 +1,6 @@
+module main
+import std
+int main() {
+    std.out.printf("header ok\n")
+    return 0
+}

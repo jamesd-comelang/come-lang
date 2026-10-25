@@ -80,3 +80,5 @@ for ex in examples/*.co; do
     "./build/tests/example_$name" > /dev/null
     echo "example $name: OK"
 done
+bash tests/run_lazy_marker_test.sh
+bash tests/run_header_order_test.sh

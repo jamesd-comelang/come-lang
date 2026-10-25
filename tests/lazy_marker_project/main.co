@@ -1,0 +1,95 @@
+module main
+import std
+
+// A: nested-callee first allocation. Neither main (before the call)
+// nor outer allocates before inner's first allocation, so both
+// ancestor frames are lazy (NULL ctx) when inner materializes.
+string inner_alloc() {
+    string x = "a"
+    string y = "b"
+    string s = x + y
+    return s
+}
+string outer_noalloc() {
+    string s = inner_alloc()
+    return s
+}
+
+// B: chown across frames, skipping a lazy middle frame. Leaf
+// allocates s and chowns it to base (owned by main), so s must
+// survive leaf + middle returns. If chown failed across the lazy
+// middle frame, s would be freed with leaf and main's use = UAF.
+string leaf_chown(string base) {
+    string x = "x"
+    string y = "y"
+    string s = x + y
+    s.chown(base)
+    return s
+}
+string middle_noalloc(string base) {
+    string s = leaf_chown(base)
+    return s
+}
+
+// C: escaping returns through lazy intermediates. Leaf allocates,
+// middle returns it without allocating, main uses it after all
+// frames pop. Return adoption must materialize the caller frame
+// (come_scope_caller_ctx), not steal to ROOT (leak) or free early.
+string leaf_escape() {
+    string x = "p"
+    string y = "q"
+    string s = x + y
+    return s
+}
+string middle_escape() {
+    string s = leaf_escape()
+    return s
+}
+
+// D: unwinding through unlinked (never-materialized) frames.
+// Scalars only, so middle/outer frames never materialize; returns
+// and a break must pop NULL-ctx frames safely without touching
+// callers' frames.
+int leaf_scalar() {
+    return 7
+}
+int middle_scalar() {
+    int v = leaf_scalar()
+    return v + 1
+}
+int unwind_loop() {
+    int total = 0
+    int i = 0
+    while (i < 5) {
+        if (i == 2) { break }
+        total = total + middle_scalar()
+        i = i + 1
+    }
+    return total
+}
+int early_return(int x) {
+    int a = 0
+    if (x == 1) {
+        int b = 3
+        a = b + 1
+        return a
+    }
+    return a
+}
+
+int main() {
+    string a = outer_noalloc()
+    std.out.printf("A %s %d\n", a, a.length())
+    string h1 = "hel"
+    string h2 = "lo"
+    string base = h1 + h2
+    string b = middle_noalloc(base)
+    std.out.printf("B %s %s %d\n", b, base, b.length())
+    string c = middle_escape()
+    std.out.printf("C %s %d\n", c, c.length())
+    int dd = unwind_loop()
+    std.out.printf("D %d\n", dd)
+    int e = early_return(1)
+    std.out.printf("D2 %d\n", e)
+    return 0
+}
