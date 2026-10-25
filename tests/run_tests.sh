@@ -39,6 +39,7 @@ bash tests/run_map_scope_test.sh
 bash tests/run_frameless_test.sh
 bash tests/run_cleanblock_test.sh
 bash tests/run_clean_unwind_test.sh
+bash tests/run_proof_test.sh
 bash tests/run_escapes_test.sh
 bash tests/run_view_test.sh
 bash tests/run_arena_test.sh

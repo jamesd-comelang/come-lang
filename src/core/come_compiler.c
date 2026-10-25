@@ -2327,6 +2327,14 @@ int main(int argc, char *argv[]) {
 
     if (!input) die("No input file specified");
 
+    // Step 6 audit: proof checks are re-inserted only for true
+    // --debug builds (mirrors debug_build below: no --lto, no
+    // COME_CFLAGS, since those ignore --debug for cc flags).
+    {
+        const char *uc = getenv("COME_CFLAGS");
+        g_codegen_debug = (g_debug && !g_lto && !(uc && *uc));
+    }
+
     // Setup Directries
     detect_project_root(g_project_root, sizeof(g_project_root));
     // The src/ anchor defaults to the working directory;

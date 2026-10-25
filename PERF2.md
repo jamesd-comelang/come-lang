@@ -250,3 +250,53 @@ not runtime helpers. The LTO fast gain was unexpected
 (LTO was assumed to already inline these); it suggests LTO
 does not fully inline runtime helpers for fast's shape, a
 finding, not a proven mechanism.
+## Step 6 trial — mask/modulo proofs + proof audit (2026-10-24)
+
+Branch come-lang step6-proofs (from perf2 2193ff5), tag
+step6-proofs, pushed. NOT merged to main.
+
+Change (src/core/codegen.c, driver): nonneg_expr extended
+to binary ops (&,|,^,+,*,/, % for nonneg operands; - and ~
+excluded) and to int/long(byte[] read) (zero-extension,
+finding 32, 0..255); early-exit guard -> nonneg (lower
+bounds, OR disjuncts each hold; AND not); length facts
+(buf -> length >= min, from early-exit length guards and
+array-literal lengths, per-variable void on reassign /
+remove / clear, block-scoped); mask proof (x & MASK, MASK
+nonneg literal, x pure, length >= MASK+1); modulo proof
+(EXPR % C, C positive literal, EXPR nonneg, length >= C);
+proof audit: --debug (true debug only: no --lto, no
+COME_CFLAGS) re-inserts checks for proven reads
+(g_codegen_debug plumbed from driver, mirroring
+g_codegen_unchecked); g_unchecked (explicit opt-out) is
+NOT gated by audit.
+
+SOUNDNESS CATCH (test gate worked): the first fixup rule
+(byte if (c < 0) c += 256 -> nonneg) was UNSOUND and was
+REMOVED before commit. For byte variables +256 wraps mod
+256 (251 -> -5), so the fixup is a no-op and never makes
+a byte nonneg; the proof test caught it (fmod returned 0
+via an OOB raw read). Do NOT re-add a byte fixup rule.
+The hash's actual nonneg source is zero-extension of byte
+reads (int(b[pos])), not the fixup (kw_hash_code's c0/c1
+are ints from zero-extended reads, already 0..255).
+
+Gate: come-lang suite green from clean (including new
+proof gate: tests/proof_project + run_proof_test.sh, normal
+6 checked reads (controls only), --debug 9 (audit
+re-inserts all 3 proven), ASan 6, values correct);
+co_SQLite suites 9/9 green with step6 compiler
+(next-token branch); bench checksums exact.
+
+Measure (packed, paired interleaved 8 rounds, vs perf2
+nt): default faithful 301 -> 297 (paired diff median
+-2 ms, flat within noise), LTO faithful 209 -> 207
+(-2 ms), fast flat both (176 -> 176, 138 -> 141 noise).
+Best (LTO fast) unchanged ~138-141 (Go 131). As analyzed:
+bench tables are parameters (length unknown), so
+mask/modulo cannot fire on the bench; the ~2 ms (if real)
+is from nonneg extensions improving loop proofs, not the
+new rules. Step 6 is infrastructure + safety (audit
+de-risks all proofs), not a bench win. The bucket read
+still needs length propagation (step 8, deferred) or a
+port guard (net ~0, guard cost cancels saving).

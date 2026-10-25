@@ -16,6 +16,7 @@ int generate_c_from_ast(ASTNode* ast, const char* out_file, const char* source_f
 //     for the init/exit chain instead of this file's own imports.
 extern int g_codegen_suppress_singletons;
 extern int g_codegen_unchecked;  // --unchecked build flag (parity exhaust)
+extern int g_codegen_debug;  // Step 6 audit: --debug re-inserts checks
 extern int g_codegen_state_home;
 extern int g_codegen_group_has_init;
 extern int g_codegen_group_has_exit;
