@@ -73,6 +73,47 @@ the review's ~100–125 ms. LTO faithful is now ~253 ms
 halved. No correctness change: checksums exact, suites
 green, ASan clean.
 
+## Step B: fat LTO runtime objects + -fno-lto on non-LTO links (DONE, no perf win — kept for robustness)
+
+Finding: the runtime .o files were already SLIM LTO objects
+(`plugin needed to handle lto object` with `-fno-lto`).
+Default links therefore ran auto-LTO at -O0 (the plugin
+claims LTO sections even without -flto), so the runtime ran
+unoptimized in default builds; --lto links already inlined
+runtime code via bytecode. B is fat objects (machine code +
+bytecode) in all 6 runtime Makefiles (mem, map, array, coro,
+string, std) PLUS `-fno-lto` on non-LTO driver links
+(come_compiler.c, respecting a user -flto in COME_CFLAGS),
+so default links use -O2 machine code and --lto links still
+use bytecode. Neither half alone works: fat alone still
+auto-LTOs at -O0; -fno-lto alone fails to link slim objects.
+
+Fix required along the way: string.o/std.o are built by
+`ld -r` combining, which drops fatness. Changed both to
+`gcc -flto -ffat-lto-objects -r` (plain `gcc -r` also drops
+it — LTO -r defers codegen). This also fixed the examples
+build, which broke on -fno-lto + slim string.o/std.o.
+
+Measured 2026-10-24 (vs step A; checksums exact, suites
+green: come-lang 67/0, co_SQLite 7/7):
+
+| Build | After A | After B | Delta |
+|---|---|---|---|
+| Default faithful | ~464 | ~476-481 | +3% (noise) |
+| Default fast | ~349 | ~346 | flat |
+| --lto faithful | ~253 | ~254 | flat |
+| --lto fast | ~258 | ~253 | flat |
+
+Verdict: NO measurable perf win. The default-vs-LTO gap is
+dominated by user code at -O0, not by the runtime's -O level
+(post-A the runtime hot path is already minimal). Kept
+anyway (tag `perf2-fat-lto`, pushed): fat objects link with
+any linker (not just gcc-with-plugin) and default links are
+no longer dependent on auto-LTO behavior, which varies by
+gcc version/distro. Merge decision is the founder's: A is
+the perf win, B is robustness. If B is ever deemed unwanted
+complexity, it reverts cleanly (separate commit).
+
 ## Remaining queue (in order)
 
 - B: inlinable runtime (static inline hot helpers + fat LTO

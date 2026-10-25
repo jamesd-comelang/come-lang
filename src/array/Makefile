@@ -16,3 +16,5 @@ CFLAGS += -O2
 # in runtime objects too. Measured ~33% on the tokenizer
 # with COME_CFLAGS="-O2 -flto" (0.57s -> 0.38s).
 CFLAGS += -flto
+# perf2 B: fat objects (see src/mem/Makefile).
+CFLAGS += -ffat-lto-objects

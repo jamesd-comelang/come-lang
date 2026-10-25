@@ -1,6 +1,6 @@
 TOP_DIR=../../
 CC=gcc
-CFLAGS=-Wall -g -O2 -flto -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/
+CFLAGS=-Wall -g -O2 -flto -ffat-lto-objects -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/
 BUILD_DIR=$(TOP_DIR)/build
 COME=$(BUILD_DIR)/come
 
@@ -12,7 +12,8 @@ COME=$(BUILD_DIR)/come
 all: $(BUILD_DIR)/std.o
 
 $(BUILD_DIR)/std.o: $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o
-	$(LD) -r $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o -o $@
+	# perf2 B: plain `ld -r` drops fatness (see string/Makefile).
+	$(CC) -flto -ffat-lto-objects -r $(BUILD_DIR)/std_manual.o $(BUILD_DIR)/std_gen.o -o $@
 
 $(BUILD_DIR)/std_manual.o: std.c
 	$(CC) $(CFLAGS) -c std.c -o $(BUILD_DIR)/std_manual.o

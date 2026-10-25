@@ -16,3 +16,9 @@ CFLAGS += -O2
 # in runtime objects too. Measured ~33% on the tokenizer
 # with COME_CFLAGS="-O2 -flto" (0.57s -> 0.38s).
 CFLAGS += -flto
+# perf2 B: fat objects (machine code + bytecode). Slim objects
+# forced auto-LTO at -O0 in default links (the plugin claims
+# LTO sections even without -flto), so the runtime ran at -O0
+# in default builds. Fat + -fno-lto on non-LTO links (driver)
+# gives -O2 runtime code there; --lto links still use bytecode.
+CFLAGS += -ffat-lto-objects

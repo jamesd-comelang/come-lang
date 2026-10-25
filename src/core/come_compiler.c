@@ -2439,7 +2439,18 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, "%s -ldl", cc_extra_flags());
+    // perf2 B: non-LTO links use the fat runtime objects' -O2
+    // machine code instead of auto-LTO at -O0. Slim objects
+    // forced auto-LTO (the plugin claims LTO sections even
+    // without -flto), so the runtime ran at -O0 in default
+    // builds. -fno-lto selects the machine code; --lto links
+    // still use bytecode. A user -flto in COME_CFLAGS is
+    // respected (do not override it).
+    {
+        const char *uc = getenv("COME_CFLAGS");
+        const char *no_lto = (!g_lto && (!uc || !strstr(uc, "flto"))) ? " -fno-lto" : "";
+        pos += snprintf(link_cmd + pos, sizeof(link_cmd) - pos, "%s%s -ldl", cc_extra_flags(), no_lto);
+    }
 
     if (run_cmd(link_cmd) != 0) {
         die("Linking failed");

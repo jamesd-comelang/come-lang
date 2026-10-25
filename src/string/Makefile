@@ -1,6 +1,6 @@
 TOP_DIR=../../
 CC=gcc
-CFLAGS=-Wall -g -O2 -flto -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/
+CFLAGS=-Wall -g -O2 -flto -ffat-lto-objects -I$(TOP_DIR)src/include/ -I$(TOP_DIR)src/core/include/
 BUILD_DIR=$(TOP_DIR)/build
 COME=$(BUILD_DIR)/come
 
@@ -9,7 +9,10 @@ COME=$(BUILD_DIR)/come
 all: $(BUILD_DIR)/string.o
 
 $(BUILD_DIR)/string.o: $(BUILD_DIR)/string_manual.o $(BUILD_DIR)/string_gen.o
-	$(LD) -r $(BUILD_DIR)/string_manual.o $(BUILD_DIR)/string_gen.o -o $@
+	# perf2 B: plain `ld -r` drops fatness (LTO sections survive
+	# but no usable machine code, breaking -fno-lto links).
+	# `gcc -r` with LTO flags preserves both code and bytecode.
+	$(CC) -flto -ffat-lto-objects -r $(BUILD_DIR)/string_manual.o $(BUILD_DIR)/string_gen.o -o $@
 
 $(BUILD_DIR)/string_manual.o: string.c
 	$(CC) $(CFLAGS) -c string.c -o $(BUILD_DIR)/string_manual.o
