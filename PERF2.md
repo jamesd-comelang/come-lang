@@ -300,3 +300,46 @@ new rules. Step 6 is infrastructure + safety (audit
 de-risks all proofs), not a bench win. The bucket read
 still needs length propagation (step 8, deferred) or a
 port guard (net ~0, guard cost cancels saving).
+
+## Stacked trial 5+7a+6 (2026-10-25)
+
+Branch come-lang stacked-567 (from perf2 2193ff5, merging
+step5 code 08a2956, step7a ddde7bb, step6 56f91b2).
+NOT merged to main. Merge conflicts were only in
+PERF2.md (kept both trial sections) and tests/run_tests.sh
+(kept both run_clean_unwind_test.sh and run_proof_test.sh);
+codegen.c merged cleanly. Worktree build, not the
+tests-lazy-header checkout.
+
+Gate: come-lang make test green from clean; co_SQLite
+come test . 9/9 with the stacked compiler (next-token
+branch); bench checksums exact in all runs:
+count=2530480 typesum=285119860 lensum=7962360.
+
+Measure (packed benches, paired interleaved 8 rounds vs
+perf2 nt binaries, same workload):
+- default faithful: old mean 304.9 -> new mean 292.1
+  (round-diff mean -12.8, median -14.5)
+- default fast: old mean 181.1 -> new mean 167.1
+  (round-diff mean -14.0, median -14.5)
+- LTO faithful: old mean 210.3 -> new mean 201.9
+  (round-diff median -13; two slow new rounds, 229 and
+  214 ms, are phase noise against six rounds at 194-196)
+- LTO fast: old mean 142.6 -> new mean 133.0
+  (round-diff mean -9.6, median -9.5)
+
+Verdict: gains are sub-additive vs the independent
+trials (step5 faithful -11/-9, step7a fast -14/-10,
+step6 ~-2): stacked is NOT the sum. It is within the
+earlier stacked estimate band (285/198/173/131 +-5-10)
+except default faithful, which lands at ~292 rather
+than ~285. Best remains LTO fast ~133 ms (Go 131, ~2
+behind, noise-level); best faithful is LTO ~202 ms.
+
+Step-10 evaluation on stacked numbers: LTO
+faithful-fast gap is ~69 ms by means, ~63 ms by
+medians -- still far above the 20 ms threshold, so
+the step-10 rule still triggers on stacked numbers.
+This log does NOT switch co_SQLite's primary scanner;
+that remains a founder decision, with fast shipping
+unchecked raw reads by default.
