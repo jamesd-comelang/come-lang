@@ -156,7 +156,26 @@ LTO flat as expected (it already had -O2). The value of
 C is the default: users who do not pass --lto now get
 232 ms (fast) / 329 ms (faithful) instead of 276/432.
 
-## Remaining queue (in order)
+## Remaining queue — CLOSED (see co_SQLite PERF2.md for F)
+
+- D (non-erroring map probe): MOOT for the bench — the
+  keyword port removed the tokenizer's hot ERR-miss path,
+  which was D's motivation. Not done for perf.
+- G (mask/modulus index proofs): NOT a tokenizer win —
+  the hot path already has zero checked reads. Not done.
+- F (bytes view): tried, no win (promotion by design;
+  see co_SQLite PERF2.md). Not done.
+- co_SQLite-side keyword port is logged in
+  co_SQLite/PERF2.md (tag perf2-keyword-hash).
+
+Final perf2 numbers (tokenizer bench, checksums exact):
+default faithful ~329, default fast ~232,
+--lto faithful ~215, --lto fast ~157.
+Best (LTO fast) vs Go 131 ms: ~26 ms behind;
+vs Rust 80 ms: ~77 ms behind; vs C 33 ms: ~124 ms behind.
+Nothing in perf2 is merged to main; all steps are tagged
+on branch perf2 (come-lang) / perf2 (co_SQLite) for the
+founder's merge decisions.
 
 - B: inlinable runtime (static inline hot helpers + fat LTO
   objects for the prebuilt runtime; same cc builds both here,
