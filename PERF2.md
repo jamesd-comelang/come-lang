@@ -193,3 +193,30 @@ founder's merge decisions.
 - G: mask/modulus proofs (general codegen, not tokenizer).
 - Hold: header packing / context IDs (redesign, not a
   packing); E tuple half (check tuple lowering first).
+
+## 7b-safe trial (2026-10-25) -- kw_hash_code, manual inline
+
+Branch come-lang step7b-safe (perf2 2193ff5, compiler
+unchanged, suite green from clean). The trial code is
+on co_SQLite branch inline-kw (from next-token aaa8a11),
+NOT merged to main, and NOT a primary-scanner change.
+Full log, numbers, and safety argument are in
+co_SQLite/PERF2.md under "7b-safe trial".
+
+Summary: kw_hash_code is the one provably safe
+candidate (no allocation, int-only return, no writes
+to its arguments, no buffer escape, no user calls, no
+module state, frameless). Hand-inlined with renamed
+locals and a single exit in both tk_scan and fast_scan.
+Measured (paired interleaved 8 rounds vs perf2, default
+faithful repeated): default fast -9 ms, default
+faithful +33 to +36 ms (repeatable regression), LTO
+flat for faithful and -6 ms (layout noise) for fast --
+LTO perf2 already inlines kw_hash_code, so there is no
+LTO inline gain left to take. Verdict: safe 7b works
+for fast, backfires for faithful, and is not a faithful
+lever. General compiler 7b is NOT implemented: it
+would need cross-file callee-AST loading, renaming,
+and return conversion, for a function that regresses
+faithful when inlined. Do not pursue 7b for
+kw_hash_code.
