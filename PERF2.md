@@ -193,3 +193,60 @@ founder's merge decisions.
 - G: mask/modulus proofs (general codegen, not tokenizer).
 - Hold: header packing / context IDs (redesign, not a
   packing); E tuple half (check tuple lowering first).
+
+## Step 9 reframed trial — cache invalidation + clear error (2026-10-25)
+
+Branch come-lang step9-cache (from perf2 2193ff5), tag
+step9-cache-trial, pushed. NOT merged to main. Correctness,
+not perf: no bench gains expected or measured (bench verified
+correct only: checksums exact with step9 compiler).
+
+(a) Driver cache invalidation (come_compiler.c): step 4
+need_transpile now ORs in direct-import changes. New helpers
+resolve_import_files (mirrors compile_import's search:
+local stems, then system depot; force_system skips local
+stems; returns -1 on not-found/ambiguous) + imports_changed
+(loops AST_IMPORT, skipping std/string/array/map as step 2
+does -- those are covered by the compiler-mtime check).
+For each resolved import file: source mtime >= cached-C
+mtime, or import cached-C mtime (same rel_path logic as
+step 3, non-zero) >= cached-C mtime, forces retranspile.
+The >= matches the existing source/compiler checks
+(1-second mtime granularity: same-or-newer is safe, may
+over-retranspile but never reuses stale C). Cached-C check
+gives transitive chaining for free in dependency order
+(imports compile before importers, step 2): C changes ->
+B regenerates (B's C newer) -> A sees B's C newer and
+regenerates. Unresolvable imports fall back to retranspile
+(safe, never reuse unverifiable C).
+
+(b) Codegen clear error (codegen.c): destructure + forwarding
+sites now gate on visibility before emitting a tuple typedef
+reference: if defmod != current_module and
+!module_symbol_visible(defmod, tf->name), codegen_error
+"function '%s' in module '%s' is not exported (spec 3.4)...".
+Own-module (incl. sibling) calls skip the gate: the export
+list controls cross-module visibility only, and
+module_symbol_visible returns visible-by-default for modules
+with no export list. Previously the registry held non-exported
+tuple fns but surface emission skipped their typedefs, so
+callers emitted a reference to a never-defined typedef and C
+failed with "unknown type" -- the message that caused the
+next-token trial's misdiagnosis. No typedef-emission change.
+
+Gate: new tests/step9_project + run_step9_test.sh, 4 phases,
+passing first run: (1) exported -> build + run OK; (2) pair
+removed from exports (importer untouched, cache kept) ->
+build FAILS with "not exported", no "unknown type"
+(forwarding site first, since wrapper precedes main);
+(3) destructure-only importer, same removed exports ->
+"not exported" (destructure site); (4) exports restored
+(importer untouched, cache kept) -> build + run OK
+(invalidation for newly exported symbols, the original
+next-token failure mode). Come-lang suite green (test wired
+into run_tests.sh); co_SQLite suites 9/9 green with step9
+compiler (next-token branch); bench checksums exact.
+Limitation: directory-module invalidation is implemented
+(resolve returns all group files, mtime loop checks all)
+but the trial test uses a single-file module; the loop is
+the same code path for both.

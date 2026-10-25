@@ -7606,6 +7606,15 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     codegen_error("the (a, b) = ... form is for colink() or a tuple-returning function (spec 8.2, 9.2)");
                     break;
                 }
+                // Step 9 (b): imported but not exported -- surface
+                // emission skips its typedef, so emitting the reference
+                // would fail in C with "unknown type". Fail here, in Come.
+                // Own-module (incl. sibling) calls skip the gate: the
+                // export list controls cross-module visibility only.
+                if (strcmp(defmod, current_module) != 0 && !module_symbol_visible(defmod, tf->name)) {
+                    codegen_error("function '%s' in module '%s' is not exported (spec 3.4): add it to module '%s's export list, or call a function it does export", tf->name, defmod, defmod);
+                    break;
+                }
                 if (tf->count != 2) {
                     codegen_error("'%s' returns %d values; this destructure binds 2 names", rhs->text, tf->count);
                     break;
@@ -7683,6 +7692,11 @@ static void generate_node(FILE* f, ASTNode* node, int indent) {
                     TupleFn scratch;
                     const TupleFn* tf = resolve_tuple_call(node->children[0],
                                                            defmod, sizeof(defmod), &scratch);
+                    // Step 9 (b): same visibility gate as destructure.
+                    if (tf && strcmp(defmod, current_module) != 0 && !module_symbol_visible(defmod, tf->name)) {
+                        codegen_error("function '%s' in module '%s' is not exported (spec 3.4): add it to module '%s's export list, or call a function it does export", tf->name, defmod, defmod);
+                        break;
+                    }
                     if (tf && tf->count == g_cur_tuple->count) {
                         fprintf(f, "come_%s__%s_ret_t _come_ret = ", current_module, g_cur_tuple->name);
                         if (strcmp(defmod, current_module) == 0 &&

@@ -1,0 +1,11 @@
+module main
+import pairmod
+import std
+(int, int) wrapper() { return pairmod.pair() }
+int main() {
+    (a, b) = pairmod.pair()
+    std.out.printf("%d %d\n", a, b)
+    (c, d) = wrapper()
+    std.out.printf("%d %d\n", c, d)
+    return 0
+}

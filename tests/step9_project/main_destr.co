@@ -1,0 +1,8 @@
+module main
+import pairmod
+import std
+int main() {
+    (a, b) = pairmod.pair()
+    std.out.printf("%d %d\n", a, b)
+    return 0
+}

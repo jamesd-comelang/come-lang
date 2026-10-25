@@ -80,3 +80,4 @@ for ex in examples/*.co; do
     "./build/tests/example_$name" > /dev/null
     echo "example $name: OK"
 done
+bash tests/run_step9_test.sh

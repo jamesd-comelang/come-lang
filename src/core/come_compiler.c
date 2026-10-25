@@ -239,6 +239,108 @@ static int file_is_system_module(const char *abs_path) {
 
 // Compile a single file, recursing on imports. `group` is non-NULL
 // when the file belongs to a directory module (COIL-108).
+// Forward decl (defined below compile_file, used by resolve_import_files).
+static int scan_co_dir(const char *dir, char paths[][PATH_MAX], int max_paths);
+
+// Step 9 (reframed, a): resolve an import to its source files WITHOUT
+// compiling, mirroring compile_import's search order (local stems, then
+// system depot; force_system skips local stems). Returns count in
+// paths_out (max_paths entries), or -1 if not found or ambiguous.
+// Callers treat -1 as "changed" (retranspile) -- safe fallback, never
+// reuse possibly stale C when imports cannot be verified.
+static int resolve_import_files(const char *import_name, const char *current_file,
+                                int force_system, char (*paths_out)[PATH_MAX], int max_paths) {
+    char base_dir[PATH_MAX] = {0};
+    strncpy(base_dir, current_file, sizeof(base_dir) - 1);
+    dirname(base_dir);
+    char stems[4][PATH_MAX];
+    snprintf(stems[0], PATH_MAX, "%s", base_dir);
+    snprintf(stems[1], PATH_MAX, "%s/modules", base_dir);
+    snprintf(stems[2], PATH_MAX, "%s/src", g_src_root);
+    snprintf(stems[3], PATH_MAX, "%s/src/modules", g_src_root);
+    for (int s = force_system ? 2 : 0; s < 4; s++) {
+        char file[PATH_MAX], dir[PATH_MAX];
+        snprintf(file, sizeof(file), "%s/%s.co", stems[s], import_name);
+        snprintf(dir, sizeof(dir), "%s/%s", stems[s], import_name);
+        int has_file = file_exists(file);
+        int n = scan_co_dir(dir, paths_out, max_paths);
+        if (has_file && n > 0) return -1;
+        if (has_file) {
+            strncpy(paths_out[0], file, PATH_MAX - 1);
+            paths_out[0][PATH_MAX - 1] = 0;
+            return 1;
+        }
+        if (n > 0) return n;
+    }
+    char exe_path_r[PATH_MAX];
+    ssize_t len_r = readlink("/proc/self/exe", exe_path_r, sizeof(exe_path_r) - 1);
+    if (len_r != -1) {
+        exe_path_r[len_r] = 0;
+        char *exe_dir_r = dirname(exe_path_r);
+        char candidate[PATH_MAX];
+        snprintf(candidate, sizeof(candidate), "%s/../lib/modules/%s.co", exe_dir_r, import_name);
+        if (file_exists(candidate)) {
+            strncpy(paths_out[0], candidate, PATH_MAX - 1);
+            paths_out[0][PATH_MAX - 1] = 0;
+            return 1;
+        }
+    }
+    return -1;
+}
+
+// Step 9 (a): 1 if any direct import (source or cached C) is same-or-newer
+// than this file's cached C, mirroring the >= logic of the source/compiler
+// checks (1-second mtime granularity: same-or-newer is safe, it may
+// retranspile unnecessarily but never reuses stale C). Cached-C check
+// gives transitive chaining for free when builds run in dependency order
+// (imports are compiled before importers, step 2): if C changes, B
+// regenerates (B's C newer), then A sees B's C newer and regenerates too.
+// Runtime imports (std/string/array/map) are skipped, as in step 2: they
+// are covered by the compiler-mtime check.
+static int imports_changed(ASTNode *ast, const char *abs_path, time_t t_c) {
+    if (!ast || ast->type != AST_PROGRAM) return 0;
+    for (int i = 0; i < ast->child_count; i++) {
+        ASTNode *ch = ast->children[i];
+        if (!ch || ch->type != AST_IMPORT) continue;
+        const char *import_name = ch->text;
+        if (strcmp(import_name, "std") == 0 || strcmp(import_name, "string") == 0 ||
+            strcmp(import_name, "array") == 0 || strcmp(import_name, "map") == 0) {
+            continue;
+        }
+        char (*paths)[PATH_MAX] = malloc(64 * sizeof(*paths));
+        if (!paths) return 1;
+        int n = resolve_import_files(import_name, abs_path, ch->is_extern, paths, 64);
+        if (n < 0) { free(paths); return 1; }
+        int changed = 0;
+        for (int j = 0; j < n && !changed; j++) {
+            char imp_abs[PATH_MAX];
+            if (!realpath(paths[j], imp_abs)) {
+                strncpy(imp_abs, paths[j], sizeof(imp_abs) - 1);
+                imp_abs[sizeof(imp_abs) - 1] = 0;
+            }
+            if (get_mtime(imp_abs) >= t_c) { changed = 1; break; }
+            // Import's cached C (same rel_path logic as step 3).
+            char rel[PATH_MAX];
+            if (strncmp(imp_abs, g_project_root, strlen(g_project_root)) == 0) {
+                const char *p = imp_abs + strlen(g_project_root);
+                while (*p == '/') p++;
+                strncpy(rel, p, sizeof(rel));
+            } else {
+                strcpy(rel, basename(imp_abs));
+            }
+            char imp_c[PATH_MAX];
+            if (g_codegen_unchecked)
+                snprintf(imp_c, sizeof(imp_c), "%s/%s.unchecked.c", g_ccache_dir, rel);
+            else
+                snprintf(imp_c, sizeof(imp_c), "%s/%s.c", g_ccache_dir, rel);
+            { time_t t_imp_c = get_mtime(imp_c); if (t_imp_c != 0 && t_imp_c >= t_c) { changed = 1; break; } }
+        }
+        free(paths);
+        if (changed) return 1;
+    }
+    return 0;
+}
+
 static void compile_file(const char *source_path, const char *forced_o_path,
                          const ModuleGroup *group) {
     char abs_path[PATH_MAX];
@@ -438,6 +540,8 @@ static void compile_file(const char *source_path, const char *forced_o_path,
     // the source or compiler is same-or-newer - possibly
     // changed, or ambiguous - which is always safe.
     int need_transpile = (t_src >= t_c) || (t_exe >= t_c);
+    // Step 9 (a): an import newer than our cached C invalidates it.
+    if (!need_transpile && imports_changed(ast, abs_path, t_c)) need_transpile = 1;
     int need_compile = (need_transpile || t_c > t_o || t_src > t_o);
     
     if (get_mtime(o_file) == 0) need_compile = 1;

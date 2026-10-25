@@ -1,0 +1,4 @@
+module pairmod
+export (pair, dummy)
+(int, int) pair() { return 10, 11 }
+int dummy() { return 0 }
