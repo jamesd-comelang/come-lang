@@ -52,6 +52,7 @@ static StringList *g_c_files = NULL;
 static int g_single_tu = 0;
 static int g_lto = 0;
 static int g_debug = 0;
+static int g_opt_level = -1;  /* -1 = default (2, or 0 with --debug) */
 
 static void list_add(StringList **head, const char *val) {
     StringList *node = malloc(sizeof(StringList));
@@ -149,8 +150,8 @@ static const char *cc_extra_flags(void) {
         // -O2 -flto gave 0.64 s -> 0.37 s). The runtime
         // .o files are prebuilt and untouched, so this
         // is user-code-only LTO.
-        if (v && *v) snprintf(buf, sizeof(buf), " %s -O2 -flto", v);
-        else snprintf(buf, sizeof(buf), " -O2 -flto");
+        if (v && *v) snprintf(buf, sizeof(buf), " %s -O%d -flto", v, g_opt_level >= 0 ? g_opt_level : 2);
+        else snprintf(buf, sizeof(buf), " -O%d -flto", g_opt_level >= 0 ? g_opt_level : 2);
         return buf;
     }
     // perf2 C: the default compile is -O2 (was -O0: gcc with no
@@ -162,6 +163,11 @@ static const char *cc_extra_flags(void) {
     // when COME_CFLAGS is unset (with COME_CFLAGS or --lto,
     // --debug has no effect -- LTO implies -O2).
     if (!v || !*v) {
+        if (g_opt_level >= 0) {
+            if (g_debug) snprintf(buf, sizeof(buf), " -O%d -g", g_opt_level);
+            else snprintf(buf, sizeof(buf), " -O%d", g_opt_level);
+            return buf;
+        }
         if (g_debug) return " -O0 -g";
         return " -O2";
     }
@@ -389,12 +395,15 @@ static void compile_file(const char *source_path, const char *forced_o_path,
     {
         const char *uc = getenv("COME_CFLAGS");
         int use_cflags = (uc && *uc);
-        int debug_build = g_debug && !g_lto && !use_cflags;
-        int o2_build = !g_lto && !use_cflags && !debug_build;
+        int debug_build = g_debug && !g_lto && !use_cflags && g_opt_level < 0;
+        int o2_build = !g_lto && !use_cflags && !debug_build && g_opt_level < 0;
+        int opt_build = !g_lto && !use_cflags && g_opt_level >= 0;
         if (g_codegen_unchecked && g_lto)
             snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.lto.o", g_build_dir, bn);
         else if (g_codegen_unchecked && debug_build)
             snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.debug.o", g_build_dir, bn);
+        else if (g_codegen_unchecked && opt_build)
+            snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.o%d.o", g_build_dir, bn, g_opt_level);
         else if (g_codegen_unchecked && o2_build)
             snprintf(o_file, sizeof(o_file), "%s/%s.unchecked.o2.o", g_build_dir, bn);
         else if (g_codegen_unchecked)
@@ -403,6 +412,8 @@ static void compile_file(const char *source_path, const char *forced_o_path,
             snprintf(o_file, sizeof(o_file), "%s/%s.lto.o", g_build_dir, bn);
         else if (debug_build)
             snprintf(o_file, sizeof(o_file), "%s/%s.debug.o", g_build_dir, bn);
+        else if (opt_build)
+            snprintf(o_file, sizeof(o_file), "%s/%s.o%d.o", g_build_dir, bn, g_opt_level);
         else if (o2_build)
             snprintf(o_file, sizeof(o_file), "%s/%s.o2.o", g_build_dir, bn);
         else
@@ -1946,7 +1957,7 @@ static void print_usage(void) {
     fprintf(stderr,
         "Usage:\n"
         "  come build <file.co|dir> [-o output]   compile and link\n"
-        "    [--single-tu]                        compile all user code as one TU\n    [--lto]                                link-time optimize user code (user-only LTO; implies -O2; runtime stays prebuilt)\n    [--debug]                              debug build: -O0 -g instead of the default -O2 (no effect with --lto or COME_CFLAGS set)\n    [--unchecked]                          remove array bounds checks (opt-in; unsafe: out-of-bounds reads/writes become raw heap access)\n"
+        "    [--single-tu]                        compile all user code as one TU\n    [--lto]                                link-time optimize user code (user-only LTO; implies -O2; runtime stays prebuilt)\n    [--debug]                              debug build: -O0 -g instead of the default -O2 (no effect with --lto or COME_CFLAGS set)\n    [--opt-level=N]                        C optimization level 0-3 (default 2; with --debug adds -g; with --lto sets the LTO level; no effect with COME_CFLAGS set)\n    [-O0|-O1|-O2|-O3]                     shorthand for --opt-level=N\n    [--unchecked]                          remove array bounds checks (opt-in; unsafe: out-of-bounds reads/writes become raw heap access)\n"
         "                                          (cross-module inlining without LTO)\n"
         "  come genc <file.co> -o <out.c>          emit C only\n"
         "  come check <file.co|dir>                compile, no link or run\n"
@@ -2318,6 +2329,16 @@ int main(int argc, char *argv[]) {
             g_lto = 1;
         } else if (strcmp(argv[i], "--debug") == 0) {
             g_debug = 1;
+        } else if (strncmp(argv[i], "--opt-level=", 12) == 0) {
+            g_opt_level = atoi(argv[i] + 12);
+            if (g_opt_level < 0 || g_opt_level > 3) die("Invalid --opt-level (must be 0-3)");
+        } else if (strcmp(argv[i], "--opt-level") == 0) {
+            if (i + 1 < argc) {
+                g_opt_level = atoi(argv[++i]);
+                if (g_opt_level < 0 || g_opt_level > 3) die("Invalid --opt-level (must be 0-3)");
+            }
+        } else if (strlen(argv[i]) == 3 && argv[i][0] == '-' && argv[i][1] == 'O' && argv[i][2] >= '0' && argv[i][2] <= '3') {
+            g_opt_level = argv[i][2] - '0';
         } else if (strcmp(argv[i], "--unchecked") == 0) {
             g_codegen_unchecked = 1;
         } else {
@@ -2332,7 +2353,7 @@ int main(int argc, char *argv[]) {
     // COME_CFLAGS, since those ignore --debug for cc flags).
     {
         const char *uc = getenv("COME_CFLAGS");
-        g_codegen_debug = (g_debug && !g_lto && !(uc && *uc));
+        g_codegen_debug = (g_debug && !g_lto && !(uc && *uc) && g_opt_level < 0);
     }
 
     // Setup Directries
