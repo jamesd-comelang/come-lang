@@ -776,6 +776,13 @@ void *come_scope_stack_new(void) {
     s->frames = NULL;
     s->top = 0;
     s->cap = 0;
+    /* Finding 1 (external review, verified): the arena fields
+       were added to co_scope_stack without updating this
+       initializer, so coroutine stacks created here left
+       arena_head/arena_cur uninitialized -- and the first
+       come_scope_push() reads arena_cur. Initialize them. */
+    s->arena_head = NULL;
+    s->arena_cur = NULL;
     return s;
 }
 
